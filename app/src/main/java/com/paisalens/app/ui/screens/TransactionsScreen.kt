@@ -3,6 +3,7 @@ package com.paisalens.app.ui.screens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -25,8 +27,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.paisalens.app.data.model.MerchantTransactionGroup
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.ReviewStatus
@@ -47,6 +51,8 @@ private enum class TransactionFilter(val label: String) {
 @Composable
 fun TransactionsScreen(
     transactions: List<TransactionRecord>,
+    uncategorizedMerchants: List<MerchantTransactionGroup>,
+    onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -126,6 +132,34 @@ fun TransactionsScreen(
             }
         }
         Spacer(Modifier.height(10.dp))
+
+        uncategorizedMerchants.firstOrNull()?.let { merchant ->
+            PaisaCard(
+                modifier = Modifier.padding(horizontal = 18.dp).fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Categorize ${merchant.merchant}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "${uncategorizedMerchants.size} merchant" +
+                                (if (uncategorizedMerchants.size == 1) "" else "s") + " need categories",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Button(onClick = { onCategorizeMerchant(merchant) }) { Text("Review") }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
 
         if (filtered.isEmpty()) {
             PaisaCard(

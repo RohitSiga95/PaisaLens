@@ -30,16 +30,31 @@ import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Attractions
 import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.CardGiftcard
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Checkroom
+import androidx.compose.material.icons.rounded.ChildCare
+import androidx.compose.material.icons.rounded.Coffee
+import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FitnessCenter
 import androidx.compose.material.icons.rounded.Flight
+import androidx.compose.material.icons.rounded.HealthAndSafety
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Hotel
 import androidx.compose.material.icons.rounded.LocalAtm
 import androidx.compose.material.icons.rounded.LocalDining
+import androidx.compose.material.icons.rounded.LocalGasStation
+import androidx.compose.material.icons.rounded.Pets
 import androidx.compose.material.icons.rounded.ReceiptLong
+import androidx.compose.material.icons.rounded.RequestQuote
 import androidx.compose.material.icons.rounded.ShoppingBasket
+import androidx.compose.material.icons.rounded.Spa
+import androidx.compose.material.icons.rounded.Subscriptions
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.VolunteerActivism
+import androidx.compose.material.icons.rounded.Work
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -65,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
@@ -180,6 +196,69 @@ fun CategoryIcon(
             tint = color,
             modifier = Modifier.size(iconSize.dp),
         )
+    }
+}
+
+@Composable
+fun CustomCategoryIcon(
+    category: CustomCategory,
+    modifier: Modifier = Modifier,
+    iconSize: Int = 22,
+) {
+    val color = customCategoryColor(category.colorHex)
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .background(color.copy(alpha = 0.16f), CircleShape)
+            .semantics { contentDescription = category.name },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = customCategoryIcon(category.name),
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(iconSize.dp),
+        )
+    }
+}
+
+fun customCategoryColor(colorHex: String): Color = runCatching {
+    Color(android.graphics.Color.parseColor(colorHex))
+}.getOrDefault(Color(0xFF7784FF))
+
+fun customCategoryIcon(name: String): ImageVector {
+    val normalized = name.lowercase(Locale.ROOT)
+    return when {
+        categoryNameMatches(normalized, "pet", "animal", "dog", "cat") -> Icons.Rounded.Pets
+        categoryNameMatches(normalized, "rent", "home", "house", "mortgage") -> Icons.Rounded.Home
+        categoryNameMatches(normalized, "gift", "present") -> Icons.Rounded.CardGiftcard
+        categoryNameMatches(normalized, "beauty", "salon", "spa", "groom") -> Icons.Rounded.Spa
+        categoryNameMatches(normalized, "gym", "fitness", "sport", "workout") -> Icons.Rounded.FitnessCenter
+        categoryNameMatches(normalized, "child", "baby", "kid", "school care") -> Icons.Rounded.ChildCare
+        categoryNameMatches(normalized, "charity", "donation", "giving") -> Icons.Rounded.VolunteerActivism
+        categoryNameMatches(normalized, "business", "work", "office") -> Icons.Rounded.Work
+        categoryNameMatches(normalized, "tax", "duty") -> Icons.Rounded.RequestQuote
+        categoryNameMatches(normalized, "subscription", "membership") -> Icons.Rounded.Subscriptions
+        categoryNameMatches(normalized, "insurance", "cover") -> Icons.Rounded.HealthAndSafety
+        categoryNameMatches(normalized, "coffee", "cafe") -> Icons.Rounded.Coffee
+        categoryNameMatches(normalized, "food", "dining", "restaurant") -> Icons.Rounded.LocalDining
+        categoryNameMatches(normalized, "fuel", "petrol", "diesel", "gas") -> Icons.Rounded.LocalGasStation
+        categoryNameMatches(normalized, "hotel", "stay", "accommodation") -> Icons.Rounded.Hotel
+        categoryNameMatches(normalized, "device", "electronic", "gadget") -> Icons.Rounded.Devices
+        else -> Icons.Rounded.Category
+    }
+}
+
+private fun categoryNameMatches(normalizedName: String, vararg keywords: String): Boolean {
+    val words = normalizedName.split(Regex("[^a-z0-9]+"))
+    return keywords.any { keyword ->
+        if (' ' in keyword) {
+            normalizedName.contains(keyword)
+        } else {
+            words.any { word ->
+                word == keyword || word == "${keyword}s" || word == "${keyword}es" || word == "${keyword}ing"
+            }
+        }
     }
 }
 

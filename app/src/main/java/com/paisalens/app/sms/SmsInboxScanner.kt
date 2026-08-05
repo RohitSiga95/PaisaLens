@@ -2,15 +2,18 @@ package com.paisalens.app.sms
 
 import android.content.Context
 import android.provider.Telephony
+import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.parser.TransactionSmsParser
 
 class SmsInboxScanner(
     private val context: Context,
     private val parser: TransactionSmsParser,
+    private val availabilityParser: AccountAvailabilitySmsParser,
 ) {
-    fun scan(maxMessages: Int = 10_000): List<ParsedTransaction> {
+    fun scan(maxMessages: Int = 10_000): SmsScanBatch {
         val parsed = mutableListOf<ParsedTransaction>()
+        val availability = linkedMapOf<String, AccountAvailabilityUpdate>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
@@ -34,14 +37,26 @@ class SmsInboxScanner(
             while (cursor.moveToNext() && scanned < maxMessages) {
                 scanned += 1
                 val body = cursor.getString(bodyIndex) ?: continue
+                val sender = cursor.getString(addressIndex).orEmpty()
+                val timestamp = cursor.getLong(dateIndex)
                 parser.parse(
-                    sender = cursor.getString(addressIndex).orEmpty(),
+                    sender = sender,
                     body = body,
-                    timestamp = cursor.getLong(dateIndex),
+                    timestamp = timestamp,
                     messageId = "sms-" + cursor.getLong(idIndex),
                 )?.let(parsed::add)
+                availabilityParser.parse(sender, body, timestamp)?.let { update ->
+                    val key = "${update.bankKey}:${update.accountType}:${update.accountHint.orEmpty()}"
+                    val current = availability[key]
+                    if (current == null || update.fetchedAt > current.fetchedAt) availability[key] = update
+                }
             }
         }
-        return parsed
+        return SmsScanBatch(parsed, availability.values.toList())
     }
 }
+
+data class SmsScanBatch(
+    val transactions: List<ParsedTransaction>,
+    val availabilityUpdates: List<AccountAvailabilityUpdate>,
+)

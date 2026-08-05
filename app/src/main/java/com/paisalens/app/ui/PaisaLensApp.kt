@@ -9,6 +9,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,11 +19,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -30,18 +33,23 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.Analytics
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DonutLarge
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,13 +75,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paisalens.app.data.model.ExpenseCategory
@@ -82,13 +98,17 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.MerchantTransactionGroup
+import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.findUncategorizedMerchantGroups
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.ui.components.CategoryIcon
+import com.paisalens.app.ui.components.CustomCategoryIcon
 import com.paisalens.app.ui.components.MoneyText
+import com.paisalens.app.ui.components.categoryColor
+import com.paisalens.app.ui.components.customCategoryColor
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.components.formatTransactionTime
 import com.paisalens.app.ui.screens.BudgetsScreen
@@ -99,6 +119,11 @@ import com.paisalens.app.ui.screens.TransactionsScreen
 import com.paisalens.app.ui.theme.PaisaLensTheme
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.roundToLong
 
 private enum class AppDestination(
@@ -125,6 +150,9 @@ fun PaisaLensApp(
     onRestoreBackup: (CharArray) -> Unit,
     onImportStatement: (Long?) -> Unit,
     onAppLockChange: (Boolean) -> Unit,
+    onCaptureReceipt: () -> Unit,
+    onPickReceipt: () -> Unit,
+    onComposeBalanceSms: (AccountProfile) -> Unit,
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
     val budgets by viewModel.budgets.collectAsStateWithLifecycle()
@@ -147,6 +175,8 @@ fun PaisaLensApp(
     val statementPreview by viewModel.statementPreview.collectAsStateWithLifecycle()
     val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
     val isRefreshingRate by viewModel.isRefreshingRate.collectAsStateWithLifecycle()
+    val receiptDraft by viewModel.receiptDraft.collectAsStateWithLifecycle()
+    val isReceiptOcrRunning by viewModel.isReceiptOcrRunning.collectAsStateWithLifecycle()
     var destination by remember { mutableStateOf(AppDestination.HOME) }
     var showManualSheet by remember { mutableStateOf(false) }
     var selectedTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
@@ -172,6 +202,10 @@ fun PaisaLensApp(
         viewModel.events.collect { message ->
             snackbarHostState.showSnackbar(message)
         }
+    }
+
+    LaunchedEffect(receiptDraft) {
+        if (receiptDraft != null) showManualSheet = true
     }
 
     PaisaLensTheme(darkTheme = darkMode) {
@@ -245,25 +279,19 @@ fun PaisaLensApp(
                         AppDestination.HOME -> HomeScreen(
                             transactions = transactions,
                             budgets = budgets,
+                            accounts = accounts,
                             isScanning = isScanning,
                             hasSmsPermission = hasSmsPermission,
                             onScan = { viewModel.scanSms(context) },
                             onRequestPermission = onRequestSmsPermission,
                             onAdd = { showManualSheet = true },
-                            onSeeAll = { destination = AppDestination.ACTIVITY },
+                            onRefreshAccount = onComposeBalanceSms,
                             onTransactionClick = { selectedTransaction = it },
-                            uncategorizedMerchants = uncategorizedMerchants,
-                            onCategorizeMerchant = { selectedMerchantGroup = it },
-                            recurringPayments = recurringPayments,
-                            onReviewTransactions = { destination = AppDestination.ACTIVITY },
-                            insightCount = insights.size,
-                            loanCount = loans.size,
-                            onAnalytics = { destination = AppDestination.ANALYTICS },
-                            onCalendar = { destination = AppDestination.CALENDAR },
-                            onLoans = { showLoanManager = true },
                         )
                         AppDestination.ACTIVITY -> TransactionsScreen(
                             transactions = transactions,
+                            uncategorizedMerchants = uncategorizedMerchants,
+                            onCategorizeMerchant = { selectedMerchantGroup = it },
                             onTransactionClick = { selectedTransaction = it },
                         )
                         AppDestination.BUDGETS -> BudgetsScreen(
@@ -328,18 +356,37 @@ fun PaisaLensApp(
                 travelModeEnabled = travelModeEnabled,
                 baseCurrency = baseCurrency,
                 exchangeRates = exchangeRates,
-                onDismiss = { showManualSheet = false },
+                receiptDraft = receiptDraft,
+                receiptOcrRunning = isReceiptOcrRunning,
+                onCaptureReceipt = onCaptureReceipt,
+                onPickReceipt = onPickReceipt,
+                onAddCustomCategory = viewModel::addCustomCategory,
+                onDismiss = {
+                    showManualSheet = false
+                    viewModel.clearReceiptDraft()
+                },
                 onSave = { amount, merchant, category, type, note, accountId, tags, originalAmount, originalCurrency, rate ->
                     viewModel.addManual(amount, merchant, category, type, note, accountId, tags, originalAmount, originalCurrency, rate)
                     showManualSheet = false
+                    viewModel.clearReceiptDraft()
                 },
             )
         }
 
         selectedMerchantGroup?.let { group ->
+            val matchingExpenses = remember(transactions, group.merchantKey) {
+                transactions
+                    .filter {
+                        it.type == TransactionType.EXPENSE &&
+                            normalizedMerchantKey(it.merchant) == group.merchantKey
+                    }
+                    .sortedByDescending { it.occurredAt }
+            }
             MerchantCategorySheet(
                 group = group,
+                matchingExpenses = matchingExpenses,
                 customCategories = customCategories,
+                onAddCustomCategory = viewModel::addCustomCategory,
                 onDismiss = { selectedMerchantGroup = null },
                 onCategoryChange = { category ->
                     viewModel.updateMerchantCategory(group.merchant, category)
@@ -353,6 +400,7 @@ fun PaisaLensApp(
                 transaction = transaction,
                 accounts = accounts,
                 customCategories = customCategories,
+                onAddCustomCategory = viewModel::addCustomCategory,
                 matchingMerchantCount = transactions.count {
                     it.type == TransactionType.EXPENSE &&
                         normalizedMerchantKey(it.merchant) == normalizedMerchantKey(transaction.merchant)
@@ -459,6 +507,75 @@ fun PaisaLensApp(
     }
 }
 
+@Composable
+private fun BuiltInCategoryChip(
+    category: ExpenseCategory,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val color = categoryColor(category)
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        modifier = Modifier.heightIn(min = 48.dp),
+        leadingIcon = {
+            CategoryIcon(category = category, modifier = Modifier.size(30.dp), iconSize = 16)
+        },
+        label = { Text(category.label) },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = color.copy(alpha = 0.10f),
+            labelColor = MaterialTheme.colorScheme.onSurface,
+            selectedContainerColor = color.copy(alpha = 0.24f),
+            selectedLabelColor = MaterialTheme.colorScheme.onSurface,
+        ),
+    )
+}
+
+@Composable
+private fun CustomCategoryChoiceChip(
+    category: CustomCategory,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val color = customCategoryColor(category.colorHex)
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        modifier = Modifier.heightIn(min = 48.dp),
+        leadingIcon = {
+            CustomCategoryIcon(category = category, modifier = Modifier.size(30.dp), iconSize = 16)
+        },
+        label = { Text(category.name) },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = color.copy(alpha = 0.10f),
+            labelColor = MaterialTheme.colorScheme.onSurface,
+            selectedContainerColor = color.copy(alpha = 0.24f),
+            selectedLabelColor = MaterialTheme.colorScheme.onSurface,
+        ),
+    )
+}
+
+@Composable
+private fun NewCategoryChoiceChip(onClick: () -> Unit) {
+    FilterChip(
+        selected = false,
+        onClick = onClick,
+        modifier = Modifier.heightIn(min = 48.dp),
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Rounded.AddCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        },
+        label = { Text("New category") },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            labelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ),
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManualTransactionSheet(
@@ -467,6 +584,11 @@ private fun ManualTransactionSheet(
     travelModeEnabled: Boolean,
     baseCurrency: String,
     exchangeRates: List<ExchangeRate>,
+    receiptDraft: ReceiptOcrDraft?,
+    receiptOcrRunning: Boolean,
+    onCaptureReceipt: () -> Unit,
+    onPickReceipt: () -> Unit,
+    onAddCustomCategory: (String, String, (CustomCategory) -> Unit) -> Unit,
     onDismiss: () -> Unit,
     onSave: (Long, String, CategorySelection, TransactionType, String?, Long?, String, Long?, String?, Double?) -> Unit,
 ) {
@@ -479,6 +601,21 @@ private fun ManualTransactionSheet(
     var tags by remember { mutableStateOf("") }
     var accountId by remember { mutableStateOf<Long?>(null) }
     var selectedCurrency by remember { mutableStateOf(baseCurrency) }
+    var showNewCategoryDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(receiptDraft) {
+        receiptDraft?.let { draft ->
+            amount = draft.amountMinor?.let { minor ->
+                BigDecimal(minor).divide(BigDecimal(100)).stripTrailingZeros().toPlainString()
+            }.orEmpty()
+            merchant = draft.merchant
+            type = TransactionType.EXPENSE
+            category = draft.category
+            customCategoryId = null
+            note = draft.note
+            tags = "receipt"
+            selectedCurrency = baseCurrency
+        }
+    }
     val parsedOriginalAmount = amount.toBigDecimalOrNull()
         ?.multiply(BigDecimal(100))
         ?.setScale(0, RoundingMode.HALF_UP)
@@ -514,6 +651,53 @@ private fun ManualTransactionSheet(
                 Text("Add transaction", style = MaterialTheme.typography.headlineMedium)
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Rounded.Close, contentDescription = "Close")
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Column(
+                modifier = Modifier.padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Add from a bill",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onCaptureReceipt,
+                        enabled = !receiptOcrRunning,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                    ) {
+                        Icon(Icons.Rounded.CameraAlt, contentDescription = null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("Camera")
+                    }
+                    OutlinedButton(
+                        onClick = onPickReceipt,
+                        enabled = !receiptOcrRunning,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                    ) {
+                        Icon(Icons.Rounded.UploadFile, contentDescription = null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("Upload")
+                    }
+                }
+                if (receiptOcrRunning) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Reading bill locally…", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else if (receiptDraft != null) {
+                    Text(
+                        text = "Details filled from ${receiptDraft.sourceLabel}. Review them before saving.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -624,31 +808,27 @@ private fun ManualTransactionSheet(
                                 it == ExpenseCategory.INCOME || it == ExpenseCategory.TRANSFER
                             },
                         ) { option ->
-                            FilterChip(
+                            BuiltInCategoryChip(
+                                category = option,
                                 selected = category == option,
                                 onClick = {
                                     category = option
                                     customCategoryId = null
                                 },
-                                leadingIcon = {
-                                    CategoryIcon(
-                                        category = option,
-                                        modifier = Modifier.size(28.dp),
-                                        iconSize = 15,
-                                    )
-                                },
-                                label = { Text(option.label) },
                             )
                         }
                         items(customCategories, key = { "custom-${it.id}" }) { custom ->
-                            FilterChip(
+                            CustomCategoryChoiceChip(
+                                category = custom,
                                 selected = customCategoryId == custom.id,
                                 onClick = {
                                     category = ExpenseCategory.OTHER
                                     customCategoryId = custom.id
                                 },
-                                label = { Text(custom.name) },
                             )
+                        }
+                        item {
+                            NewCategoryChoiceChip(onClick = { showNewCategoryDialog = true })
                         }
                     }
                 }
@@ -714,92 +894,365 @@ private fun ManualTransactionSheet(
             }
         }
     }
+
+    if (showNewCategoryDialog) {
+        NewCustomCategoryDialog(
+            existingCategories = customCategories,
+            onDismiss = { showNewCategoryDialog = false },
+            onCreate = { name, colorHex ->
+                onAddCustomCategory(name, colorHex) { created ->
+                    category = ExpenseCategory.OTHER
+                    customCategoryId = created.id
+                    showNewCategoryDialog = false
+                }
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MerchantCategorySheet(
     group: MerchantTransactionGroup,
+    matchingExpenses: List<TransactionRecord>,
     customCategories: List<CustomCategory>,
+    onAddCustomCategory: (String, String, (CustomCategory) -> Unit) -> Unit,
     onDismiss: () -> Unit,
     onCategoryChange: (CategorySelection) -> Unit,
 ) {
+    var showNewCategoryDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(bottom = 24.dp),
+                .navigationBarsPadding(),
+            contentPadding = PaddingValues(bottom = 28.dp),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Categorize merchant", style = MaterialTheme.typography.headlineMedium)
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Categorize merchant", style = MaterialTheme.typography.headlineMedium)
+                        Text(
+                            text = group.merchant,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Rounded.Close, contentDescription = "Close")
+                    }
+                }
+            }
+            item {
+                MerchantSpendingChart(
+                    expenses = matchingExpenses,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                )
+            }
+            item {
+                Text(
+                    text = "Choose a category",
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    text = if (matchingExpenses.size == 1) {
+                        "Your choice will be remembered for future expenses from this merchant."
+                    } else {
+                        "Your choice will update all ${matchingExpenses.size} matching expenses and future ones."
+                    },
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(ExpenseCategory.entries.filterNot { it == ExpenseCategory.INCOME }) { category ->
+                        BuiltInCategoryChip(
+                            category = category,
+                            selected = false,
+                            onClick = { onCategoryChange(CategorySelection(category)) },
+                        )
+                    }
+                    items(customCategories, key = { "custom-${it.id}" }) { custom ->
+                        CustomCategoryChoiceChip(
+                            category = custom,
+                            selected = false,
+                            onClick = {
+                                onCategoryChange(
+                                    CategorySelection(
+                                        builtIn = ExpenseCategory.OTHER,
+                                        customCategoryId = custom.id,
+                                        customCategoryName = custom.name,
+                                    ),
+                                )
+                            },
+                        )
+                    }
+                    item {
+                        NewCategoryChoiceChip(onClick = { showNewCategoryDialog = true })
+                    }
+                }
+            }
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Matching expenses", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = group.merchant,
-                        style = MaterialTheme.typography.titleMedium,
+                        text = matchingExpenses.size.toString(),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            if (matchingExpenses.isEmpty()) {
+                item {
+                    Text(
+                        text = "No matching expenses are available.",
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Close")
-                }
-            }
-            Text(
-                text = if (group.transactionCount == 1) {
-                    "Your choice will be remembered for future expenses from this merchant."
-                } else {
-                    "Your choice will update all ${group.transactionCount} matching expenses and future ones."
-                },
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(ExpenseCategory.entries.filterNot { it == ExpenseCategory.INCOME }) { category ->
-                    FilterChip(
-                        selected = false,
-                        onClick = { onCategoryChange(CategorySelection(category)) },
-                        leadingIcon = {
-                            CategoryIcon(
-                                category = category,
-                                modifier = Modifier.size(28.dp),
-                                iconSize = 15,
-                            )
-                        },
-                        label = { Text(category.label) },
-                    )
-                }
-                items(customCategories, key = { "custom-${it.id}" }) { custom ->
-                    FilterChip(
-                        selected = false,
-                        onClick = {
-                            onCategoryChange(
-                                CategorySelection(
-                                    builtIn = ExpenseCategory.OTHER,
-                                    customCategoryId = custom.id,
-                                    customCategoryName = custom.name,
-                                ),
-                            )
-                        },
-                        label = { Text(custom.name) },
-                    )
+            } else {
+                items(matchingExpenses, key = { it.id }) { expense ->
+                    MerchantExpenseRow(expense)
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
                 }
             }
         }
+    }
+
+    if (showNewCategoryDialog) {
+        NewCustomCategoryDialog(
+            existingCategories = customCategories,
+            onDismiss = { showNewCategoryDialog = false },
+            onCreate = { name, colorHex ->
+                onAddCustomCategory(name, colorHex) { created ->
+                    onCategoryChange(
+                        CategorySelection(
+                            builtIn = ExpenseCategory.OTHER,
+                            customCategoryId = created.id,
+                            customCategoryName = created.name,
+                        ),
+                    )
+                }
+            },
+        )
+    }
+}
+
+private data class MerchantDailySpend(
+    val date: LocalDate,
+    val amountMinor: Long,
+)
+
+@Composable
+private fun MerchantSpendingChart(
+    expenses: List<TransactionRecord>,
+    modifier: Modifier = Modifier,
+) {
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("en-IN")) }
+    val dailySpend = remember(expenses) {
+        expenses
+            .groupBy {
+                Instant.ofEpochMilli(it.occurredAt)
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDate()
+            }
+            .map { (date, transactions) ->
+                MerchantDailySpend(date, transactions.sumOf { it.amountMinor })
+            }
+            .sortedBy { it.date }
+    }
+    val totalMinor = expenses.sumOf { it.amountMinor }
+    val peakMinor = dailySpend.maxOfOrNull { it.amountMinor } ?: 0L
+    val chartDescription = if (dailySpend.isEmpty()) {
+        "No merchant spending data"
+    } else {
+        "Merchant spending line chart with ${dailySpend.size} days from " +
+            "${dailySpend.first().date.format(dateFormatter)} to " +
+            "${dailySpend.last().date.format(dateFormatter)}. Total ${formatMoney(totalMinor)}; " +
+            "highest daily spend ${formatMoney(peakMinor)}. Exact expenses are listed below."
+    }
+    val lineColor = MaterialTheme.colorScheme.primary
+    val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.48f),
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = MaterialTheme.shapes.extraLarge,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Spending over time", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "${expenses.size} ${if (expenses.size == 1) "expense" else "expenses"} · Peak ${formatMoney(peakMinor)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.76f),
+                    )
+                }
+                Text(
+                    text = formatMoney(totalMinor),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            if (dailySpend.isEmpty()) {
+                Text(
+                    text = "A trend will appear when this merchant has expenses.",
+                    modifier = Modifier.padding(vertical = 28.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.76f),
+                )
+            } else {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(142.dp)
+                        .semantics { contentDescription = chartDescription },
+                ) {
+                    val horizontalInset = 8.dp.toPx()
+                    val verticalInset = 10.dp.toPx()
+                    val plotWidth = (size.width - horizontalInset * 2).coerceAtLeast(1f)
+                    val plotHeight = (size.height - verticalInset * 2).coerceAtLeast(1f)
+                    val maxValue = dailySpend.maxOf { it.amountMinor }.coerceAtLeast(1L)
+
+                    repeat(3) { index ->
+                        val y = verticalInset + plotHeight * index / 2f
+                        drawLine(
+                            color = gridColor,
+                            start = Offset(horizontalInset, y),
+                            end = Offset(size.width - horizontalInset, y),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+
+                    val coordinates = dailySpend.mapIndexed { index, point ->
+                        val x = if (dailySpend.size == 1) {
+                            horizontalInset + plotWidth / 2f
+                        } else {
+                            horizontalInset + plotWidth * index / dailySpend.lastIndex
+                        }
+                        val y = verticalInset + plotHeight *
+                            (1f - point.amountMinor.toFloat() / maxValue.toFloat())
+                        Offset(x, y)
+                    }
+                    if (coordinates.size > 1) {
+                        val path = Path().apply {
+                            moveTo(coordinates.first().x, coordinates.first().y)
+                            coordinates.drop(1).forEach { point -> lineTo(point.x, point.y) }
+                        }
+                        drawPath(
+                            path = path,
+                            color = lineColor,
+                            style = Stroke(
+                                width = 3.dp.toPx(),
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round,
+                            ),
+                        )
+                    }
+                    coordinates.forEachIndexed { index, point ->
+                        if (coordinates.size <= 14 || index == 0 || index == coordinates.lastIndex) {
+                            drawCircle(color = lineColor, radius = 4.dp.toPx(), center = point)
+                        }
+                    }
+                }
+                if (dailySpend.size == 1) {
+                    Text(
+                        text = dailySpend.first().date.format(dateFormatter),
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(dailySpend.first().date.format(dateFormatter), style = MaterialTheme.typography.labelSmall)
+                        Text(dailySpend.last().date.format(dateFormatter), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MerchantExpenseRow(expense: TransactionRecord) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CategoryIcon(
+            category = expense.category,
+            modifier = Modifier.size(44.dp),
+            iconSize = 21,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = formatTransactionTime(expense.occurredAt),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = expense.accountName ?: expense.accountHint ?: expense.source.name.lowercase()
+                    .replaceFirstChar { it.titlecase() },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            expense.note?.takeIf { it.isNotBlank() }?.let { note ->
+                Text(
+                    text = "Note: $note",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        MoneyText(
+            amountMinor = expense.amountMinor,
+            style = MaterialTheme.typography.titleMedium,
+            prefix = "−",
+        )
     }
 }
 
@@ -809,6 +1262,7 @@ private fun TransactionDetailSheet(
     transaction: TransactionRecord,
     accounts: List<AccountProfile>,
     customCategories: List<CustomCategory>,
+    onAddCustomCategory: (String, String, (CustomCategory) -> Unit) -> Unit,
     matchingMerchantCount: Int,
     onDismiss: () -> Unit,
     onCategoryChange: (CategorySelection) -> Unit,
@@ -832,6 +1286,7 @@ private fun TransactionDetailSheet(
     var savedTags by remember(transaction.id, transaction.tags) {
         mutableStateOf(transaction.tags.joinToString(", "))
     }
+    var showNewCategoryDialog by remember { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -845,7 +1300,12 @@ private fun TransactionDetailSheet(
                 .padding(horizontal = 20.dp, vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            CategoryIcon(transaction.category, modifier = Modifier.size(62.dp), iconSize = 29)
+            val activeCustomCategory = customCategories.firstOrNull { it.id == transaction.customCategoryId }
+            if (activeCustomCategory == null) {
+                CategoryIcon(transaction.category, modifier = Modifier.size(62.dp), iconSize = 29)
+            } else {
+                CustomCategoryIcon(activeCustomCategory, modifier = Modifier.size(62.dp), iconSize = 29)
+            }
             Spacer(Modifier.height(12.dp))
             Text(
                 transaction.merchant,
@@ -941,14 +1401,15 @@ private fun TransactionDetailSheet(
                 items(
                     ExpenseCategory.entries.filterNot { it == ExpenseCategory.INCOME },
                 ) { category ->
-                    FilterChip(
+                    BuiltInCategoryChip(
+                        category = category,
                         selected = category == transaction.category && transaction.customCategoryId == null,
                         onClick = { onCategoryChange(CategorySelection(category)) },
-                        label = { Text(category.label) },
                     )
                 }
                 items(customCategories, key = { "custom-${it.id}" }) { custom ->
-                    FilterChip(
+                    CustomCategoryChoiceChip(
+                        category = custom,
                         selected = custom.id == transaction.customCategoryId,
                         onClick = {
                             onCategoryChange(
@@ -959,8 +1420,10 @@ private fun TransactionDetailSheet(
                                 ),
                             )
                         },
-                        label = { Text(custom.name) },
                     )
+                }
+                item {
+                    NewCategoryChoiceChip(onClick = { showNewCategoryDialog = true })
                 }
             }
             if (transaction.type == TransactionType.EXPENSE && matchingMerchantCount > 1) {
@@ -1086,5 +1549,23 @@ private fun TransactionDetailSheet(
                 Text("Done")
             }
         }
+    }
+
+    if (showNewCategoryDialog) {
+        NewCustomCategoryDialog(
+            existingCategories = customCategories,
+            onDismiss = { showNewCategoryDialog = false },
+            onCreate = { name, colorHex ->
+                onAddCustomCategory(name, colorHex) { created ->
+                    onCategoryChange(
+                        CategorySelection(
+                            builtIn = ExpenseCategory.OTHER,
+                            customCategoryId = created.id,
+                            customCategoryName = created.name,
+                        ),
+                    )
+                }
+            },
+        )
     }
 }

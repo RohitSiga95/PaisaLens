@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategoryBudget
@@ -22,6 +23,7 @@ import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.StatementImportResult
+import com.paisalens.app.sms.BankSmsSupport
 import java.util.Locale
 import java.util.UUID
 
@@ -103,6 +105,12 @@ class PaisaLensDatabase(context: Context) :
             db.execSQL("ALTER TABLE transactions ADD COLUMN original_amount_minor INTEGER")
             db.execSQL("ALTER TABLE transactions ADD COLUMN original_currency TEXT")
             db.execSQL("ALTER TABLE transactions ADD COLUMN exchange_rate REAL")
+        }
+        if (oldVersion in 3..<5) {
+            db.execSQL("ALTER TABLE accounts ADD COLUMN balance_minor INTEGER")
+            db.execSQL("ALTER TABLE accounts ADD COLUMN available_credit_minor INTEGER")
+            db.execSQL("ALTER TABLE accounts ADD COLUMN availability_fetched_at INTEGER")
+            db.execSQL("ALTER TABLE accounts ADD COLUMN availability_sender TEXT")
         }
     }
 
@@ -415,7 +423,10 @@ class PaisaLensDatabase(context: Context) :
         val result = mutableListOf<AccountProfile>()
         readableDatabase.query(
             "accounts",
-            arrayOf("id", "name", "type", "account_hint", "institution"),
+            arrayOf(
+                "id", "name", "type", "account_hint", "institution", "balance_minor",
+                "available_credit_minor", "availability_fetched_at", "availability_sender",
+            ),
             null,
             null,
             null,
@@ -429,6 +440,10 @@ class PaisaLensDatabase(context: Context) :
                     type = enumValueOrDefault(cursor.getString(2), AccountType.OTHER),
                     accountHint = cursor.getString(3),
                     institution = cursor.getString(4),
+                    balanceMinor = cursor.longOrNull(5),
+                    availableCreditMinor = cursor.longOrNull(6),
+                    availabilityFetchedAt = cursor.longOrNull(7),
+                    availabilitySender = cursor.getString(8),
                 )
             }
         }
@@ -456,6 +471,23 @@ class PaisaLensDatabase(context: Context) :
             if (cleanHint == null) putNull("account_hint") else put("account_hint", cleanHint)
         }
         writableDatabase.update("accounts", values, "id = ?", arrayOf(account.id.toString()))
+    }
+
+    fun applyAccountAvailability(updates: List<AccountAvailabilityUpdate>): Int {
+        if (updates.isEmpty()) return 0
+        val db = writableDatabase
+        var changed = 0
+        db.beginTransaction()
+        try {
+            updates.sortedBy { it.fetchedAt }.forEach { update ->
+                val accountId = findAvailabilityAccountId(db, update) ?: createAvailabilityAccount(db, update)
+                if (accountId != null && applyAccountAvailability(db, accountId, update)) changed += 1
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return changed
     }
 
     fun deleteAccount(id: Long) {
@@ -670,6 +702,10 @@ class PaisaLensDatabase(context: Context) :
                         put("type", account.type.name)
                         putNullableText("account_hint", account.accountHint)
                         putNullableText("institution", account.institution)
+                        putNullableLong("balance_minor", account.balanceMinor)
+                        putNullableLong("available_credit_minor", account.availableCreditMinor)
+                        putNullableLong("availability_fetched_at", account.availabilityFetchedAt)
+                        putNullableText("availability_sender", account.availabilitySender)
                         put("created_at", snapshot.createdAt)
                     },
                 )
@@ -831,6 +867,10 @@ class PaisaLensDatabase(context: Context) :
                 type TEXT NOT NULL,
                 account_hint TEXT,
                 institution TEXT,
+                balance_minor INTEGER,
+                available_credit_minor INTEGER,
+                availability_fetched_at INTEGER,
+                availability_sender TEXT,
                 created_at INTEGER NOT NULL
             )
             """.trimIndent(),
@@ -1014,6 +1054,103 @@ class PaisaLensDatabase(context: Context) :
         )
     }
 
+    private fun findAvailabilityAccountId(
+        db: SQLiteDatabase,
+        update: AccountAvailabilityUpdate,
+    ): Long? {
+        data class Candidate(
+            val id: Long,
+            val type: AccountType,
+            val hint: String?,
+            val bankKey: String?,
+        )
+
+        val candidates = mutableListOf<Candidate>()
+        db.query(
+            "accounts",
+            arrayOf("id", "type", "account_hint", "institution", "name"),
+            null,
+            null,
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                candidates += Candidate(
+                    id = cursor.getLong(0),
+                    type = enumValueOrDefault(cursor.getString(1), AccountType.OTHER),
+                    hint = cursor.getString(2),
+                    bankKey = BankSmsSupport.bankKey("${cursor.getString(3).orEmpty()} ${cursor.getString(4).orEmpty()}"),
+                )
+            }
+        }
+        val sameType = candidates.filter { it.type == update.accountType }
+        update.accountHint?.let { hint ->
+            sameType.firstOrNull { it.hint == hint && it.bankKey == update.bankKey }?.let { return it.id }
+            sameType.firstOrNull { it.hint == hint }?.let { return it.id }
+        }
+        return sameType.filter { it.bankKey == update.bankKey }.singleOrNull()?.id
+    }
+
+    private fun createAvailabilityAccount(
+        db: SQLiteDatabase,
+        update: AccountAvailabilityUpdate,
+    ): Long? {
+        val hint = update.accountHint ?: return null
+        val identityKey = "availability:${update.bankKey}:$hint:${update.accountType.name}"
+        val id = db.insertWithOnConflict(
+            "accounts",
+            null,
+            ContentValues().apply {
+                put("identity_key", identityKey)
+                put("name", "${update.institutionName} •$hint")
+                put("type", update.accountType.name)
+                put("account_hint", hint)
+                put("institution", update.institutionName)
+                put("created_at", update.fetchedAt)
+            },
+            SQLiteDatabase.CONFLICT_IGNORE,
+        )
+        if (id != -1L) return id
+        db.query(
+            "accounts",
+            arrayOf("id"),
+            "identity_key = ?",
+            arrayOf(identityKey),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) return cursor.getLong(0) }
+        return null
+    }
+
+    private fun applyAccountAvailability(
+        db: SQLiteDatabase,
+        accountId: Long,
+        update: AccountAvailabilityUpdate,
+    ): Boolean {
+        val previousFetchedAt = db.query(
+            "accounts",
+            arrayOf("availability_fetched_at"),
+            "id = ?",
+            arrayOf(accountId.toString()),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.longOrNull(0) else null }
+        if (previousFetchedAt != null && previousFetchedAt > update.fetchedAt) return false
+
+        val values = ContentValues().apply {
+            update.balanceMinor?.let { put("balance_minor", it) }
+            update.availableCreditMinor?.let { put("available_credit_minor", it) }
+            put("availability_fetched_at", update.fetchedAt)
+            put("availability_sender", update.sender.take(64))
+        }
+        return db.update("accounts", values, "id = ?", arrayOf(accountId.toString())) > 0
+    }
+
     private fun backfillAccounts(db: SQLiteDatabase) {
         data class Candidate(
             val id: Long,
@@ -1097,7 +1234,7 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 4
+        const val DATABASE_VERSION = 5
         const val TAG_SEPARATOR = "\u001F"
     }
 }
