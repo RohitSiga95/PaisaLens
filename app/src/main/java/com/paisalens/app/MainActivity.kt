@@ -2,6 +2,7 @@ package com.paisalens.app
 
 import android.Manifest
 import android.app.KeyguardManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -253,10 +254,19 @@ class MainActivity : FragmentActivity() {
             ).show()
             return
         }
-        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${command.destination}")).apply {
+        val primaryIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${command.destination}")).apply {
             putExtra("sms_body", command.message)
+            putExtra(Intent.EXTRA_TEXT, command.message)
         }
-        if (intent.resolveActivity(packageManager) == null) {
+        val fallbackIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("sms:${command.destination}?body=${Uri.encode(command.message)}"),
+        ).apply {
+            putExtra("sms_body", command.message)
+            putExtra(Intent.EXTRA_TEXT, command.message)
+        }
+        val opened = openSmsComposer(primaryIntent) || openSmsComposer(fallbackIntent)
+        if (!opened) {
             Toast.makeText(this, "No SMS app is available", Toast.LENGTH_SHORT).show()
             return
         }
@@ -265,7 +275,17 @@ class MainActivity : FragmentActivity() {
             "Review and send the ${command.bankName} enquiry. SMS charges may apply.",
             Toast.LENGTH_LONG,
         ).show()
+    }
+
+    private fun openSmsComposer(intent: Intent): Boolean = try {
+        // Starting an implicit intent is allowed even when Android package visibility hides it
+        // from resolveActivity(), so launch directly and handle the genuinely missing-app case.
         startActivity(intent)
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
+    } catch (_: SecurityException) {
+        false
     }
 
     private enum class AuthenticationPurpose {

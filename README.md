@@ -116,7 +116,7 @@ You can also browse the [v1.5.1 release page](https://github.com/RohitSiga95/Pai
 **APK SHA-256**
 
 ```text
-e21e1f57af05ff2cfe47be8c99ac9131490483a7355ad833f4b6f9be5c63052a
+1d8f764a2f1114b309678a66baa9d7835e1147b96805611d91673883d76b07e8
 ```
 
 ## Build it yourself
