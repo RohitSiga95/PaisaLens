@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.2.0"><img alt="Release v1.2.0" src="https://img.shields.io/badge/release-v1.2.0-5965E8?style=for-the-badge"></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.4.0"><img alt="Release v1.4.0" src="https://img.shields.io/badge/release-v1.4.0-5965E8?style=for-the-badge"></a>
   <img alt="Source v1.4.0" src="https://img.shields.io/badge/source-v1.4.0-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.2.0/PaisaLens-v1.2.0-debug.apk"><strong>⬇ Download PaisaLens v1.2.0 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.4.0/PaisaLens-v1.4.0-debug.apk"><strong>⬇ Download PaisaLens v1.4.0 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.2.0">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.4.0">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -104,17 +104,17 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.2.0-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.2.0/PaisaLens-v1.2.0-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.4.0-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.4.0/PaisaLens-v1.4.0-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.2.0 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.2.0).
+You can also browse the [v1.4.0 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.4.0).
 
 **APK SHA-256**
 
 ```text
-2ff585f3534072ce044de08c1e3ce2c9c7d004f132d762e1360fb3ba41cb9733
+7fc9586eda65c88bc466dd74633d69b6219f8e38753e867c07b659179cdb0cca
 ```
 
 ## Build it yourself
