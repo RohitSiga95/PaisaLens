@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.0"><img alt="Release v1.5.0" src="https://img.shields.io/badge/release-v1.5.0-5965E8?style=for-the-badge"></a>
-  <img alt="Source v1.5.0" src="https://img.shields.io/badge/source-v1.5.0-1E88E5?style=for-the-badge">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.1"><img alt="Release v1.5.1" src="https://img.shields.io/badge/release-v1.5.1-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.5.1" src="https://img.shields.io/badge/source-v1.5.1-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
   <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.5.0/PaisaLens-v1.5.0-debug.apk"><strong>⬇ Download PaisaLens v1.5.0 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.5.1/PaisaLens-v1.5.1-debug.apk"><strong>⬇ Download PaisaLens v1.5.1 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.0">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.1">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -50,11 +50,11 @@
 | 🔎 | **Local SMS detection** | Finds debits, credits, refunds, card purchases, ATM withdrawals, UPI and wallet alerts without uploading messages. |
 | 🏷️ | **Merchant category rules** | Groups matching merchants, shows their spending history and trend, asks you once for the category, updates their existing expenses and remembers the answer. |
 | 📝 | **Expense notes** | Adds a specific note to a deducted transaction and shows it beneath the item in recent activity and search results. |
-| 📊 | **Focused Home dashboard** | Shows monthly spend, spend overview, tappable category breakdowns with daily line charts, bank balances, and available card credit without activity-list clutter. |
+| 📊 | **Focused Home dashboard** | Moves month by month with arrow navigation and updates the spend summary, overview, category breakdown, daily chart, and expense list together. |
 | 🎯 | **Category budgets** | Tracks limits with progress and overspend states. |
 | 📗 | **Beautiful Excel export** | Creates a categorized workbook with transactions, trends, budgets, dashboard cards and native charts. |
 | 🏦 | **Accounts & cards** | Organizes transactions into bank accounts, credit cards, wallets, cash, or custom account profiles. |
-| 💳 | **Balances & available credit** | Extracts the latest balance or available-credit value from bank SMS replies, shows when it was fetched, and offers a user-confirmed SMS enquiry shortcut for supported banks. |
+| 💳 | **Balances & available credit** | Combines duplicate SMS profiles by account last-four digits, uses textured bank-colored tiles, hides unfetched accounts in a collapsed section, and offers a user-confirmed SMS enquiry shortcut. |
 | 🔁 | **Recurring payments** | Detects consistent weekly and monthly expenses and estimates the next due date. |
 | 🧩 | **Colorful categories & tags** | Uses meaningful category colors and icons, creates personal categories directly from any category picker, and adds searchable tags. |
 | ✅ | **Review inbox** | Holds uncertain merchant or category matches for confirmation before they affect analytics. |
@@ -106,17 +106,17 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.5.0-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.5.0/PaisaLens-v1.5.0-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.5.1-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.5.1/PaisaLens-v1.5.1-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.5.0 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.0).
+You can also browse the [v1.5.1 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.1).
 
 **APK SHA-256**
 
 ```text
-1f779391accd981493bec989753de0af9b1260e66d5fbba43f21c115ba893e03
+e21e1f57af05ff2cfe47be8c99ac9131490483a7355ad833f4b6f9be5c63052a
 ```
 
 ## Build it yourself
@@ -127,7 +127,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated v1.5.0 APK will be available at:
+The generated v1.5.1 APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
