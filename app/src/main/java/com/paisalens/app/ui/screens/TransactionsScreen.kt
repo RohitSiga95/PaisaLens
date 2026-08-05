@@ -29,6 +29,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.categoryLabel
 import com.paisalens.app.ui.components.EmptyState
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.TransactionRow
@@ -39,6 +41,7 @@ private enum class TransactionFilter(val label: String) {
     INCOME("Income"),
     REFUND("Refunds"),
     TRANSFER("Transfers"),
+    REVIEW("Needs review"),
 }
 
 @Composable
@@ -53,15 +56,18 @@ fun TransactionsScreen(
         transactions.filter { transaction ->
             val queryMatch = query.isBlank() ||
                 transaction.merchant.contains(query, ignoreCase = true) ||
-                transaction.category.label.contains(query, ignoreCase = true) ||
+                transaction.categoryLabel().contains(query, ignoreCase = true) ||
                 transaction.sender.contains(query, ignoreCase = true) ||
-                transaction.note?.contains(query, ignoreCase = true) == true
+                transaction.note?.contains(query, ignoreCase = true) == true ||
+                transaction.accountName?.contains(query, ignoreCase = true) == true ||
+                transaction.tags.any { it.contains(query, ignoreCase = true) }
             val typeMatch = when (selectedFilter) {
                 TransactionFilter.ALL -> true
                 TransactionFilter.EXPENSE -> transaction.type == TransactionType.EXPENSE
                 TransactionFilter.INCOME -> transaction.type == TransactionType.INCOME
                 TransactionFilter.REFUND -> transaction.type == TransactionType.REFUND
                 TransactionFilter.TRANSFER -> transaction.type == TransactionType.TRANSFER
+                TransactionFilter.REVIEW -> transaction.reviewStatus == ReviewStatus.NEEDS_REVIEW
             }
             queryMatch && typeMatch
         }
@@ -103,10 +109,19 @@ fun TransactionsScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(TransactionFilter.entries) { filter ->
+                val reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW }
                 FilterChip(
                     selected = selectedFilter == filter,
                     onClick = { selectedFilter = filter },
-                    label = { Text(filter.label) },
+                    label = {
+                        Text(
+                            if (filter == TransactionFilter.REVIEW && reviewCount > 0) {
+                                "${filter.label} ($reviewCount)"
+                            } else {
+                                filter.label
+                            },
+                        )
+                    },
                 )
             }
         }

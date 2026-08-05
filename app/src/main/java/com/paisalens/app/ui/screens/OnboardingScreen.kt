@@ -132,8 +132,8 @@ fun OnboardingScreen(
                 ) {
                     PrivacyPoint(
                         icon = WifiOffVector,
-                        title = "No internet permission",
-                        body = "Nothing can be uploaded or synced.",
+                        title = "No financial-data uploads",
+                        body = "Network is used only when you request a currency reference rate.",
                     )
                     PrivacyPoint(
                         icon = Icons.Rounded.MarkEmailRead,

@@ -22,9 +22,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Analytics
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Category
+import androidx.compose.material.icons.rounded.EventRepeat
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,6 +51,8 @@ import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.MerchantTransactionGroup
+import com.paisalens.app.data.model.RecurringPayment
+import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.ui.components.CategoryIcon
@@ -59,6 +66,7 @@ import com.paisalens.app.ui.components.formatMoney
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun HomeScreen(
@@ -73,10 +81,21 @@ fun HomeScreen(
     onTransactionClick: (TransactionRecord) -> Unit,
     uncategorizedMerchants: List<MerchantTransactionGroup>,
     onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
+    recurringPayments: List<RecurringPayment>,
+    onReviewTransactions: () -> Unit,
+    insightCount: Int,
+    loanCount: Int,
+    onAnalytics: () -> Unit,
+    onCalendar: () -> Unit,
+    onLoans: () -> Unit,
 ) {
     val now = remember { ZonedDateTime.now() }
+    val confirmedTransactions = remember(transactions) {
+        transactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
+    }
+    val reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW }
     val monthly = remember(transactions, now.monthValue, now.year) {
-        transactions.filter {
+        confirmedTransactions.filter {
             val date = Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault())
             date.monthValue == now.monthValue && date.year == now.year
         }
@@ -93,7 +112,7 @@ fun HomeScreen(
         .mapValues { (_, records) -> records.sumOf { it.amountMinor } }
         .toList()
         .sortedByDescending { it.second }
-    val recent = transactions.take(5)
+    val recent = confirmedTransactions.take(5)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -119,6 +138,20 @@ fun HomeScreen(
                 onRequestPermission = onRequestPermission,
                 onAdd = onAdd,
             )
+        }
+        item {
+            MoneyTools(
+                insightCount = insightCount,
+                loanCount = loanCount,
+                onAnalytics = onAnalytics,
+                onCalendar = onCalendar,
+                onLoans = onLoans,
+            )
+        }
+        if (reviewCount > 0) {
+            item {
+                ReviewPromptCard(reviewCount = reviewCount, onReview = onReviewTransactions)
+            }
         }
         uncategorizedMerchants.firstOrNull()?.let { merchantGroup ->
             item {
@@ -187,6 +220,9 @@ fun HomeScreen(
                     )
                 }
             }
+            if (recurringPayments.isNotEmpty()) {
+                item { RecurringPaymentsCard(recurringPayments.take(3)) }
+            }
             item {
                 Column {
                     SectionHeader(
@@ -210,6 +246,135 @@ fun HomeScreen(
         }
     }
 }
+
+@Composable
+private fun MoneyTools(
+    insightCount: Int,
+    loanCount: Int,
+    onAnalytics: () -> Unit,
+    onCalendar: () -> Unit,
+    onLoans: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ToolShortcut(
+            icon = Icons.Rounded.Analytics,
+            title = "Analytics",
+            subtitle = if (insightCount > 0) "$insightCount insights" else "Trends",
+            onClick = onAnalytics,
+            modifier = Modifier.weight(1f),
+        )
+        ToolShortcut(
+            icon = Icons.Rounded.CalendarMonth,
+            title = "Calendar",
+            subtitle = "Daily view",
+            onClick = onCalendar,
+            modifier = Modifier.weight(1f),
+        )
+        ToolShortcut(
+            icon = Icons.Rounded.Payments,
+            title = "Loans",
+            subtitle = if (loanCount > 0) "$loanCount tracked" else "EMI tracker",
+            onClick = onLoans,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun ToolShortcut(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    modifier: Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(7.dp))
+            Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun ReviewPromptCard(reviewCount: Int, onReview: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.62f),
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.WarningAmber, contentDescription = null)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("$reviewCount transaction${if (reviewCount == 1) "" else "s"} need review", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Confirm the merchant and category before these affect your dashboard.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Button(onClick = onReview) { Text("Review") }
+        }
+    }
+}
+
+@Composable
+private fun RecurringPaymentsCard(payments: List<RecurringPayment>) {
+    Column {
+        SectionHeader("Recurring payments")
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                payments.forEach { payment ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            shape = CircleShape,
+                        ) {
+                            Icon(
+                                Icons.Rounded.EventRepeat,
+                                contentDescription = null,
+                                modifier = Modifier.padding(10.dp).size(20.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(11.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(payment.merchant, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Expected ${formatDueDate(payment.nextDueAt)} · ${if (payment.intervalDays == 7) "weekly" else "monthly"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(formatMoney(payment.typicalAmountMinor), style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatDueDate(timestamp: Long): String = Instant.ofEpochMilli(timestamp)
+    .atZone(ZoneId.systemDefault())
+    .format(DateTimeFormatter.ofPattern("d MMM"))
 
 @Composable
 private fun MerchantCategoryPromptCard(

@@ -3,6 +3,7 @@ package com.paisalens.app.data.parser
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.ReviewStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -122,5 +123,32 @@ class TransactionSmsParserTest {
         )
 
         assertEquals(first?.sourceMessageId, second?.sourceMessageId)
+    }
+
+    @Test
+    fun sendsUncertainMerchantAndCategoryToReviewInbox() {
+        val result = parser.parse(
+            sender = "VK-UNKNOWN",
+            body = "Rs 1,250 debited from your account.",
+            timestamp = 1_700_000_000_000,
+        )
+
+        requireNotNull(result)
+        assertEquals(ReviewStatus.NEEDS_REVIEW, result.reviewStatus)
+        assertTrue(result.reviewReason.orEmpty().contains("Merchant"))
+        assertTrue(result.reviewReason.orEmpty().contains("category"))
+    }
+
+    @Test
+    fun treatsExplicitSelfTransferAsTransfer() {
+        val result = parser.parse(
+            sender = "VK-BANK",
+            body = "Self transfer of INR 5,000 between your accounts XX1234 and XX9876 completed.",
+            timestamp = 1_700_000_000_000,
+        )
+
+        requireNotNull(result)
+        assertEquals(TransactionType.TRANSFER, result.type)
+        assertEquals(ExpenseCategory.TRANSFER, result.category)
     }
 }

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.TransactionRecord
+import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.PaisaCard
@@ -59,6 +60,7 @@ fun BudgetsScreen(
         transactions.filter {
             val date = Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault())
             it.type == TransactionType.EXPENSE &&
+                it.reviewStatus == ReviewStatus.CONFIRMED &&
                 date.monthValue == now.monthValue &&
                 date.year == now.year
         }

@@ -2,6 +2,7 @@ package com.paisalens.app.data.parser
 
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ParsedTransaction
+import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
 import java.math.BigDecimal
@@ -23,11 +24,19 @@ class TransactionSmsParser {
 
         val type = detectType(normalized) ?: return null
         val source = detectSource(normalized)
-        val merchant = extractMerchant(body, sender, type)
+        val merchantMatch = extractMerchant(body, sender, type)
+        val merchant = merchantMatch.name
         val category = when (type) {
             TransactionType.INCOME -> ExpenseCategory.INCOME
             TransactionType.TRANSFER -> ExpenseCategory.TRANSFER
             else -> categorize("$merchant $normalized")
+        }
+
+        val reviewReasons = buildList {
+            if (merchantMatch.usedSenderFallback) add("Merchant name could not be identified confidently")
+            if (category == ExpenseCategory.OTHER && type == TransactionType.EXPENSE) {
+                add("Choose a category for this expense")
+            }
         }
 
         return ParsedTransaction(
@@ -41,6 +50,12 @@ class TransactionSmsParser {
             source = source,
             sender = sender.ifBlank { "Transaction alert" },
             rawMessage = body,
+            reviewStatus = if (reviewReasons.isEmpty()) {
+                ReviewStatus.CONFIRMED
+            } else {
+                ReviewStatus.NEEDS_REVIEW
+            },
+            reviewReason = reviewReasons.joinToString(" · ").takeIf(String::isNotBlank),
         )
     }
 
@@ -67,7 +82,10 @@ class TransactionSmsParser {
             text.contains("credit card bill") ||
             text.contains("card bill payment") ||
             (text.contains("payment received") && text.contains("card")) ||
-            (text.contains("towards") && text.contains("credit card"))
+            (text.contains("towards") && text.contains("credit card")) ||
+            text.contains("self transfer") ||
+            text.contains("between your accounts") ||
+            text.contains("to your own account")
         ) {
             return TransactionType.TRANSFER
         }
@@ -122,15 +140,17 @@ class TransactionSmsParser {
         body: String,
         sender: String,
         type: TransactionType,
-    ): String {
+    ): MerchantMatch {
         val patterns = if (type == TransactionType.INCOME) incomeMerchantPatterns else expenseMerchantPatterns
         patterns.forEach { pattern ->
             val match = pattern.find(body)?.groupValues?.getOrNull(1)
             val cleaned = match?.let(::cleanMerchant)
-            if (!cleaned.isNullOrBlank() && cleaned.length >= 2) return cleaned
+            if (!cleaned.isNullOrBlank() && cleaned.length >= 2) {
+                return MerchantMatch(cleaned, usedSenderFallback = false)
+            }
         }
 
-        return sender
+        val fallback = sender
             .replace(Regex("(?i)^(?:AD|AX|BZ|JD|JM|VK|VM|TM|CP|BP|HP|QP)-"), "")
             .replace(Regex("[^A-Za-z0-9 ]"), " ")
             .trim()
@@ -139,6 +159,7 @@ class TransactionSmsParser {
             .split(" ")
             .filter(String::isNotBlank)
             .joinToString(" ") { it.replaceFirstChar(Char::titlecase) }
+        return MerchantMatch(fallback, usedSenderFallback = true)
     }
 
     private fun cleanMerchant(value: String): String = value
@@ -180,6 +201,11 @@ class TransactionSmsParser {
     }
 
     private companion object {
+        data class MerchantMatch(
+            val name: String,
+            val usedSenderFallback: Boolean,
+        )
+
         val amountPatterns = listOf(
             Regex("(?i)(?:₹|INR|Rs\\.?|Rupees?)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)"),
             Regex("(?i)([0-9][0-9,]*(?:\\.[0-9]{1,2})?)\\s*(?:INR|Rupees?)"),
