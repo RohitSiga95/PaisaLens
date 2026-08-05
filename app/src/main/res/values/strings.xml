@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">PaisaLens</string>
+    <string name="widget_description">Private monthly spending at a glance</string>
 </resources>

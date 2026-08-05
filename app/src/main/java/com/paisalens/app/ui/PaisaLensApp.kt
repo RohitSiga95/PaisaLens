@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Analytics
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DonutLarge
@@ -52,6 +55,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -73,13 +77,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.ExchangeRate
+import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.CategorySelection
+import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.MerchantTransactionGroup
+import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.findUncategorizedMerchantGroups
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.MoneyText
+import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.components.formatTransactionTime
 import com.paisalens.app.ui.screens.BudgetsScreen
 import com.paisalens.app.ui.screens.HomeScreen
@@ -89,15 +99,19 @@ import com.paisalens.app.ui.screens.TransactionsScreen
 import com.paisalens.app.ui.theme.PaisaLensTheme
 import java.math.BigDecimal
 import java.math.RoundingMode
+import kotlin.math.roundToLong
 
 private enum class AppDestination(
     val label: String,
     val icon: ImageVector,
+    val showInNavigation: Boolean = true,
 ) {
     HOME("Home", Icons.Rounded.Home),
     ACTIVITY("Activity", Icons.Rounded.ReceiptLong),
     BUDGETS("Budgets", Icons.Rounded.DonutLarge),
     SETTINGS("Settings", Icons.Rounded.Settings),
+    ANALYTICS("Analytics", Icons.Rounded.Analytics, false),
+    CALENDAR("Calendar", Icons.Rounded.CalendarMonth, false),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,23 +121,52 @@ fun PaisaLensApp(
     hasSmsPermission: Boolean,
     onRequestSmsPermission: () -> Unit,
     onExportData: () -> Unit,
+    onCreateBackup: (CharArray) -> Unit,
+    onRestoreBackup: (CharArray) -> Unit,
+    onImportStatement: (Long?) -> Unit,
+    onAppLockChange: (Boolean) -> Unit,
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
     val budgets by viewModel.budgets.collectAsStateWithLifecycle()
     val categorizedMerchantKeys by viewModel.categorizedMerchantKeys.collectAsStateWithLifecycle()
+    val accounts by viewModel.accounts.collectAsStateWithLifecycle()
+    val customCategories by viewModel.customCategories.collectAsStateWithLifecycle()
+    val recurringPayments by viewModel.recurringPayments.collectAsStateWithLifecycle()
+    val loans by viewModel.loans.collectAsStateWithLifecycle()
+    val exchangeRates by viewModel.exchangeRates.collectAsStateWithLifecycle()
+    val merchantAliases by viewModel.merchantAliases.collectAsStateWithLifecycle()
+    val insights by viewModel.insights.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val onboardingComplete by viewModel.onboardingComplete.collectAsStateWithLifecycle()
     val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
     val lastScanAt by viewModel.lastScanAt.collectAsStateWithLifecycle()
+    val appLockEnabled by viewModel.appLockEnabled.collectAsStateWithLifecycle()
+    val widgetAmountsVisible by viewModel.widgetAmountsVisible.collectAsStateWithLifecycle()
+    val travelModeEnabled by viewModel.travelModeEnabled.collectAsStateWithLifecycle()
+    val baseCurrency by viewModel.baseCurrency.collectAsStateWithLifecycle()
+    val statementPreview by viewModel.statementPreview.collectAsStateWithLifecycle()
+    val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
+    val isRefreshingRate by viewModel.isRefreshingRate.collectAsStateWithLifecycle()
     var destination by remember { mutableStateOf(AppDestination.HOME) }
     var showManualSheet by remember { mutableStateOf(false) }
     var selectedTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
     var selectedMerchantGroup by remember { mutableStateOf<MerchantTransactionGroup?>(null) }
+    var showAccountManager by remember { mutableStateOf(false) }
+    var showCategoryManager by remember { mutableStateOf(false) }
+    var showMerchantCleanup by remember { mutableStateOf(false) }
+    var showLoanManager by remember { mutableStateOf(false) }
+    var showTravelMode by remember { mutableStateOf(false) }
+    var showStatementImport by remember { mutableStateOf(false) }
+    var backupAction by remember { mutableStateOf<BackupAction?>(null) }
     val uncategorizedMerchants = remember(transactions, categorizedMerchantKeys) {
         findUncategorizedMerchantGroups(transactions, categorizedMerchantKeys)
     }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+
+    BackHandler(enabled = !destination.showInNavigation) {
+        destination = AppDestination.HOME
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collect { message ->
@@ -152,7 +195,7 @@ fun PaisaLensApp(
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 0.dp,
                 ) {
-                    AppDestination.entries.forEach { item ->
+                    AppDestination.entries.filter { it.showInNavigation }.forEach { item ->
                         NavigationBarItem(
                             selected = destination == item,
                             onClick = { destination = item },
@@ -211,6 +254,13 @@ fun PaisaLensApp(
                             onTransactionClick = { selectedTransaction = it },
                             uncategorizedMerchants = uncategorizedMerchants,
                             onCategorizeMerchant = { selectedMerchantGroup = it },
+                            recurringPayments = recurringPayments,
+                            onReviewTransactions = { destination = AppDestination.ACTIVITY },
+                            insightCount = insights.size,
+                            loanCount = loans.size,
+                            onAnalytics = { destination = AppDestination.ANALYTICS },
+                            onCalendar = { destination = AppDestination.CALENDAR },
+                            onLoans = { showLoanManager = true },
                         )
                         AppDestination.ACTIVITY -> TransactionsScreen(
                             transactions = transactions,
@@ -230,8 +280,41 @@ fun PaisaLensApp(
                             onRequestSms = onRequestSmsPermission,
                             onScan = { viewModel.scanSms(context) },
                             transactionCount = transactions.size,
+                            accountCount = accounts.size,
+                            customCategoryCount = customCategories.size,
+                            recurringCount = recurringPayments.size,
+                            reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW },
+                            loanCount = loans.size,
+                            merchantAliasCount = merchantAliases.size,
+                            rateCount = exchangeRates.count { it.baseCurrency == baseCurrency },
+                            appLockEnabled = appLockEnabled,
+                            widgetAmountsVisible = widgetAmountsVisible,
+                            travelModeEnabled = travelModeEnabled,
+                            baseCurrency = baseCurrency,
                             onExportData = onExportData,
+                            onManageAccounts = { showAccountManager = true },
+                            onManageCategories = { showCategoryManager = true },
+                            onMerchantCleanup = { showMerchantCleanup = true },
+                            onManageLoans = { showLoanManager = true },
+                            onTravelMode = { showTravelMode = true },
+                            onImportStatement = { showStatementImport = true },
+                            onAppLockChange = onAppLockChange,
+                            onWidgetAmountsChange = viewModel::setWidgetAmountsVisible,
+                            onCreateBackup = { backupAction = BackupAction.CREATE },
+                            onRestoreBackup = { backupAction = BackupAction.RESTORE },
+                            onReviewTransactions = { destination = AppDestination.ACTIVITY },
                             onClearAll = viewModel::clearAll,
+                        )
+                        AppDestination.ANALYTICS -> AnalyticsScreen(
+                            transactions = transactions,
+                            insights = insights,
+                            onBack = { destination = AppDestination.HOME },
+                            onTransactionClick = { selectedTransaction = it },
+                        )
+                        AppDestination.CALENDAR -> CalendarScreen(
+                            transactions = transactions,
+                            onBack = { destination = AppDestination.HOME },
+                            onTransactionClick = { selectedTransaction = it },
                         )
                     }
                 }
@@ -240,9 +323,14 @@ fun PaisaLensApp(
 
         if (showManualSheet) {
             ManualTransactionSheet(
+                accounts = accounts,
+                customCategories = customCategories,
+                travelModeEnabled = travelModeEnabled,
+                baseCurrency = baseCurrency,
+                exchangeRates = exchangeRates,
                 onDismiss = { showManualSheet = false },
-                onSave = { amount, merchant, category, type, note ->
-                    viewModel.addManual(amount, merchant, category, type, note)
+                onSave = { amount, merchant, category, type, note, accountId, tags, originalAmount, originalCurrency, rate ->
+                    viewModel.addManual(amount, merchant, category, type, note, accountId, tags, originalAmount, originalCurrency, rate)
                     showManualSheet = false
                 },
             )
@@ -251,6 +339,7 @@ fun PaisaLensApp(
         selectedMerchantGroup?.let { group ->
             MerchantCategorySheet(
                 group = group,
+                customCategories = customCategories,
                 onDismiss = { selectedMerchantGroup = null },
                 onCategoryChange = { category ->
                     viewModel.updateMerchantCategory(group.merchant, category)
@@ -262,6 +351,8 @@ fun PaisaLensApp(
         selectedTransaction?.let { transaction ->
             TransactionDetailSheet(
                 transaction = transaction,
+                accounts = accounts,
+                customCategories = customCategories,
                 matchingMerchantCount = transactions.count {
                     it.type == TransactionType.EXPENSE &&
                         normalizedMerchantKey(it.merchant) == normalizedMerchantKey(transaction.merchant)
@@ -272,9 +363,96 @@ fun PaisaLensApp(
                     selectedTransaction = null
                 },
                 onNoteSave = { note -> viewModel.updateNote(transaction.id, note) },
+                onTagsSave = { tags -> viewModel.updateTags(transaction.id, tags) },
+                onConfirm = {
+                    viewModel.confirmTransaction(transaction.id)
+                    selectedTransaction = null
+                },
+                onAccountChange = { accountId ->
+                    viewModel.updateTransactionAccount(transaction.id, accountId)
+                    selectedTransaction = null
+                },
+                onTypeChange = { type ->
+                    viewModel.updateTransactionType(transaction.id, type)
+                    selectedTransaction = null
+                },
                 onDelete = {
                     viewModel.deleteTransaction(transaction.id)
                     selectedTransaction = null
+                },
+            )
+        }
+
+        if (showAccountManager) {
+            AccountManagerSheet(
+                accounts = accounts,
+                onAdd = viewModel::addAccount,
+                onUpdate = viewModel::updateAccount,
+                onDelete = viewModel::deleteAccount,
+                onDismiss = { showAccountManager = false },
+            )
+        }
+
+        if (showCategoryManager) {
+            CustomCategoryManagerSheet(
+                categories = customCategories,
+                onAdd = viewModel::addCustomCategory,
+                onDelete = viewModel::deleteCustomCategory,
+                onDismiss = { showCategoryManager = false },
+            )
+        }
+
+        if (showMerchantCleanup) {
+            MerchantCleanupSheet(
+                transactions = transactions,
+                aliases = merchantAliases,
+                onRename = viewModel::renameMerchant,
+                onDeleteAlias = viewModel::deleteMerchantAlias,
+                onDismiss = { showMerchantCleanup = false },
+            )
+        }
+
+        if (showLoanManager) {
+            LoanManagerSheet(
+                loans = loans,
+                accounts = accounts,
+                onSave = viewModel::saveLoan,
+                onDelete = viewModel::deleteLoan,
+                onDismiss = { showLoanManager = false },
+            )
+        }
+
+        if (showTravelMode) {
+            TravelModeSheet(
+                enabled = travelModeEnabled,
+                baseCurrency = baseCurrency,
+                rates = exchangeRates,
+                refreshing = isRefreshingRate,
+                onEnabledChange = viewModel::setTravelMode,
+                onRefresh = viewModel::refreshExchangeRate,
+                onDismiss = { showTravelMode = false },
+            )
+        }
+
+        if (showStatementImport) {
+            StatementImportSheet(
+                accounts = accounts,
+                preview = statementPreview,
+                importing = isImporting,
+                onChooseFile = onImportStatement,
+                onConfirm = viewModel::confirmStatementImport,
+                onCancelPreview = viewModel::cancelStatementImport,
+                onDismiss = { showStatementImport = false },
+            )
+        }
+
+        backupAction?.let { action ->
+            BackupPassphraseDialog(
+                action = action,
+                onDismiss = { backupAction = null },
+                onSubmit = { passphrase ->
+                    if (action == BackupAction.CREATE) onCreateBackup(passphrase) else onRestoreBackup(passphrase)
+                    backupAction = null
                 },
             )
         }
@@ -284,18 +462,34 @@ fun PaisaLensApp(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManualTransactionSheet(
+    accounts: List<AccountProfile>,
+    customCategories: List<CustomCategory>,
+    travelModeEnabled: Boolean,
+    baseCurrency: String,
+    exchangeRates: List<ExchangeRate>,
     onDismiss: () -> Unit,
-    onSave: (Long, String, ExpenseCategory, TransactionType, String?) -> Unit,
+    onSave: (Long, String, CategorySelection, TransactionType, String?, Long?, String, Long?, String?, Double?) -> Unit,
 ) {
     var amount by remember { mutableStateOf("") }
     var merchant by remember { mutableStateOf("") }
     var type by remember { mutableStateOf(TransactionType.EXPENSE) }
     var category by remember { mutableStateOf(ExpenseCategory.OTHER) }
+    var customCategoryId by remember { mutableStateOf<Long?>(null) }
     var note by remember { mutableStateOf("") }
-    val parsedAmount = amount.toBigDecimalOrNull()
+    var tags by remember { mutableStateOf("") }
+    var accountId by remember { mutableStateOf<Long?>(null) }
+    var selectedCurrency by remember { mutableStateOf(baseCurrency) }
+    val parsedOriginalAmount = amount.toBigDecimalOrNull()
         ?.multiply(BigDecimal(100))
         ?.setScale(0, RoundingMode.HALF_UP)
         ?.toLong()
+    val selectedRate = if (selectedCurrency == baseCurrency) 1.0 else exchangeRates
+        .firstOrNull { it.baseCurrency == baseCurrency && it.quoteCurrency == selectedCurrency }
+        ?.rate
+    val parsedAmount = parsedOriginalAmount?.let { original -> selectedRate?.let { (original * it).roundToLong() } }
+    val availableCurrencies = remember(exchangeRates, baseCurrency) {
+        (listOf(baseCurrency) + exchangeRates.filter { it.baseCurrency == baseCurrency }.map { it.quoteCurrency }).distinct()
+    }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
@@ -334,7 +528,7 @@ private fun ManualTransactionSheet(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Amount") },
-                    prefix = { Text("₹") },
+                    prefix = { Text(selectedCurrency) },
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Decimal,
                         imeAction = ImeAction.Next,
@@ -342,6 +536,28 @@ private fun ManualTransactionSheet(
                     singleLine = true,
                     shape = MaterialTheme.shapes.medium,
                 )
+                if (travelModeEnabled) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Currency", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(availableCurrencies) { currency ->
+                                FilterChip(
+                                    selected = selectedCurrency == currency,
+                                    onClick = { selectedCurrency = currency },
+                                    label = { Text(currency) },
+                                )
+                            }
+                        }
+                        if (selectedCurrency != baseCurrency) {
+                            Text(
+                                selectedRate?.let { "Latest reference rate · ${"%.4f".format(it)} $baseCurrency per $selectedCurrency · converted ${parsedAmount?.let(::formatMoney) ?: "—"}" }
+                                    ?: "Refresh $selectedCurrency/$baseCurrency in Settings → Travel before saving.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (selectedRate == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = merchant,
                     onValueChange = { merchant = it.take(48) },
@@ -352,23 +568,36 @@ private fun ManualTransactionSheet(
                     shape = MaterialTheme.shapes.medium,
                 )
                 AnimatedVisibility(type == TransactionType.EXPENSE) {
-                    OutlinedTextField(
-                        value = note,
-                        onValueChange = { note = it.take(160) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Note (optional)") },
-                        placeholder = { Text("What was this expense for?") },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        minLines = 2,
-                        maxLines = 3,
-                        shape = MaterialTheme.shapes.medium,
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedTextField(
+                            value = note,
+                            onValueChange = { note = it.take(160) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Note (optional)") },
+                            placeholder = { Text("What was this expense for?") },
+                            minLines = 2,
+                            maxLines = 3,
+                            shape = MaterialTheme.shapes.medium,
+                        )
+                        OutlinedTextField(
+                            value = tags,
+                            onValueChange = { tags = it.take(120) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Tags (optional)") },
+                            placeholder = { Text("Vacation, reimbursable") },
+                            supportingText = { Text("Separate up to 6 tags with commas") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            singleLine = true,
+                            shape = MaterialTheme.shapes.medium,
+                        )
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
                         TransactionType.EXPENSE to "Expense",
                         TransactionType.INCOME to "Income",
                         TransactionType.REFUND to "Refund",
+                        TransactionType.TRANSFER to "Transfer",
                     ).forEach { (option, label) ->
                         FilterChip(
                             selected = type == option,
@@ -378,7 +607,7 @@ private fun ManualTransactionSheet(
                     }
                 }
             }
-            AnimatedVisibility(type != TransactionType.INCOME) {
+            AnimatedVisibility(type == TransactionType.EXPENSE || type == TransactionType.REFUND) {
                 Column {
                     Text(
                         text = "Category",
@@ -397,7 +626,10 @@ private fun ManualTransactionSheet(
                         ) { option ->
                             FilterChip(
                                 selected = category == option,
-                                onClick = { category = option },
+                                onClick = {
+                                    category = option
+                                    customCategoryId = null
+                                },
                                 leadingIcon = {
                                     CategoryIcon(
                                         category = option,
@@ -408,6 +640,43 @@ private fun ManualTransactionSheet(
                                 label = { Text(option.label) },
                             )
                         }
+                        items(customCategories, key = { "custom-${it.id}" }) { custom ->
+                            FilterChip(
+                                selected = customCategoryId == custom.id,
+                                onClick = {
+                                    category = ExpenseCategory.OTHER
+                                    customCategoryId = custom.id
+                                },
+                                label = { Text(custom.name) },
+                            )
+                        }
+                    }
+                }
+            }
+            if (accounts.isNotEmpty()) {
+                Text(
+                    text = "Account (optional)",
+                    modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item {
+                        FilterChip(
+                            selected = accountId == null,
+                            onClick = { accountId = null },
+                            label = { Text("Unassigned") },
+                        )
+                    }
+                    items(accounts, key = { it.id }) { account ->
+                        FilterChip(
+                            selected = accountId == account.id,
+                            onClick = { accountId = account.id },
+                            label = { Text(account.name) },
+                        )
                     }
                 }
             }
@@ -416,9 +685,22 @@ private fun ManualTransactionSheet(
                     onSave(
                         parsedAmount ?: return@Button,
                         merchant,
-                        if (type == TransactionType.INCOME) ExpenseCategory.INCOME else category,
+                        when (type) {
+                            TransactionType.INCOME -> CategorySelection(ExpenseCategory.INCOME)
+                            TransactionType.TRANSFER -> CategorySelection(ExpenseCategory.TRANSFER)
+                            else -> CategorySelection(
+                                builtIn = category,
+                                customCategoryId = customCategoryId,
+                                customCategoryName = customCategories.firstOrNull { it.id == customCategoryId }?.name,
+                            )
+                        },
                         type,
                         note.takeIf { type == TransactionType.EXPENSE && it.isNotBlank() },
+                        accountId,
+                        tags,
+                        parsedOriginalAmount?.takeIf { selectedCurrency != baseCurrency },
+                        selectedCurrency.takeIf { it != baseCurrency },
+                        selectedRate?.takeIf { selectedCurrency != baseCurrency },
                     )
                 },
                 enabled = parsedAmount != null && parsedAmount > 0 && merchant.isNotBlank(),
@@ -438,8 +720,9 @@ private fun ManualTransactionSheet(
 @Composable
 private fun MerchantCategorySheet(
     group: MerchantTransactionGroup,
+    customCategories: List<CustomCategory>,
     onDismiss: () -> Unit,
-    onCategoryChange: (ExpenseCategory) -> Unit,
+    onCategoryChange: (CategorySelection) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -489,7 +772,7 @@ private fun MerchantCategorySheet(
                 items(ExpenseCategory.entries.filterNot { it == ExpenseCategory.INCOME }) { category ->
                     FilterChip(
                         selected = false,
-                        onClick = { onCategoryChange(category) },
+                        onClick = { onCategoryChange(CategorySelection(category)) },
                         leadingIcon = {
                             CategoryIcon(
                                 category = category,
@@ -498,6 +781,21 @@ private fun MerchantCategorySheet(
                             )
                         },
                         label = { Text(category.label) },
+                    )
+                }
+                items(customCategories, key = { "custom-${it.id}" }) { custom ->
+                    FilterChip(
+                        selected = false,
+                        onClick = {
+                            onCategoryChange(
+                                CategorySelection(
+                                    builtIn = ExpenseCategory.OTHER,
+                                    customCategoryId = custom.id,
+                                    customCategoryName = custom.name,
+                                ),
+                            )
+                        },
+                        label = { Text(custom.name) },
                     )
                 }
             }
@@ -509,10 +807,16 @@ private fun MerchantCategorySheet(
 @Composable
 private fun TransactionDetailSheet(
     transaction: TransactionRecord,
+    accounts: List<AccountProfile>,
+    customCategories: List<CustomCategory>,
     matchingMerchantCount: Int,
     onDismiss: () -> Unit,
-    onCategoryChange: (ExpenseCategory) -> Unit,
+    onCategoryChange: (CategorySelection) -> Unit,
     onNoteSave: (String) -> Unit,
+    onTagsSave: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onAccountChange: (Long?) -> Unit,
+    onTypeChange: (TransactionType) -> Unit,
     onDelete: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -521,6 +825,12 @@ private fun TransactionDetailSheet(
     }
     var savedNote by remember(transaction.id, transaction.note) {
         mutableStateOf(transaction.note.orEmpty())
+    }
+    var tags by remember(transaction.id, transaction.tags) {
+        mutableStateOf(transaction.tags.joinToString(", "))
+    }
+    var savedTags by remember(transaction.id, transaction.tags) {
+        mutableStateOf(transaction.tags.joinToString(", "))
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -563,8 +873,55 @@ private fun TransactionDetailSheet(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            transaction.accountName?.let { accountName ->
+                Text(
+                    accountName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            if (transaction.reviewStatus == ReviewStatus.NEEDS_REVIEW) {
+                Spacer(Modifier.height(16.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Needs review", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            transaction.reviewReason ?: "Confirm that this transaction is correct.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Button(onClick = onConfirm, modifier = Modifier.fillMaxWidth()) {
+                            Text("Confirm transaction")
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(22.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text(
+                text = "Transaction type",
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 8.dp),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(TransactionType.entries) { type ->
+                    FilterChip(
+                        selected = type == transaction.type,
+                        onClick = { if (type != transaction.type) onTypeChange(type) },
+                        label = { Text(type.name.lowercase().replaceFirstChar(Char::titlecase)) },
+                    )
+                }
+            }
             Text(
                 text = if (transaction.type == TransactionType.EXPENSE && matchingMerchantCount > 1) {
                     "Change category for all ${transaction.merchant} expenses"
@@ -585,9 +942,24 @@ private fun TransactionDetailSheet(
                     ExpenseCategory.entries.filterNot { it == ExpenseCategory.INCOME },
                 ) { category ->
                     FilterChip(
-                        selected = category == transaction.category,
-                        onClick = { onCategoryChange(category) },
+                        selected = category == transaction.category && transaction.customCategoryId == null,
+                        onClick = { onCategoryChange(CategorySelection(category)) },
                         label = { Text(category.label) },
+                    )
+                }
+                items(customCategories, key = { "custom-${it.id}" }) { custom ->
+                    FilterChip(
+                        selected = custom.id == transaction.customCategoryId,
+                        onClick = {
+                            onCategoryChange(
+                                CategorySelection(
+                                    builtIn = ExpenseCategory.OTHER,
+                                    customCategoryId = custom.id,
+                                    customCategoryName = custom.name,
+                                ),
+                            )
+                        },
+                        label = { Text(custom.name) },
                     )
                 }
             }
@@ -600,6 +972,35 @@ private fun TransactionDetailSheet(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (accounts.isNotEmpty()) {
+                Spacer(Modifier.height(18.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Text(
+                    text = "Account or card",
+                    modifier = Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 8.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item {
+                        FilterChip(
+                            selected = transaction.accountId == null,
+                            onClick = { onAccountChange(null) },
+                            label = { Text("Unassigned") },
+                        )
+                    }
+                    items(accounts, key = { it.id }) { account ->
+                        FilterChip(
+                            selected = transaction.accountId == account.id,
+                            onClick = { onAccountChange(account.id) },
+                            label = { Text(account.name) },
+                        )
+                    }
+                }
             }
             AnimatedVisibility(transaction.type == TransactionType.EXPENSE) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -635,6 +1036,28 @@ private fun TransactionDetailSheet(
                         shape = MaterialTheme.shapes.medium,
                     ) {
                         Text(if (note.isBlank()) "Remove note" else "Save note")
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = tags,
+                        onValueChange = { tags = it.take(120) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Tags (optional)") },
+                        placeholder = { Text("Vacation, reimbursable") },
+                        supportingText = { Text("Separate up to 6 tags with commas") },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.medium,
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            onTagsSave(tags)
+                            savedTags = tags.trim()
+                        },
+                        enabled = tags.trim() != savedTags.trim(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp),
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Text("Save tags")
                     }
                 }
             }

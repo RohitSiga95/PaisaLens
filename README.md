@@ -4,9 +4,10 @@
 
 <p align="center">
   <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.2.0"><img alt="Release v1.2.0" src="https://img.shields.io/badge/release-v1.2.0-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.4.0" src="https://img.shields.io/badge/source-v1.4.0-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
-  <img alt="No internet permission" src="https://img.shields.io/badge/Internet_permission-NONE-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
+  <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
 </p>
 
 <p align="center">
@@ -52,8 +53,22 @@
 | 📊 | **Visual dashboard** | Shows monthly spend, remaining budget, category breakdown and useful insights at a glance. |
 | 🎯 | **Category budgets** | Tracks limits with progress and overspend states. |
 | 📗 | **Beautiful Excel export** | Creates a categorized workbook with transactions, trends, budgets, dashboard cards and native charts. |
-| ✍️ | **Manual entry** | Records an expense, income or refund when an SMS is unavailable. |
+| 🏦 | **Accounts & cards** | Organizes transactions into bank accounts, credit cards, wallets, cash, or custom account profiles. |
+| 🔁 | **Recurring payments** | Detects consistent weekly and monthly expenses and estimates the next due date. |
+| 🧩 | **Custom categories & tags** | Adds personal categories and searchable tags beyond the built-in category set. |
+| ✅ | **Review inbox** | Holds uncertain merchant or category matches for confirmation before they affect analytics. |
+| 🔐 | **Encrypted backup & restore** | Creates a password-protected portable backup locally and restores it when needed. |
+| ✍️ | **Manual entry** | Records an expense, income, refund, or transfer when an SMS is unavailable. |
 | 🌓 | **Material 3 design** | Supports light and dark themes with responsive Jetpack Compose interactions. |
+| 🧹 | **Merchant cleanup** | Renames or merges inconsistent merchants and applies the cleanup rule to future SMS and statement imports. |
+| 🏠 | **Home-screen widget** | Shows a privacy-aware monthly glance, with amounts hidden by default and whenever App lock is active. |
+| 🔒 | **App lock** | Uses Android's system fingerprint, face, PIN, pattern, or password prompt to protect the ledger. |
+| 📥 | **Statement import** | Previews and imports common CSV and XLSX bank statements locally with duplicate protection. |
+| 📈 | **Better analytics** | Adds six-month trends, projections, top merchants, category rankings, and exact-value summaries. |
+| 📅 | **Calendar view** | Browses confirmed expenses day by day and opens the underlying transactions. |
+| 🏦 | **EMI & loan tracker** | Calculates reducing-balance EMI, tracks paid installments, progress, and next due dates. |
+| ✈️ | **Travel mode** | Stores original foreign amounts and converts them with an explicitly refreshed HTTPS reference rate. |
+| ✨ | **On-device insights** | Detects possible duplicates, unusual charges, price increases, spending pace, and concentration without uploading data. |
 
 ### Excel reports that are ready to explore
 
@@ -66,20 +81,24 @@ The workbook is generated entirely offline and saved only where you choose throu
 ## Private by design
 
 ```text
-SMS alert  →  on-device parser  →  encrypted local ledger  →  dashboard / Excel export
-                                 ✕ no server
-                                 ✕ no account
-                                 ✕ no analytics
+SMS / statement  →  on-device parser  →  encrypted local ledger  →  dashboard / Excel export
+                                       │                         ↘ encrypted manual backup
+currency pair only  →  HTTPS reference-rate API  →  cached rate ↗
+                                       ✕ no account
+                                       ✕ no telemetry
+                                       ✕ no financial-data upload
 ```
 
-- **No `INTERNET` permission** in the Android manifest.
-- No account, ads, analytics, telemetry or cloud SDKs.
-- Cloud backup and device-transfer backup are disabled.
+- No account, ads, third-party analytics, telemetry or cloud SDKs.
+- `INTERNET` is used only after the user taps a Travel-mode rate refresh; the HTTPS request contains only the currency pair.
+- SMS, statements, transactions, merchants, loans, categories, notes, tags, budgets, and insights stay on the device.
+- Automatic cloud backup and device-transfer backup are disabled.
+- Optional manual backups are encrypted on-device with a user passphrase, exclude raw SMS text, and are saved only where the user chooses.
 - SMS is read only after explicit permission and disclosure.
 - OTPs, verification codes, reminders, statements and collect requests are ignored.
 - Stored SMS alert text is encrypted with AES-GCM using a non-exportable Android Keystore key.
-- Transactions, notes, merchant rules and budgets use app-private platform SQLite storage.
-- **Erase all** clears the local PaisaLens ledger and budgets without changing the phone's SMS inbox.
+- Transactions, notes, account profiles, custom categories, tags, merchant rules, cleanup aliases, loans, and cached rates use app-private platform SQLite storage.
+- **Erase all** clears the local PaisaLens ledger and organization data without changing the phone's SMS inbox or previously exported files.
 
 Read the complete [plain-language privacy notice](PRIVACY.md).
 
@@ -106,7 +125,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated APK will be available at:
+The generated v1.4.0 APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
@@ -127,10 +146,14 @@ app/src/main/java/com/paisalens/app/
 │   ├── local/          # SQLite and preferences
 │   ├── model/          # Transaction and budget models
 │   ├── parser/         # Bank, card and UPI SMS parser
+│   ├── importer/       # Local CSV/XLSX statement import
+│   ├── network/        # Explicit HTTPS reference-rate refresh only
+│   ├── backup/         # Password-protected portable backups
+│   ├── export/         # Offline Excel workbook generation
 │   └── repository/     # Local data coordination
-├── export/             # Offline Excel workbook generation
 ├── security/           # Android Keystore AES-GCM
 ├── sms/                # Inbox scanner and incoming SMS receiver
+├── widget/             # Privacy-aware Android home-screen widget
 └── ui/                 # Compose theme, components and screens
 ```
 

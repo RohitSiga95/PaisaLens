@@ -3,7 +3,9 @@ package com.paisalens.app.data.export
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.TransactionRecord
+import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.categoryLabel
 import java.io.OutputStream
 import java.math.BigDecimal
 import java.time.Instant
@@ -41,11 +43,12 @@ object PaisaLensWorkbookExporter {
         val sortedTransactions = transactions.sortedWith(
             compareByDescending<TransactionRecord> { it.occurredAt }.thenByDescending { it.id },
         )
-        val categorySummaries = categorySummaries(sortedTransactions)
-        val monthSummaries = monthSummaries(sortedTransactions, generatedAt, zoneId)
+        val analyticsTransactions = sortedTransactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
+        val categorySummaries = categorySummaries(analyticsTransactions)
+        val monthSummaries = monthSummaries(analyticsTransactions, generatedAt, zoneId)
         val chartCategories = chartCategories(categorySummaries)
         val dashboard = dashboardSheet(
-            transactions = sortedTransactions,
+            transactions = analyticsTransactions,
             categorySummaries = categorySummaries,
             chartCategories = chartCategories,
             monthSummaries = monthSummaries,
@@ -75,7 +78,7 @@ object PaisaLensWorkbookExporter {
                 "xl/worksheets/sheet4.xml",
                 budgetsSheet(
                     budgets = budgets,
-                    transactions = sortedTransactions,
+                    transactions = analyticsTransactions,
                     transactionCount = sortedTransactions.size,
                     currentMonth = YearMonth.from(Instant.ofEpochMilli(generatedAt).atZone(zoneId)),
                     zoneId = zoneId,
@@ -336,6 +339,11 @@ object PaisaLensWorkbookExporter {
             "Note",
             "Source",
             "Account",
+            "Tags",
+            "Review status",
+            "Original amount",
+            "Original currency",
+            "Exchange rate",
         )
         headers.forEachIndexed { index, header -> rows.text(1, index + 1, header, Styles.HEADER) }
         rows.height(1, 26.0)
@@ -352,17 +360,24 @@ object PaisaLensWorkbookExporter {
             rows.text(row, 2, YearMonth.from(dateTime).format(monthFormatter), bodyStyle)
             rows.text(row, 3, transaction.type.exportLabel, bodyStyle)
             rows.text(row, 4, transaction.merchant, bodyStyle)
-            rows.text(row, 5, transaction.category.label, bodyStyle)
+            rows.text(row, 5, transaction.categoryLabel(), bodyStyle)
             rows.number(row, 6, signedAmount(transaction), moneyStyle)
             rows.text(row, 7, transaction.note.orEmpty(), noteStyle)
             rows.text(row, 8, transaction.source.name.lowercase().replaceFirstChar(Char::titlecase), bodyStyle)
-            rows.text(row, 9, transaction.accountHint.orEmpty(), bodyStyle)
+            rows.text(row, 9, transaction.accountName ?: transaction.accountHint.orEmpty(), bodyStyle)
+            rows.text(row, 10, transaction.tags.joinToString(", "), bodyStyle)
+            rows.text(row, 11, transaction.reviewStatus.name.lowercase().replace('_', ' ').replaceFirstChar(Char::titlecase), bodyStyle)
+            transaction.originalAmountMinor?.let { rows.number(row, 12, minorToMajor(it), moneyStyle) }
+                ?: rows.text(row, 12, "", bodyStyle)
+            rows.text(row, 13, transaction.originalCurrency.orEmpty(), bodyStyle)
+            transaction.exchangeRate?.let { rows.number(row, 14, it, bodyStyle) }
+                ?: rows.text(row, 14, "", bodyStyle)
             rows.height(row, if (transaction.note.isNullOrBlank()) 21.0 else 34.0)
         }
 
         return worksheetXml(
             rows = rows,
-            lastCell = "I${maxOf(1, transactions.size + 1)}",
+            lastCell = "N${maxOf(1, transactions.size + 1)}",
             columns = listOf(
                 ColumnWidth(1, 1, 21.0),
                 ColumnWidth(2, 3, 14.0),
@@ -370,10 +385,13 @@ object PaisaLensWorkbookExporter {
                 ColumnWidth(5, 5, 20.0),
                 ColumnWidth(6, 6, 16.0),
                 ColumnWidth(7, 7, 38.0),
-                ColumnWidth(8, 9, 16.0),
+                ColumnWidth(8, 8, 16.0),
+                ColumnWidth(9, 9, 24.0),
+                ColumnWidth(10, 11, 22.0),
+                ColumnWidth(12, 14, 18.0),
             ),
             freezeRows = 1,
-            autoFilter = "A1:I${maxOf(1, transactions.size + 1)}",
+            autoFilter = "A1:N${maxOf(1, transactions.size + 1)}",
             pageOrientation = "landscape",
         )
     }

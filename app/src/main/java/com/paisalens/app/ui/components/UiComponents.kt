@@ -65,8 +65,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.categoryLabel
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -208,7 +210,11 @@ fun TransactionRow(
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    text = transaction.category.label + " · " + formatTransactionTime(transaction.occurredAt),
+                    text = buildString {
+                        append(transaction.categoryLabel())
+                        transaction.accountName?.let { append(" · ").append(it) }
+                        append(" · ").append(formatTransactionTime(transaction.occurredAt))
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -222,6 +228,32 @@ fun TransactionRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (transaction.tags.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = transaction.tags.joinToString("  ") { "#$it" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (transaction.originalAmountMinor != null && transaction.originalCurrency != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "Original: ${transaction.originalCurrency} ${"%,.2f".format(transaction.originalAmountMinor / 100.0)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (transaction.reviewStatus == ReviewStatus.NEEDS_REVIEW) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        text = "Needs review",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
                     )
                 }
             }

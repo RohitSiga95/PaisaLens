@@ -1,3 +1,7 @@
 <resources>
     <color name="launcher_background">#0A1324</color>
+    <color name="widget_background">#101A34</color>
+    <color name="widget_primary">#FFFFFF</color>
+    <color name="widget_secondary">#B8C5E0</color>
+    <color name="widget_accent">#21D19F</color>
 </resources>

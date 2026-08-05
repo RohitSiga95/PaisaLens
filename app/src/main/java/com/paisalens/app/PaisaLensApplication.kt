@@ -20,6 +20,7 @@ class PaisaLensApplication : Application() {
         parser = TransactionSmsParser()
         preferences = UserPreferences(this)
         repository = TransactionRepository(
+            context = this,
             database = PaisaLensDatabase(this),
             cipher = SensitiveDataCipher(),
         )

@@ -18,13 +18,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.AccountBalanceWallet
+import androidx.compose.material.icons.rounded.Backup
+import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
+import androidx.compose.material.icons.rounded.Flight
+import androidx.compose.material.icons.rounded.HomeWork
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MarkEmailRead
+import androidx.compose.material.icons.rounded.Merge
+import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.AlertDialog
@@ -62,7 +71,29 @@ fun SettingsScreen(
     onRequestSms: () -> Unit,
     onScan: () -> Unit,
     transactionCount: Int,
+    accountCount: Int,
+    customCategoryCount: Int,
+    recurringCount: Int,
+    reviewCount: Int,
+    loanCount: Int,
+    merchantAliasCount: Int,
+    rateCount: Int,
+    appLockEnabled: Boolean,
+    widgetAmountsVisible: Boolean,
+    travelModeEnabled: Boolean,
+    baseCurrency: String,
     onExportData: () -> Unit,
+    onManageAccounts: () -> Unit,
+    onManageCategories: () -> Unit,
+    onMerchantCleanup: () -> Unit,
+    onManageLoans: () -> Unit,
+    onTravelMode: () -> Unit,
+    onImportStatement: () -> Unit,
+    onAppLockChange: (Boolean) -> Unit,
+    onWidgetAmountsChange: (Boolean) -> Unit,
+    onCreateBackup: () -> Unit,
+    onRestoreBackup: () -> Unit,
+    onReviewTransactions: () -> Unit,
     onClearAll: () -> Unit,
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
@@ -110,9 +141,9 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.width(13.dp))
                     Column {
-                        Text("Local-only by design", style = MaterialTheme.typography.titleMedium)
+                        Text("Private by design", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "No account, ads, analytics or internet access.",
+                            "No account, ads, telemetry, or financial-data uploads.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -148,14 +179,83 @@ fun SettingsScreen(
                     title = "Last local scan",
                     subtitle = if (lastScanAt > 0) formatScanTime(lastScanAt) else "Not scanned yet",
                 )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.Merge,
+                    title = "Merchant cleanup",
+                    subtitle = if (merchantAliasCount == 0) "Rename and merge inconsistent merchant names." else "$merchantAliasCount cleanup rule${if (merchantAliasCount == 1) "" else "s"} saved",
+                    onClick = onMerchantCleanup,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.Payments,
+                    title = "EMI & loan tracker",
+                    subtitle = if (loanCount == 0) "Track principal, EMI progress, and due dates." else "$loanCount loan${if (loanCount == 1) "" else "s"} tracked",
+                    onClick = onManageLoans,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+            }
+        }
+        item {
+            SettingsSection("Money organization") {
+                SettingsActionRow(
+                    icon = Icons.Rounded.AccountBalanceWallet,
+                    title = "Accounts & cards",
+                    subtitle = if (accountCount == 0) {
+                        "Add an account or scan SMS to detect one automatically."
+                    } else {
+                        "$accountCount account${if (accountCount == 1) "" else "s"} · assign expenses and transfers"
+                    },
+                    onClick = onManageAccounts,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.Category,
+                    title = "Custom categories",
+                    subtitle = if (customCategoryCount == 0) "Create categories that match your life." else "$customCategoryCount custom categories",
+                    onClick = onManageCategories,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.MarkEmailRead,
+                    title = "Review inbox",
+                    subtitle = if (reviewCount == 0) "No uncertain transactions waiting." else "$reviewCount transaction${if (reviewCount == 1) "" else "s"} need confirmation",
+                    onClick = onReviewTransactions,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsInfoRow(
+                    icon = Icons.Rounded.Sync,
+                    title = "Recurring payments",
+                    subtitle = if (recurringCount == 0) "Detected after two consistent weekly or monthly payments." else "$recurringCount recurring payment${if (recurringCount == 1) "" else "s"} detected",
+                )
             }
         }
         item {
             SettingsSection("Privacy safeguards") {
+                SettingsActionRow(
+                    icon = Icons.Rounded.Lock,
+                    title = "App lock",
+                    subtitle = "Require fingerprint, face, PIN, pattern, or password when opening PaisaLens.",
+                    onClick = { onAppLockChange(!appLockEnabled) },
+                    trailing = { Switch(checked = appLockEnabled, onCheckedChange = onAppLockChange) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.HomeWork,
+                    title = "Show amounts on widget",
+                    subtitle = if (appLockEnabled) "Disabled while app lock is enabled." else "Amounts are hidden by default for home-screen privacy.",
+                    onClick = { if (!appLockEnabled) onWidgetAmountsChange(!widgetAmountsVisible) },
+                    trailing = { Switch(checked = widgetAmountsVisible && !appLockEnabled, onCheckedChange = onWidgetAmountsChange, enabled = !appLockEnabled) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsInfoRow(
                     icon = Icons.Rounded.WifiOff,
-                    title = "Network blocked",
-                    subtitle = "The app manifest has no internet permission.",
+                    title = "Network isolation",
+                    subtitle = "Internet is used only when you explicitly refresh a travel exchange rate.",
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsInfoRow(
@@ -166,8 +266,19 @@ fun SettingsScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsInfoRow(
                     icon = Icons.Rounded.Lock,
-                    title = "Backups disabled",
-                    subtitle = "Financial data is excluded from cloud backup and device transfer.",
+                    title = "Cloud backups disabled",
+                    subtitle = "Only password-protected backups you create manually can leave this device.",
+                )
+            }
+        }
+        item {
+            SettingsSection("Travel") {
+                SettingsActionRow(
+                    icon = Icons.Rounded.Flight,
+                    title = "Multi-currency travel mode",
+                    subtitle = if (travelModeEnabled) "$baseCurrency home currency · $rateCount cached reference rate${if (rateCount == 1) "" else "s"}" else "Record foreign purchases using an explicitly refreshed reference rate.",
+                    onClick = onTravelMode,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
             }
         }
@@ -190,6 +301,14 @@ fun SettingsScreen(
         item {
             SettingsSection("Data controls") {
                 SettingsActionRow(
+                    icon = Icons.Rounded.FileUpload,
+                    title = "Import bank statement",
+                    subtitle = "Preview and import CSV or XLSX transactions locally.",
+                    onClick = onImportStatement,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
                     icon = Icons.Rounded.FileDownload,
                     title = "Export Excel report",
                     subtitle = if (transactionCount == 0) {
@@ -204,9 +323,25 @@ fun SettingsScreen(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsActionRow(
+                    icon = Icons.Rounded.Backup,
+                    title = "Create encrypted backup",
+                    subtitle = "Password-protected copy of transactions, accounts, categories and budgets.",
+                    onClick = onCreateBackup,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.Restore,
+                    title = "Restore encrypted backup",
+                    subtitle = "Replace this phone's local data from a PaisaLens backup.",
+                    onClick = onRestoreBackup,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
                     icon = Icons.Rounded.DeleteForever,
                     title = "Erase all app data",
-                    subtitle = "Permanently deletes transactions and budgets from this phone.",
+                    subtitle = "Permanently deletes transactions, accounts, categories and budgets from this phone.",
                     onClick = { showClearDialog = true },
                     danger = true,
                     trailing = {
@@ -244,7 +379,7 @@ fun SettingsScreen(
             title = { Text("Erase local financial data?") },
             text = {
                 Text(
-                    "This permanently deletes every parsed transaction and budget. Your original SMS messages are not changed.",
+                    "This permanently deletes transactions, accounts, categories, merchant rules, loans, cached rates, and budgets. Your original SMS messages and exported files are not changed.",
                 )
             },
             confirmButton = {
