@@ -214,6 +214,16 @@ fun TransactionRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                transaction.note?.takeIf { it.isNotBlank() }?.let { note ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "Note: $note",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             Spacer(Modifier.width(12.dp))
             MoneyText(

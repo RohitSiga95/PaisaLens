@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -71,8 +73,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.MerchantTransactionGroup
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.findUncategorizedMerchantGroups
+import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.formatTransactionTime
@@ -101,9 +106,11 @@ fun PaisaLensApp(
     viewModel: PaisaLensViewModel,
     hasSmsPermission: Boolean,
     onRequestSmsPermission: () -> Unit,
+    onExportData: () -> Unit,
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
     val budgets by viewModel.budgets.collectAsStateWithLifecycle()
+    val categorizedMerchantKeys by viewModel.categorizedMerchantKeys.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val onboardingComplete by viewModel.onboardingComplete.collectAsStateWithLifecycle()
     val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
@@ -111,6 +118,10 @@ fun PaisaLensApp(
     var destination by remember { mutableStateOf(AppDestination.HOME) }
     var showManualSheet by remember { mutableStateOf(false) }
     var selectedTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
+    var selectedMerchantGroup by remember { mutableStateOf<MerchantTransactionGroup?>(null) }
+    val uncategorizedMerchants = remember(transactions, categorizedMerchantKeys) {
+        findUncategorizedMerchantGroups(transactions, categorizedMerchantKeys)
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -198,6 +209,8 @@ fun PaisaLensApp(
                             onAdd = { showManualSheet = true },
                             onSeeAll = { destination = AppDestination.ACTIVITY },
                             onTransactionClick = { selectedTransaction = it },
+                            uncategorizedMerchants = uncategorizedMerchants,
+                            onCategorizeMerchant = { selectedMerchantGroup = it },
                         )
                         AppDestination.ACTIVITY -> TransactionsScreen(
                             transactions = transactions,
@@ -216,6 +229,8 @@ fun PaisaLensApp(
                             onDarkModeChange = viewModel::setDarkMode,
                             onRequestSms = onRequestSmsPermission,
                             onScan = { viewModel.scanSms(context) },
+                            transactionCount = transactions.size,
+                            onExportData = onExportData,
                             onClearAll = viewModel::clearAll,
                         )
                     }
@@ -226,9 +241,20 @@ fun PaisaLensApp(
         if (showManualSheet) {
             ManualTransactionSheet(
                 onDismiss = { showManualSheet = false },
-                onSave = { amount, merchant, category, type ->
-                    viewModel.addManual(amount, merchant, category, type)
+                onSave = { amount, merchant, category, type, note ->
+                    viewModel.addManual(amount, merchant, category, type, note)
                     showManualSheet = false
+                },
+            )
+        }
+
+        selectedMerchantGroup?.let { group ->
+            MerchantCategorySheet(
+                group = group,
+                onDismiss = { selectedMerchantGroup = null },
+                onCategoryChange = { category ->
+                    viewModel.updateMerchantCategory(group.merchant, category)
+                    selectedMerchantGroup = null
                 },
             )
         }
@@ -236,11 +262,16 @@ fun PaisaLensApp(
         selectedTransaction?.let { transaction ->
             TransactionDetailSheet(
                 transaction = transaction,
+                matchingMerchantCount = transactions.count {
+                    it.type == TransactionType.EXPENSE &&
+                        normalizedMerchantKey(it.merchant) == normalizedMerchantKey(transaction.merchant)
+                },
                 onDismiss = { selectedTransaction = null },
                 onCategoryChange = { category ->
-                    viewModel.updateCategory(transaction.id, category)
+                    viewModel.updateCategory(transaction, category)
                     selectedTransaction = null
                 },
+                onNoteSave = { note -> viewModel.updateNote(transaction.id, note) },
                 onDelete = {
                     viewModel.deleteTransaction(transaction.id)
                     selectedTransaction = null
@@ -254,12 +285,13 @@ fun PaisaLensApp(
 @Composable
 private fun ManualTransactionSheet(
     onDismiss: () -> Unit,
-    onSave: (Long, String, ExpenseCategory, TransactionType) -> Unit,
+    onSave: (Long, String, ExpenseCategory, TransactionType, String?) -> Unit,
 ) {
     var amount by remember { mutableStateOf("") }
     var merchant by remember { mutableStateOf("") }
     var type by remember { mutableStateOf(TransactionType.EXPENSE) }
     var category by remember { mutableStateOf(ExpenseCategory.OTHER) }
+    var note by remember { mutableStateOf("") }
     val parsedAmount = amount.toBigDecimalOrNull()
         ?.multiply(BigDecimal(100))
         ?.setScale(0, RoundingMode.HALF_UP)
@@ -275,6 +307,7 @@ private fun ManualTransactionSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(bottom = 12.dp),
         ) {
             Row(
@@ -313,11 +346,24 @@ private fun ManualTransactionSheet(
                     value = merchant,
                     onValueChange = { merchant = it.take(48) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Merchant or note") },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    label = { Text("Merchant") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                     singleLine = true,
                     shape = MaterialTheme.shapes.medium,
                 )
+                AnimatedVisibility(type == TransactionType.EXPENSE) {
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it.take(160) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Note (optional)") },
+                        placeholder = { Text("What was this expense for?") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        minLines = 2,
+                        maxLines = 3,
+                        shape = MaterialTheme.shapes.medium,
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
                         TransactionType.EXPENSE to "Expense",
@@ -372,6 +418,7 @@ private fun ManualTransactionSheet(
                         merchant,
                         if (type == TransactionType.INCOME) ExpenseCategory.INCOME else category,
                         type,
+                        note.takeIf { type == TransactionType.EXPENSE && it.isNotBlank() },
                     )
                 },
                 enabled = parsedAmount != null && parsedAmount > 0 && merchant.isNotBlank(),
@@ -389,11 +436,10 @@ private fun ManualTransactionSheet(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TransactionDetailSheet(
-    transaction: TransactionRecord,
+private fun MerchantCategorySheet(
+    group: MerchantTransactionGroup,
     onDismiss: () -> Unit,
     onCategoryChange: (ExpenseCategory) -> Unit,
-    onDelete: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -405,6 +451,87 @@ private fun TransactionDetailSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                .padding(bottom = 24.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Categorize merchant", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        text = group.merchant,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close")
+                }
+            }
+            Text(
+                text = if (group.transactionCount == 1) {
+                    "Your choice will be remembered for future expenses from this merchant."
+                } else {
+                    "Your choice will update all ${group.transactionCount} matching expenses and future ones."
+                },
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(ExpenseCategory.entries.filterNot { it == ExpenseCategory.INCOME }) { category ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { onCategoryChange(category) },
+                        leadingIcon = {
+                            CategoryIcon(
+                                category = category,
+                                modifier = Modifier.size(28.dp),
+                                iconSize = 15,
+                            )
+                        },
+                        label = { Text(category.label) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TransactionDetailSheet(
+    transaction: TransactionRecord,
+    matchingMerchantCount: Int,
+    onDismiss: () -> Unit,
+    onCategoryChange: (ExpenseCategory) -> Unit,
+    onNoteSave: (String) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var note by remember(transaction.id, transaction.note) {
+        mutableStateOf(transaction.note.orEmpty())
+    }
+    var savedNote by remember(transaction.id, transaction.note) {
+        mutableStateOf(transaction.note.orEmpty())
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -439,7 +566,11 @@ private fun TransactionDetailSheet(
             Spacer(Modifier.height(22.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Text(
-                text = "Change category",
+                text = if (transaction.type == TransactionType.EXPENSE && matchingMerchantCount > 1) {
+                    "Change category for all ${transaction.merchant} expenses"
+                } else {
+                    "Change category"
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 18.dp, bottom = 8.dp),
@@ -458,6 +589,53 @@ private fun TransactionDetailSheet(
                         onClick = { onCategoryChange(category) },
                         label = { Text(category.label) },
                     )
+                }
+            }
+            if (transaction.type == TransactionType.EXPENSE && matchingMerchantCount > 1) {
+                Text(
+                    text = "This will update $matchingMerchantCount matching expenses and remember the merchant.",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            AnimatedVisibility(transaction.type == TransactionType.EXPENSE) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Spacer(Modifier.height(18.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(
+                        text = "Expense note",
+                        modifier = Modifier.padding(top = 18.dp, bottom = 8.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it.take(160) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Note (optional)") },
+                        placeholder = { Text("What was this expense for?") },
+                        supportingText = { Text("${note.length}/160") },
+                        minLines = 2,
+                        maxLines = 4,
+                        shape = MaterialTheme.shapes.medium,
+                    )
+                    Button(
+                        onClick = {
+                            onNoteSave(note)
+                            savedNote = note.trim()
+                        },
+                        enabled = note.trim() != savedNote.trim(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp)
+                            .height(48.dp),
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Text(if (note.isBlank()) "Remove note" else "Save note")
+                    }
                 }
             }
             Spacer(Modifier.height(18.dp))

@@ -1,6 +1,6 @@
 # PaisaLens Privacy Notice
 
-Last updated: 4 August 2026
+Last updated: 5 August 2026
 
 PaisaLens is designed to analyze and track personal expenses entirely on the Android device where it is installed.
 
@@ -12,7 +12,7 @@ SMS permission is optional. Manual transaction tracking works without it.
 
 ## How data is used
 
-Detected transaction amount, merchant, date, source, account hint, direction, and category are used only to provide the in-app expense dashboard, activity list, and budgets. SMS alert text retained with a detected transaction is encrypted with a key held by Android Keystore.
+Detected transaction amount, merchant, date, source, account hint, direction, and category are used only to provide the in-app expense dashboard, activity list, and budgets. User-entered expense notes and merchant category choices are used only to organize the local ledger. SMS alert text retained with a detected transaction is encrypted with a key held by Android Keystore.
 
 ## Storage and sharing
 
@@ -21,6 +21,8 @@ Detected transaction amount, merchant, date, source, account hint, direction, an
 - PaisaLens does not transmit, sell, rent, or share financial or SMS data.
 - PaisaLens contains no advertising, analytics, telemetry, or social SDKs.
 - Android cloud backup and device-transfer backup are disabled for app data.
+
+If the user chooses **Export Excel report**, PaisaLens writes the selected ledger data to the file location chosen through Android's system file picker. The exported workbook may be stored outside the app's private storage or in a user-selected document provider. PaisaLens does not upload the workbook, and the user controls how the exported file is stored or shared afterward.
 
 ## Retention and deletion
 

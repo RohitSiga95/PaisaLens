@@ -25,6 +25,9 @@ class TransactionRepository(
     private val _budgets = MutableStateFlow<List<CategoryBudget>>(emptyList())
     val budgets: StateFlow<List<CategoryBudget>> = _budgets.asStateFlow()
 
+    private val _categorizedMerchantKeys = MutableStateFlow<Set<String>>(emptySet())
+    val categorizedMerchantKeys: StateFlow<Set<String>> = _categorizedMerchantKeys.asStateFlow()
+
     suspend fun load() = withContext(Dispatchers.IO) {
         refresh()
     }
@@ -41,6 +44,7 @@ class TransactionRepository(
         merchant: String,
         category: ExpenseCategory,
         type: TransactionType,
+        note: String?,
         occurredAt: Long = System.currentTimeMillis(),
     ) = withContext(Dispatchers.IO) {
         database.insertManual(
@@ -54,13 +58,39 @@ class TransactionRepository(
                 occurredAt = occurredAt,
                 source = TransactionSource.MANUAL,
                 sender = "Added manually",
+                note = note,
             ),
         )
+        if (type == TransactionType.EXPENSE) {
+            database.updateMerchantCategory(merchant, category)
+        }
         refresh()
     }
 
-    suspend fun updateCategory(id: Long, category: ExpenseCategory) = withContext(Dispatchers.IO) {
-        database.updateCategory(id, category)
+    suspend fun updateCategory(
+        transaction: TransactionRecord,
+        category: ExpenseCategory,
+    ): Int = withContext(Dispatchers.IO) {
+        val updated = if (transaction.type == TransactionType.EXPENSE) {
+            database.updateMerchantCategory(transaction.merchant, category)
+        } else {
+            database.updateCategory(transaction.id, category)
+        }
+        refresh()
+        updated
+    }
+
+    suspend fun updateMerchantCategory(
+        merchant: String,
+        category: ExpenseCategory,
+    ): Int = withContext(Dispatchers.IO) {
+        val updated = database.updateMerchantCategory(merchant, category)
+        refresh()
+        updated
+    }
+
+    suspend fun updateNote(id: Long, note: String) = withContext(Dispatchers.IO) {
+        database.updateNote(id, note)
         refresh()
     }
 
@@ -82,5 +112,6 @@ class TransactionRepository(
     private fun refresh() {
         _transactions.value = database.getTransactions()
         _budgets.value = database.getBudgets()
+        _categorizedMerchantKeys.value = database.getCategorizedMerchantKeys()
     }
 }

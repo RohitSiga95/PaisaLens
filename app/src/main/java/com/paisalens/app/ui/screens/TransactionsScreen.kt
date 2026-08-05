@@ -54,7 +54,8 @@ fun TransactionsScreen(
             val queryMatch = query.isBlank() ||
                 transaction.merchant.contains(query, ignoreCase = true) ||
                 transaction.category.label.contains(query, ignoreCase = true) ||
-                transaction.sender.contains(query, ignoreCase = true)
+                transaction.sender.contains(query, ignoreCase = true) ||
+                transaction.note?.contains(query, ignoreCase = true) == true
             val typeMatch = when (selectedFilter) {
                 TransactionFilter.ALL -> true
                 TransactionFilter.EXPENSE -> transaction.type == TransactionType.EXPENSE

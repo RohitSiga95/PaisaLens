@@ -14,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.paisalens.app.ui.PaisaLensApp
 import com.paisalens.app.ui.PaisaLensViewModel
+import java.time.LocalDate
 
 class MainActivity : ComponentActivity() {
     private val viewModel: PaisaLensViewModel by viewModels {
@@ -27,6 +28,14 @@ class MainActivity : ComponentActivity() {
     ) { grants ->
         hasSmsPermission = grants[Manifest.permission.READ_SMS] == true
         if (hasSmsPermission) viewModel.scanSms(this)
+    }
+
+    private val workbookExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    ) { uri ->
+        uri?.let { viewModel.exportWorkbook(contentResolver, it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,6 +54,9 @@ class MainActivity : ComponentActivity() {
                             Manifest.permission.RECEIVE_SMS,
                         ),
                     )
+                },
+                onExportData = {
+                    workbookExportLauncher.launch("PaisaLens-${LocalDate.now()}.xlsx")
                 },
             )
         }

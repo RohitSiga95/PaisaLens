@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
@@ -44,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.MerchantTransactionGroup
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.ui.components.CategoryIcon
@@ -69,6 +71,8 @@ fun HomeScreen(
     onAdd: () -> Unit,
     onSeeAll: () -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
+    uncategorizedMerchants: List<MerchantTransactionGroup>,
+    onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
 ) {
     val now = remember { ZonedDateTime.now() }
     val monthly = remember(transactions, now.monthValue, now.year) {
@@ -115,6 +119,15 @@ fun HomeScreen(
                 onRequestPermission = onRequestPermission,
                 onAdd = onAdd,
             )
+        }
+        uncategorizedMerchants.firstOrNull()?.let { merchantGroup ->
+            item {
+                MerchantCategoryPromptCard(
+                    group = merchantGroup,
+                    remainingGroupCount = uncategorizedMerchants.size,
+                    onChooseCategory = { onCategorizeMerchant(merchantGroup) },
+                )
+            }
         }
         if (transactions.isEmpty()) {
             item {
@@ -192,6 +205,71 @@ fun HomeScreen(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MerchantCategoryPromptCard(
+    group: MerchantTransactionGroup,
+    remainingGroupCount: Int,
+    onChooseCategory: () -> Unit,
+) {
+    PaisaCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = CircleShape,
+                ) {
+                    Icon(
+                        Icons.Rounded.Category,
+                        contentDescription = null,
+                        modifier = Modifier.padding(10.dp).size(22.dp),
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "What category is ${group.merchant}?",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = if (group.transactionCount == 1) {
+                            "Categorize this expense and remember it for next time."
+                        } else {
+                            "Apply one category to all ${group.transactionCount} matching expenses."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (remainingGroupCount == 1) {
+                        "1 merchant needs a category"
+                    } else {
+                        "$remainingGroupCount merchants need categories"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(onClick = onChooseCategory) {
+                    Text("Choose category")
                 }
             }
         }

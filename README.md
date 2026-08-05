@@ -6,6 +6,9 @@ PaisaLens is a native, offline-first Android expense tracker for Indian bank, cr
 
 - Local SMS transaction detection for debits, credits, refunds, card purchases, ATM withdrawals, UPI, and wallet alerts
 - Automatic categories for food, groceries, shopping, transport, bills, entertainment, health, education, travel, cash, and transfers
+- Merchant-wide category rules that update matching expenses and remember the choice for future alerts
+- Optional per-expense notes shown directly in recent activity and searchable transaction history
+- Offline Excel export with a formatted dashboard, category analysis, monthly trends, budgets, and native charts
 - Duplicate-safe imports for up to 10,000 inbox messages
 - Automatic analysis of new transaction SMS after permission is granted
 - Monthly dashboard with animated spending breakdown and useful insights
@@ -22,7 +25,8 @@ PaisaLens is a native, offline-first Android expense tracker for Indian bank, cr
 - **SMS is read only after explicit user consent.**
 - **OTPs, verification codes, payment reminders, statements, and collect requests are ignored.**
 - **SMS alert bodies saved for the local ledger are encrypted with AES-GCM using a non-exportable Android Keystore key.**
-- **Transactions and budgets use app-private platform SQLite storage.**
+- **Transactions, merchant category rules, notes, and budgets use app-private platform SQLite storage.**
+- **Excel files are created only when requested and saved through Android's system file picker.**
 - **Erase all** deletes the local ledger and budgets without modifying the phone's original SMS inbox.
 
 See [PRIVACY.md](PRIVACY.md) for the plain-language privacy notice.

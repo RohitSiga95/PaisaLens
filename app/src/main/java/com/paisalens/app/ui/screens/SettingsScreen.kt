@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MarkEmailRead
@@ -45,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.paisalens.app.BuildConfig
 import com.paisalens.app.ui.components.PaisaCard
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -59,6 +61,8 @@ fun SettingsScreen(
     onDarkModeChange: (Boolean) -> Unit,
     onRequestSms: () -> Unit,
     onScan: () -> Unit,
+    transactionCount: Int,
+    onExportData: () -> Unit,
     onClearAll: () -> Unit,
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
@@ -186,6 +190,20 @@ fun SettingsScreen(
         item {
             SettingsSection("Data controls") {
                 SettingsActionRow(
+                    icon = Icons.Rounded.FileDownload,
+                    title = "Export Excel report",
+                    subtitle = if (transactionCount == 0) {
+                        "Create an empty formatted workbook ready for future data."
+                    } else {
+                        "Export $transactionCount transactions with dashboard charts and analysis."
+                    },
+                    onClick = onExportData,
+                    trailing = {
+                        Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+                    },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
                     icon = Icons.Rounded.DeleteForever,
                     title = "Erase all app data",
                     subtitle = "Permanently deletes transactions and budgets from this phone.",
@@ -203,7 +221,7 @@ fun SettingsScreen(
         }
         item {
             Text(
-                text = "PaisaLens 1.0 · Made for private money clarity",
+                text = "PaisaLens ${BuildConfig.VERSION_NAME} · Made for private money clarity",
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 8.dp),
