@@ -1,0 +1,67 @@
+package com.paisalens.app.sms
+
+import com.paisalens.app.data.model.AccountAvailabilityUpdate
+import com.paisalens.app.data.model.AccountType
+import java.math.BigDecimal
+import java.math.RoundingMode
+
+class AccountAvailabilitySmsParser {
+    fun parse(sender: String, body: String, timestamp: Long): AccountAvailabilityUpdate? {
+        val availableCreditMinor = findAmount(body, availableCreditPatterns)
+        val balanceMinor = if (availableCreditMinor == null) findAmount(body, balancePatterns) else null
+        if (balanceMinor == null && availableCreditMinor == null) return null
+
+        val bankKey = BankSmsSupport.bankKey("$sender $body") ?: senderBankFallback(sender)
+        val type = if (availableCreditMinor != null) AccountType.CREDIT_CARD else AccountType.BANK_ACCOUNT
+        return AccountAvailabilityUpdate(
+            bankKey = bankKey,
+            institutionName = BankSmsSupport.institutionName(bankKey),
+            accountType = type,
+            accountHint = accountHintPattern.find(body)?.groupValues?.getOrNull(1)
+                ?.filter(Char::isDigit)
+                ?.takeLast(4)
+                ?.takeIf(String::isNotBlank),
+            balanceMinor = balanceMinor,
+            availableCreditMinor = availableCreditMinor,
+            fetchedAt = timestamp,
+            sender = sender.ifBlank { "Balance alert" },
+        )
+    }
+
+    private fun findAmount(body: String, patterns: List<Regex>): Long? {
+        patterns.forEach { pattern ->
+            val raw = pattern.find(body)?.groupValues?.getOrNull(1) ?: return@forEach
+            val value = raw.replace(",", "").toBigDecimalOrNull() ?: return@forEach
+            return value.multiply(BigDecimal(100))
+                .setScale(0, RoundingMode.HALF_UP)
+                .longValueExact()
+        }
+        return null
+    }
+
+    private fun senderBankFallback(sender: String): String = sender
+        .replace(Regex("(?i)^(?:AD|AX|BZ|JD|JM|VK|VM|TM|CP|BP|HP|QP)-"), "")
+        .replace(Regex("[^A-Za-z0-9]"), "")
+        .lowercase()
+        .ifBlank { "bank" }
+
+    private companion object {
+        private const val CURRENCY = "(?:₹|INR|Rs\\.?|Rupees?)"
+        private const val AMOUNT = "([0-9][0-9,]*(?:\\.[0-9]{1,2})?)"
+
+        val availableCreditPatterns = listOf(
+            Regex("(?i)(?:available|avail\\.?|avl)\\s+(?:credit|purchase)(?:\\s+(?:limit|balance))?[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
+            Regex("(?i)(?:available|avail\\.?|avl)\\s+(?:credit|purchase)(?:\\s+(?:limit|balance))?[^0-9]{0,24}$AMOUNT\\s*(?:INR|Rupees?)"),
+            Regex("(?i)(?:credit|purchase)\\s+(?:limit|balance)\\s+(?:available|avail\\.?|avl)[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
+        )
+
+        val balancePatterns = listOf(
+            Regex("(?i)(?:(?:available|avail\\.?|avl|current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+(?:available|is))[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
+            Regex("(?i)(?:(?:available|avail\\.?|avl|current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+(?:available|is))[^0-9]{0,24}$AMOUNT\\s*(?:INR|Rupees?)"),
+        )
+
+        val accountHintPattern = Regex(
+            "(?i)(?:a/c|acct|account|card)(?:\\s*(?:no\\.?|number|ending|xx|x{2,}))?\\s*[:.-]?\\s*([xX*0-9-]{3,24})",
+        )
+    }
+}

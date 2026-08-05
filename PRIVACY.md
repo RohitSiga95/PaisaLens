@@ -6,13 +6,17 @@ PaisaLens is designed to analyze and track personal expenses entirely on the And
 
 ## Data the app accesses
 
-If the user grants SMS permission, PaisaLens reads SMS messages to identify bank, credit-card, wallet, and UPI transaction alerts. It ignores messages recognized as OTPs, verification codes, reminders, statements, and payment requests.
+If the user grants SMS permission, PaisaLens reads SMS messages to identify bank, credit-card, wallet, and UPI transaction alerts and the latest bank balance or available-credit value included in bank replies. It ignores messages recognized as OTPs, verification codes, reminders, statements, and payment requests.
 
 SMS permission is optional. Manual transaction tracking works without it.
 
 ## How data is used
 
-Detected transaction amount, merchant, date, source, account, direction, category, tags, and review status are used only to provide the in-app expense dashboard, activity list, budgets, recurring-payment estimates, calendar, loan tracker, analytics, and organization tools. User-entered notes, account profiles, custom categories, tags, merchant cleanup rules, loan details, and merchant category choices are used only to organize the local ledger. SMS alert text retained with a detected transaction is encrypted with a key held by Android Keystore.
+Detected transaction amount, merchant, date, source, account, direction, category, tags, review status, latest account balance, available credit, and fetched time are used only to provide the in-app dashboard, activity list, budgets, recurring-payment estimates, calendar, loan tracker, analytics, and organization tools. User-entered notes, account profiles, custom categories, tags, merchant cleanup rules, loan details, and merchant category choices are used only to organize the local ledger. SMS alert text retained with a detected transaction is encrypted with a key held by Android Keystore. For a balance-only reply, PaisaLens stores the extracted amount, sender label, account match, and timestamp—not the full reply text.
+
+If the user taps an account refresh button, PaisaLens opens the phone's SMS app with a verified bank service number and enquiry keyword filled in where supported. PaisaLens does not send the SMS automatically, does not request Android's `SEND_SMS` permission, and cannot prevent carrier SMS charges. The user reviews and sends the message in the SMS app.
+
+If the user captures or selects a bill image, PaisaLens runs a bundled text-recognition model on the device and uses the result to prefill an editable manual transaction. The image and recognized text are not uploaded. Camera captures use a temporary app-cache file that is deleted after processing; selected images remain in their original user-controlled location. PaisaLens stores only the transaction details the user reviews and saves.
 
 If the user selects a CSV or XLSX bank statement, PaisaLens reads that file through Android's system file picker, previews recognized rows, and imports only the rows the user confirms. Statement parsing, duplicate detection, and category review happen on the device. PaisaLens does not upload the statement.
 

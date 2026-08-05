@@ -22,7 +22,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
@@ -60,6 +59,8 @@ import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.ui.components.CustomCategoryIcon
 
 internal enum class BackupAction {
     CREATE,
@@ -313,7 +314,7 @@ internal fun CustomCategoryManagerSheet(
                                         .background(Color(android.graphics.Color.parseColor(option)), CircleShape),
                                 )
                             },
-                            label = { Text(option) },
+                            label = { Text(categoryColorLabel(option)) },
                         )
                     }
                 }
@@ -351,14 +352,7 @@ internal fun CustomCategoryManagerSheet(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box(
-                                Modifier
-                                    .size(42.dp)
-                                    .background(Color(android.graphics.Color.parseColor(category.colorHex)), CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(Icons.Rounded.Category, contentDescription = null, tint = Color.White)
-                            }
+                            CustomCategoryIcon(category = category, modifier = Modifier.size(42.dp), iconSize = 21)
                             Spacer(Modifier.width(12.dp))
                             Text(category.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                             IconButton(onClick = { deleting = category }) {
@@ -389,6 +383,87 @@ internal fun CustomCategoryManagerSheet(
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
+}
+
+@Composable
+internal fun NewCustomCategoryDialog(
+    existingCategories: List<CustomCategory>,
+    onDismiss: () -> Unit,
+    onCreate: (String, String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var colorHex by remember { mutableStateOf(CATEGORY_COLORS.first()) }
+    val cleanName = name.trim()
+    val duplicate = cleanName.isNotEmpty() && (
+        existingCategories.any { it.name.equals(cleanName, ignoreCase = true) } ||
+            ExpenseCategory.entries.any {
+                it.label.equals(cleanName, ignoreCase = true) || it.name.equals(cleanName, ignoreCase = true)
+            }
+        )
+    val preview = CustomCategory(name = cleanName.ifBlank { "New category" }, colorHex = colorHex)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            CustomCategoryIcon(category = preview, modifier = Modifier.size(64.dp), iconSize = 30)
+        },
+        title = { Text("Create a category") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Give it a name and color. PaisaLens selects a matching icon locally from the name.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(32) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Category name") },
+                    placeholder = { Text("Pets, Rent, Gym…") },
+                    isError = duplicate,
+                    supportingText = {
+                        Text(if (duplicate) "A category with this name already exists" else "Up to 32 characters")
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.medium,
+                )
+                Text(
+                    text = "Color",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(CATEGORY_COLORS) { option ->
+                        FilterChip(
+                            selected = colorHex == option,
+                            onClick = { colorHex = option },
+                            leadingIcon = {
+                                Box(
+                                    Modifier
+                                        .size(20.dp)
+                                        .background(Color(android.graphics.Color.parseColor(option)), CircleShape),
+                                )
+                            },
+                            label = { Text(categoryColorLabel(option)) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onCreate(cleanName, colorHex) },
+                enabled = cleanName.isNotEmpty() && !duplicate,
+            ) {
+                Icon(Icons.Rounded.Add, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Create")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -483,3 +558,14 @@ private fun ManagementIcon(icon: androidx.compose.ui.graphics.vector.ImageVector
 }
 
 private val CATEGORY_COLORS = listOf("#7784FF", "#21D19F", "#FF8A65", "#B48CFF", "#5EB7FF", "#FFC857", "#FF72AE")
+
+private fun categoryColorLabel(colorHex: String): String = when (colorHex.uppercase()) {
+    "#7784FF" -> "Indigo"
+    "#21D19F" -> "Mint"
+    "#FF8A65" -> "Coral"
+    "#B48CFF" -> "Violet"
+    "#5EB7FF" -> "Sky"
+    "#FFC857" -> "Gold"
+    "#FF72AE" -> "Pink"
+    else -> "Color"
+}

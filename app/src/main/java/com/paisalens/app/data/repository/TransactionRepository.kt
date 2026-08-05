@@ -4,6 +4,7 @@ import android.content.Context
 import com.paisalens.app.data.backup.PaisaLensBackupCodec
 import com.paisalens.app.data.importer.StatementImporter
 import com.paisalens.app.data.local.PaisaLensDatabase
+import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategoryBudget
@@ -74,9 +75,22 @@ class TransactionRepository(
 
     suspend fun load() = withContext(Dispatchers.IO) { refresh() }
 
-    suspend fun insertParsed(items: List<ParsedTransaction>): Int = withContext(Dispatchers.IO) {
+    suspend fun ingestSms(
+        items: List<ParsedTransaction>,
+        availabilityUpdates: List<AccountAvailabilityUpdate>,
+    ): SmsIngestResult = withContext(Dispatchers.IO) {
         val encrypted = items.map { it to cipher.encrypt(it.rawMessage) }
         val count = database.insertAll(encrypted)
+        val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
+        refresh()
+        SmsIngestResult(count, availabilityCount)
+    }
+
+    suspend fun insertParsed(items: List<ParsedTransaction>): Int =
+        ingestSms(items, emptyList()).insertedTransactions
+
+    suspend fun updateAccountAvailability(update: AccountAvailabilityUpdate): Int = withContext(Dispatchers.IO) {
+        val count = database.applyAccountAvailability(listOf(update))
         refresh()
         count
     }
@@ -195,9 +209,12 @@ class TransactionRepository(
         refresh()
     }
 
-    suspend fun addCustomCategory(name: String, colorHex: String) = withContext(Dispatchers.IO) {
-        database.addCustomCategory(name, colorHex)
+    suspend fun addCustomCategory(name: String, colorHex: String): CustomCategory = withContext(Dispatchers.IO) {
+        val cleanName = name.trim().take(32)
+        val id = database.addCustomCategory(cleanName, colorHex)
         refresh()
+        database.getCustomCategories().firstOrNull { it.id == id }
+            ?: CustomCategory(id = id, name = cleanName, colorHex = colorHex)
     }
 
     suspend fun updateCustomCategory(category: CustomCategory) = withContext(Dispatchers.IO) {
@@ -305,3 +322,8 @@ class TransactionRepository(
         PaisaLensWidgetProvider.updateAll(context)
     }
 }
+
+data class SmsIngestResult(
+    val insertedTransactions: Int,
+    val updatedAccounts: Int,
+)

@@ -92,6 +92,29 @@ data class AccountProfile(
     val type: AccountType,
     val accountHint: String? = null,
     val institution: String? = null,
+    val balanceMinor: Long? = null,
+    val availableCreditMinor: Long? = null,
+    val availabilityFetchedAt: Long? = null,
+    val availabilitySender: String? = null,
+)
+
+data class AccountAvailabilityUpdate(
+    val bankKey: String,
+    val institutionName: String,
+    val accountType: AccountType,
+    val accountHint: String?,
+    val balanceMinor: Long? = null,
+    val availableCreditMinor: Long? = null,
+    val fetchedAt: Long,
+    val sender: String,
+)
+
+data class ReceiptOcrDraft(
+    val amountMinor: Long?,
+    val merchant: String,
+    val category: ExpenseCategory,
+    val note: String,
+    val sourceLabel: String,
 )
 
 data class CustomCategory(

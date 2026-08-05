@@ -20,12 +20,17 @@ class TransactionSmsReceiver : BroadcastReceiver() {
         val body = messages.joinToString(separator = "") { it.displayMessageBody.orEmpty() }
         val timestamp = messages.first().timestampMillis
         val app = context.applicationContext as PaisaLensApplication
-        val parsed = app.parser.parse(sender, body, timestamp) ?: return
+        val parsed = app.parser.parse(sender, body, timestamp)
+        val availability = app.availabilityParser.parse(sender, body, timestamp)
+        if (parsed == null && availability == null) return
         val pendingResult = goAsync()
 
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                app.repository.insertParsed(listOf(parsed))
+                app.repository.ingestSms(
+                    items = listOfNotNull(parsed),
+                    availabilityUpdates = listOfNotNull(availability),
+                )
             } finally {
                 pendingResult.finish()
             }

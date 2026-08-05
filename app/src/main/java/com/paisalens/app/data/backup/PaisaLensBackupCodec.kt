@@ -92,6 +92,10 @@ object PaisaLensBackupCodec {
                 data.writeUTF(account.type.name)
                 data.writeNullable(account.accountHint)
                 data.writeNullable(account.institution)
+                data.writeNullableLong(account.balanceMinor)
+                data.writeNullableLong(account.availableCreditMinor)
+                data.writeNullableLong(account.availabilityFetchedAt)
+                data.writeNullable(account.availabilitySender)
             }
             data.writeInt(snapshot.customCategories.size)
             snapshot.customCategories.forEach { category ->
@@ -169,6 +173,10 @@ object PaisaLensBackupCodec {
                     type = data.readEnum(AccountType.OTHER),
                     accountHint = data.readNullable(),
                     institution = data.readNullable(),
+                    balanceMinor = if (formatVersion >= 3) data.readNullableLong() else null,
+                    availableCreditMinor = if (formatVersion >= 3) data.readNullableLong() else null,
+                    availabilityFetchedAt = if (formatVersion >= 3) data.readNullableLong() else null,
+                    availabilitySender = if (formatVersion >= 3) data.readNullable() else null,
                 )
             }
             val customCategories = List(data.readSafeCount()) {
@@ -299,7 +307,7 @@ object PaisaLensBackupCodec {
         return enumValues<T>().firstOrNull { it.name == value } ?: default
     }
 
-    private const val FORMAT_VERSION = 2
+    private const val FORMAT_VERSION = 3
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

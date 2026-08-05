@@ -3,22 +3,29 @@ package com.paisalens.app
 import android.Manifest
 import android.app.KeyguardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.viewModels
 import androidx.biometric.BiometricPrompt
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import com.paisalens.app.ui.PaisaLensApp
 import com.paisalens.app.ui.PaisaLensViewModel
 import com.paisalens.app.ui.AppLockScreen
+import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.sms.BankSmsSupport
+import java.io.File
 import java.time.LocalDate
 
 class MainActivity : FragmentActivity() {
@@ -30,6 +37,7 @@ class MainActivity : FragmentActivity() {
     private var pendingBackupPassphrase: CharArray? = null
     private var pendingRestorePassphrase: CharArray? = null
     private var pendingStatementAccountId: Long? = null
+    private var pendingReceiptUri: Uri? = null
     private var isUnlocked by mutableStateOf(true)
     private var authPromptVisible = false
     private var authenticationPurpose = AuthenticationPurpose.UNLOCK
@@ -81,6 +89,20 @@ class MainActivity : FragmentActivity() {
         uri?.let { viewModel.previewStatement(contentResolver, it, accountId) }
     }
 
+    private val receiptCameraLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { captured ->
+        val uri = pendingReceiptUri
+        pendingReceiptUri = null
+        if (captured && uri != null) viewModel.recognizeReceipt(uri, "camera", deleteAfterProcessing = true)
+    }
+
+    private val receiptPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        uri?.let { viewModel.recognizeReceipt(it, "uploaded bill") }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -125,6 +147,13 @@ class MainActivity : FragmentActivity() {
                         )
                     },
                     onAppLockChange = ::changeAppLock,
+                    onCaptureReceipt = ::captureReceipt,
+                    onPickReceipt = {
+                        receiptPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    },
+                    onComposeBalanceSms = ::composeBalanceSms,
                 )
             } else {
                 AppLockScreen(onUnlock = { authenticate(AuthenticationPurpose.UNLOCK) })
@@ -192,6 +221,51 @@ class MainActivity : FragmentActivity() {
 
     private fun changeAppLock(enabled: Boolean) {
         if (enabled) authenticate(AuthenticationPurpose.ENABLE_LOCK) else viewModel.setAppLock(false)
+    }
+
+    private fun captureReceipt() {
+        runCatching {
+            val receiptDirectory = File(cacheDir, "receipts").apply { mkdirs() }
+            val file = File.createTempFile("receipt-", ".jpg", receiptDirectory)
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        }.onSuccess { uri ->
+            pendingReceiptUri = uri
+            receiptCameraLauncher.launch(uri)
+        }.onFailure {
+            Toast.makeText(this, "Could not open the camera", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun composeBalanceSms(account: AccountProfile) {
+        if (!hasSmsPermission) {
+            Toast.makeText(this, "Enable SMS access so PaisaLens can read the bank reply", Toast.LENGTH_LONG).show()
+            smsPermissionLauncher.launch(
+                arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS),
+            )
+            return
+        }
+        val command = BankSmsSupport.commandFor(account)
+        if (command == null) {
+            Toast.makeText(
+                this,
+                "No verified SMS enquiry command is available for ${account.name}",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${command.destination}")).apply {
+            putExtra("sms_body", command.message)
+        }
+        if (intent.resolveActivity(packageManager) == null) {
+            Toast.makeText(this, "No SMS app is available", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(
+            this,
+            "Review and send the ${command.bankName} enquiry. SMS charges may apply.",
+            Toast.LENGTH_LONG,
+        ).show()
+        startActivity(intent)
     }
 
     private enum class AuthenticationPurpose {

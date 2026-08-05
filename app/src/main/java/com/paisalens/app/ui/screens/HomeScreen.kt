@@ -1,10 +1,7 @@
 package com.paisalens.app.ui.screens
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,49 +11,59 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Analytics
-import androidx.compose.material.icons.rounded.CalendarMonth
-import androidx.compose.material.icons.rounded.Category
-import androidx.compose.material.icons.rounded.EventRepeat
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Payments
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CreditCard
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Sync
-import androidx.compose.material.icons.rounded.WarningAmber
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
-import com.paisalens.app.data.model.MerchantTransactionGroup
-import com.paisalens.app.data.model.RecurringPayment
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.ui.components.CategoryIcon
-import com.paisalens.app.ui.components.EmptyState
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.SectionHeader
@@ -64,37 +71,34 @@ import com.paisalens.app.ui.components.SpendingDonut
 import com.paisalens.app.ui.components.TransactionRow
 import com.paisalens.app.ui.components.formatMoney
 import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.math.abs
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     transactions: List<TransactionRecord>,
     budgets: List<CategoryBudget>,
+    accounts: List<AccountProfile>,
     isScanning: Boolean,
     hasSmsPermission: Boolean,
     onScan: () -> Unit,
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
-    onSeeAll: () -> Unit,
+    onRefreshAccount: (AccountProfile) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
-    uncategorizedMerchants: List<MerchantTransactionGroup>,
-    onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
-    recurringPayments: List<RecurringPayment>,
-    onReviewTransactions: () -> Unit,
-    insightCount: Int,
-    loanCount: Int,
-    onAnalytics: () -> Unit,
-    onCalendar: () -> Unit,
-    onLoans: () -> Unit,
 ) {
     val now = remember { ZonedDateTime.now() }
+    var selectedCategory by remember { mutableStateOf<ExpenseCategory?>(null) }
     val confirmedTransactions = remember(transactions) {
         transactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
     }
-    val reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW }
-    val monthly = remember(transactions, now.monthValue, now.year) {
+    val monthly = remember(confirmedTransactions, now.monthValue, now.year) {
         confirmedTransactions.filter {
             val date = Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault())
             date.monthValue == now.monthValue && date.year == now.year
@@ -112,15 +116,22 @@ fun HomeScreen(
         .mapValues { (_, records) -> records.sumOf { it.amountMinor } }
         .toList()
         .sortedByDescending { it.second }
-    val recent = confirmedTransactions.take(5)
+    val bankAccounts = accounts.filter { it.type == AccountType.BANK_ACCOUNT }
+    val creditCards = accounts.filter { it.type == AccountType.CREDIT_CARD }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 24.dp),
+        contentPadding = PaddingValues(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         item {
-            HomeHeader()
+            HomeHeader(
+                isScanning = isScanning,
+                hasSmsPermission = hasSmsPermission,
+                onScan = onScan,
+                onRequestPermission = onRequestPermission,
+                onAdd = onAdd,
+            )
         }
         item {
             BalanceHero(
@@ -131,352 +142,143 @@ fun HomeScreen(
             )
         }
         item {
-            QuickActions(
-                isScanning = isScanning,
-                hasSmsPermission = hasSmsPermission,
-                onScan = onScan,
-                onRequestPermission = onRequestPermission,
-                onAdd = onAdd,
+            SpendOverviewCard(
+                expenseTotal = expenseTotal,
+                refunds = refunds,
+                income = income,
+                remaining = remaining,
+                hasPlan = budgetTotal > 0 || income > 0,
             )
         }
         item {
-            MoneyTools(
-                insightCount = insightCount,
-                loanCount = loanCount,
-                onAnalytics = onAnalytics,
-                onCalendar = onCalendar,
-                onLoans = onLoans,
+            CategorySpendCard(
+                categoryTotals = categoryTotals,
+                expenseTotal = expenseTotal,
+                onCategoryClick = { selectedCategory = it },
             )
         }
-        if (reviewCount > 0) {
+        item { SectionHeader("Bank balances") }
+        if (bankAccounts.isEmpty()) {
             item {
-                ReviewPromptCard(reviewCount = reviewCount, onReview = onReviewTransactions)
-            }
-        }
-        uncategorizedMerchants.firstOrNull()?.let { merchantGroup ->
-            item {
-                MerchantCategoryPromptCard(
-                    group = merchantGroup,
-                    remainingGroupCount = uncategorizedMerchants.size,
-                    onChooseCategory = { onCategorizeMerchant(merchantGroup) },
+                AvailabilityEmptyCard(
+                    title = "No bank accounts detected",
+                    body = "Scan SMS alerts containing account last-four digits, or add an account in Settings.",
                 )
-            }
-        }
-        if (transactions.isEmpty()) {
-            item {
-                PaisaCard {
-                    EmptyState(
-                        title = "Your dashboard is ready",
-                        body = if (hasSmsPermission) {
-                            "Scan transaction alerts or add your first expense."
-                        } else {
-                            "Allow SMS access or add transactions manually."
-                        },
-                    )
-                }
             }
         } else {
-            item {
-                Column {
-                    SectionHeader("Spending breakdown")
-                    Spacer(Modifier.height(10.dp))
-                    PaisaCard {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(18.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            SpendingDonut(
-                                values = categoryTotals.take(5),
-                                totalMinor = expenseTotal,
-                            )
-                            Spacer(Modifier.width(18.dp))
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(11.dp),
-                            ) {
-                                categoryTotals.take(4).forEach { (category, amount) ->
-                                    CategoryLegend(category, amount, expenseTotal)
-                                }
-                                if (categoryTotals.isEmpty()) {
-                                    Text(
-                                        "No expenses this month",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (categoryTotals.isNotEmpty()) {
-                item {
-                    InsightCard(
-                        category = categoryTotals.first().first,
-                        amountMinor = categoryTotals.first().second,
-                        totalMinor = expenseTotal,
-                    )
-                }
-            }
-            if (recurringPayments.isNotEmpty()) {
-                item { RecurringPaymentsCard(recurringPayments.take(3)) }
-            }
-            item {
-                Column {
-                    SectionHeader(
-                        title = "Recent activity",
-                        action = "See all",
-                        onAction = onSeeAll,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    PaisaCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                            recent.forEach { transaction ->
-                                TransactionRow(
-                                    transaction = transaction,
-                                    onClick = { onTransactionClick(transaction) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MoneyTools(
-    insightCount: Int,
-    loanCount: Int,
-    onAnalytics: () -> Unit,
-    onCalendar: () -> Unit,
-    onLoans: () -> Unit,
-) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ToolShortcut(
-            icon = Icons.Rounded.Analytics,
-            title = "Analytics",
-            subtitle = if (insightCount > 0) "$insightCount insights" else "Trends",
-            onClick = onAnalytics,
-            modifier = Modifier.weight(1f),
-        )
-        ToolShortcut(
-            icon = Icons.Rounded.CalendarMonth,
-            title = "Calendar",
-            subtitle = "Daily view",
-            onClick = onCalendar,
-            modifier = Modifier.weight(1f),
-        )
-        ToolShortcut(
-            icon = Icons.Rounded.Payments,
-            title = "Loans",
-            subtitle = if (loanCount > 0) "$loanCount tracked" else "EMI tracker",
-            onClick = onLoans,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun ToolShortcut(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-    modifier: Modifier,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier,
-        color = MaterialTheme.colorScheme.surface,
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(7.dp))
-            Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
-            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-        }
-    }
-}
-
-@Composable
-private fun ReviewPromptCard(reviewCount: Int, onReview: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.62f),
-        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(Icons.Rounded.WarningAmber, contentDescription = null)
-            Column(modifier = Modifier.weight(1f)) {
-                Text("$reviewCount transaction${if (reviewCount == 1) "" else "s"} need review", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Confirm the merchant and category before these affect your dashboard.",
-                    style = MaterialTheme.typography.bodySmall,
+            items(bankAccounts, key = { "bank-${it.id}" }) { account ->
+                AccountAvailabilityTile(
+                    account = account,
+                    valueMinor = account.balanceMinor,
+                    valueLabel = "Current balance",
+                    icon = Icons.Rounded.AccountBalance,
+                    onRefresh = { onRefreshAccount(account) },
                 )
             }
-            Button(onClick = onReview) { Text("Review") }
         }
-    }
-}
-
-@Composable
-private fun RecurringPaymentsCard(payments: List<RecurringPayment>) {
-    Column {
-        SectionHeader("Recurring payments")
-        Spacer(Modifier.height(8.dp))
-        PaisaCard(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                payments.forEach { payment ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            shape = CircleShape,
-                        ) {
-                            Icon(
-                                Icons.Rounded.EventRepeat,
-                                contentDescription = null,
-                                modifier = Modifier.padding(10.dp).size(20.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(11.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(payment.merchant, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                "Expected ${formatDueDate(payment.nextDueAt)} · ${if (payment.intervalDays == 7) "weekly" else "monthly"}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Text(formatMoney(payment.typicalAmountMinor), style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun formatDueDate(timestamp: Long): String = Instant.ofEpochMilli(timestamp)
-    .atZone(ZoneId.systemDefault())
-    .format(DateTimeFormatter.ofPattern("d MMM"))
-
-@Composable
-private fun MerchantCategoryPromptCard(
-    group: MerchantTransactionGroup,
-    remainingGroupCount: Int,
-    onChooseCategory: () -> Unit,
-) {
-    PaisaCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    shape = CircleShape,
-                ) {
-                    Icon(
-                        Icons.Rounded.Category,
-                        contentDescription = null,
-                        modifier = Modifier.padding(10.dp).size(22.dp),
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "What category is ${group.merchant}?",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = if (group.transactionCount == 1) {
-                            "Categorize this expense and remember it for next time."
-                        } else {
-                            "Apply one category to all ${group.transactionCount} matching expenses."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = if (remainingGroupCount == 1) {
-                        "1 merchant needs a category"
-                    } else {
-                        "$remainingGroupCount merchants need categories"
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        item { SectionHeader("Credit available") }
+        if (creditCards.isEmpty()) {
+            item {
+                AvailabilityEmptyCard(
+                    title = "No credit cards detected",
+                    body = "Cards appear after a card SMS is scanned or when you add one in Settings.",
                 )
-                Button(onClick = onChooseCategory) {
-                    Text("Choose category")
-                }
+            }
+        } else {
+            items(creditCards, key = { "card-${it.id}" }) { account ->
+                AccountAvailabilityTile(
+                    account = account,
+                    valueMinor = account.availableCreditMinor,
+                    valueLabel = "Available credit limit",
+                    icon = Icons.Rounded.CreditCard,
+                    onRefresh = { onRefreshAccount(account) },
+                )
             }
         }
+    }
+
+    selectedCategory?.let { category ->
+        val categoryExpenses = remember(monthlyExpenses, category) {
+            monthlyExpenses
+                .filter { it.category == category }
+                .sortedByDescending { it.occurredAt }
+        }
+        CategorySpendingSheet(
+            category = category,
+            month = YearMonth.from(now),
+            today = now.toLocalDate(),
+            expenses = categoryExpenses,
+            onDismiss = { selectedCategory = null },
+            onTransactionClick = { transaction ->
+                selectedCategory = null
+                onTransactionClick(transaction)
+            },
+        )
     }
 }
 
 @Composable
-private fun HomeHeader() {
+private fun HomeHeader(
+    isScanning: Boolean,
+    hasSmsPermission: Boolean,
+    onScan: () -> Unit,
+    onRequestPermission: () -> Unit,
+    onAdd: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = "PaisaLens",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "A clear view of your money",
+                text = "Your private money overview",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            shape = CircleShape,
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            HomeActionButton(
+                contentDescription = if (hasSmsPermission) "Scan SMS" else "Enable SMS access",
+                onClick = if (hasSmsPermission) onScan else onRequestPermission,
+                enabled = !isScanning,
             ) {
-                Icon(
-                    Icons.Rounded.Lock,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("Private", style = MaterialTheme.typography.labelMedium)
+                if (isScanning) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.Sync, contentDescription = null)
+                }
             }
+            HomeActionButton(contentDescription = "Add transaction", onClick = onAdd) {
+                Icon(Icons.Rounded.Add, contentDescription = null)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeActionButton(
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        shape = CircleShape,
+    ) {
+        IconButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.size(48.dp).semantics { this.contentDescription = contentDescription },
+        ) {
+            content()
         }
     }
 }
@@ -517,11 +319,7 @@ private fun BalanceHero(
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(5.dp))
-                MoneyText(
-                    amountMinor = spent,
-                    style = MaterialTheme.typography.displayLarge,
-                    color = Color.White,
-                )
+                MoneyText(amountMinor = spent, style = MaterialTheme.typography.displayLarge, color = Color.White)
                 Spacer(Modifier.height(22.dp))
                 Surface(
                     color = Color.Black.copy(alpha = 0.15f),
@@ -529,9 +327,7 @@ private fun BalanceHero(
                     shape = MaterialTheme.shapes.medium,
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -546,9 +342,8 @@ private fun BalanceHero(
                         )
                         if (hasBudget || hasIncome) {
                             Text(
-                                text = (if (remaining < 0) "−" else "") + formatMoney(kotlin.math.abs(remaining)),
+                                text = (if (remaining < 0) "−" else "") + formatMoney(abs(remaining)),
                                 style = MaterialTheme.typography.titleMedium,
-                                color = Color.White,
                             )
                         }
                     }
@@ -559,67 +354,83 @@ private fun BalanceHero(
 }
 
 @Composable
-private fun QuickActions(
-    isScanning: Boolean,
-    hasSmsPermission: Boolean,
-    onScan: () -> Unit,
-    onRequestPermission: () -> Unit,
-    onAdd: () -> Unit,
+private fun SpendOverviewCard(
+    expenseTotal: Long,
+    refunds: Long,
+    income: Long,
+    remaining: Long,
+    hasPlan: Boolean,
 ) {
+    Column {
+        SectionHeader("Spend overview")
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(horizontal = 18.dp, vertical = 8.dp)) {
+                OverviewRow("Gross expenses", expenseTotal)
+                OverviewRow("Refunds received", refunds)
+                OverviewRow("Income this month", income)
+                if (hasPlan) OverviewRow("Available after spending", remaining, signed = true)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverviewRow(label: String, amountMinor: Long, signed: Boolean = false) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        val scanInteraction = remember { MutableInteractionSource() }
-        val scanPressed by scanInteraction.collectIsPressedAsState()
-        val scanScale by animateFloatAsState(
-            if (scanPressed) 0.97f else 1f,
-            animationSpec = tween(120),
-            label = "scanPress",
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = if (signed && amountMinor < 0) "−${formatMoney(abs(amountMinor))}" else formatMoney(amountMinor),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
         )
-        Button(
-            onClick = if (hasSmsPermission) onScan else onRequestPermission,
-            enabled = !isScanning,
-            modifier = Modifier
-                .weight(1f)
-                .height(52.dp)
-                .scale(scanScale),
-            interactionSource = scanInteraction,
-            shape = MaterialTheme.shapes.medium,
-        ) {
-            if (isScanning) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(19.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary,
+    }
+}
+
+@Composable
+private fun CategorySpendCard(
+    categoryTotals: List<Pair<ExpenseCategory, Long>>,
+    expenseTotal: Long,
+    onCategoryClick: (ExpenseCategory) -> Unit,
+) {
+    Column {
+        SectionHeader("Spending breakdown")
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(Modifier.fillMaxWidth()) {
+            if (categoryTotals.isEmpty()) {
+                Text(
+                    text = "No categorized expenses this month.",
+                    modifier = Modifier.padding(18.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(20.dp))
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    SpendingDonut(values = categoryTotals.take(5), totalMinor = expenseTotal)
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        text = "Tap a category to see its daily trend and expenses",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    categoryTotals.forEach { (category, amount) ->
+                        CategoryLegend(
+                            category = category,
+                            amountMinor = amount,
+                            totalMinor = expenseTotal,
+                            onClick = { onCategoryClick(category) },
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.width(8.dp))
-            Text(if (isScanning) "Scanning…" else if (hasSmsPermission) "Scan SMS" else "Enable SMS")
-        }
-
-        val addInteraction = remember { MutableInteractionSource() }
-        val addPressed by addInteraction.collectIsPressedAsState()
-        val addScale by animateFloatAsState(
-            if (addPressed) 0.97f else 1f,
-            animationSpec = tween(120),
-            label = "addPress",
-        )
-        OutlinedButton(
-            onClick = onAdd,
-            modifier = Modifier
-                .weight(1f)
-                .height(52.dp)
-                .scale(addScale),
-            interactionSource = addInteraction,
-            shape = MaterialTheme.shapes.medium,
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
-        ) {
-            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Add manually")
         }
     }
 }
@@ -629,64 +440,342 @@ private fun CategoryLegend(
     category: ExpenseCategory,
     amountMinor: Long,
     totalMinor: Long,
+    onClick: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        CategoryIcon(category, modifier = Modifier.size(34.dp), iconSize = 17)
-        Spacer(Modifier.width(9.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                category.label,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-            )
-            Text(
-                if (totalMinor > 0) (amountMinor * 100 / totalMinor).toString() + "% of spend" else "No spend",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.Transparent,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CategoryIcon(category, modifier = Modifier.size(40.dp), iconSize = 19)
+            Spacer(Modifier.width(11.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(category.label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                Text(
+                    if (totalMinor > 0) "${amountMinor * 100 / totalMinor}% of spend" else "No spend",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(formatMoney(amountMinor), style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                imageVector = Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(formatMoney(amountMinor), style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+private data class CategoryDailySpend(
+    val date: LocalDate,
+    val amountMinor: Long,
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CategorySpendingSheet(
+    category: ExpenseCategory,
+    month: YearMonth,
+    today: LocalDate,
+    expenses: List<TransactionRecord>,
+    onDismiss: () -> Unit,
+    onTransactionClick: (TransactionRecord) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val monthFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH) }
+    val totalMinor = remember(expenses) { expenses.sumOf { it.amountMinor } }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+            contentPadding = PaddingValues(bottom = 28.dp),
+        ) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CategoryIcon(category = category, modifier = Modifier.size(48.dp), iconSize = 22)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(category.label, style = MaterialTheme.typography.headlineMedium)
+                        Text(
+                            text = month.format(monthFormatter),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Rounded.Close, contentDescription = "Close category details")
+                    }
+                }
+            }
+            item {
+                CategoryDailySpendingChart(
+                    expenses = expenses,
+                    month = month,
+                    today = today,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                )
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text("Expenses", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = "${expenses.size} ${if (expenses.size == 1) "transaction" else "transactions"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    MoneyText(amountMinor = totalMinor, style = MaterialTheme.typography.titleLarge)
+                }
+            }
+            if (expenses.isEmpty()) {
+                item {
+                    Text(
+                        text = "No expenses were recorded in this category during this month.",
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                items(expenses, key = { "category-expense-${it.id}" }) { expense ->
+                    TransactionRow(
+                        transaction = expense,
+                        onClick = { onTransactionClick(expense) },
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun InsightCard(
-    category: ExpenseCategory,
-    amountMinor: Long,
-    totalMinor: Long,
+private fun CategoryDailySpendingChart(
+    expenses: List<TransactionRecord>,
+    month: YearMonth,
+    today: LocalDate,
+    modifier: Modifier = Modifier,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .background(MaterialTheme.colorScheme.primary, CircleShape),
-                contentAlignment = Alignment.Center,
+    val zoneId = remember { ZoneId.systemDefault() }
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("en-IN")) }
+    val points = remember(expenses, month, today, zoneId) {
+        val totalsByDate = expenses
+            .groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zoneId).toLocalDate() }
+            .mapValues { (_, rows) -> rows.sumOf { it.amountMinor } }
+        val lastDay = if (YearMonth.from(today) == month) today.dayOfMonth else month.lengthOfMonth()
+        (1..lastDay).map { day ->
+            val date = month.atDay(day)
+            CategoryDailySpend(date, totalsByDate[date] ?: 0L)
+        }
+    }
+    val totalMinor = expenses.sumOf { it.amountMinor }
+    val peakPoint = points.maxByOrNull { it.amountMinor }
+    val peakMinor = peakPoint?.amountMinor ?: 0L
+    val maxValue = peakMinor.coerceAtLeast(1L)
+    val midpoint = points.getOrNull(points.lastIndex / 2)?.date
+    val chartDescription = buildString {
+        append("Daily spending line chart for ${month.month.name.lowercase().replaceFirstChar { it.titlecase() }}. ")
+        append("Horizontal axis is date and vertical axis is spending in rupees. ")
+        append("Total ${formatMoney(totalMinor)} across ${expenses.size} expenses. ")
+        peakPoint?.takeIf { it.amountMinor > 0 }?.let {
+            append("Highest daily spend ${formatMoney(it.amountMinor)} on ${it.date.format(dateFormatter)}. ")
+        }
+        append("Exact transactions are listed below.")
+    }
+    val lineColor = MaterialTheme.colorScheme.primary
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+
+    PaisaCard(modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
             ) {
-                Icon(
-                    Icons.Rounded.AutoAwesome,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                )
-            }
-            Spacer(Modifier.width(13.dp))
-            Column {
-                Text("Monthly insight", style = MaterialTheme.typography.labelLarge)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Daily spending", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "Y-axis: spend · X-axis: daily date",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    text = category.label + " is your largest category at " +
-                        (if (totalMinor > 0) (amountMinor * 100 / totalMinor) else 0) + "%.",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "Peak ${formatMoney(peakMinor)}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
+            Row(modifier = Modifier.fillMaxWidth().height(158.dp)) {
+                Column(
+                    modifier = Modifier.width(64.dp).height(142.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    Text(formatAxisMoney(maxValue), style = MaterialTheme.typography.labelSmall)
+                    Text(formatAxisMoney(maxValue / 2), style = MaterialTheme.typography.labelSmall)
+                    Text("₹0", style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(Modifier.width(8.dp))
+                Canvas(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(142.dp)
+                        .semantics { contentDescription = chartDescription },
+                ) {
+                    val verticalInset = 6.dp.toPx()
+                    val plotHeight = (size.height - verticalInset * 2).coerceAtLeast(1f)
+                    repeat(3) { index ->
+                        val y = verticalInset + plotHeight * index / 2f
+                        drawLine(
+                            color = gridColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+                    val coordinates = points.mapIndexed { index, point ->
+                        val x = if (points.size <= 1) size.width / 2f else size.width * index / points.lastIndex
+                        val y = verticalInset + plotHeight * (1f - point.amountMinor.toFloat() / maxValue.toFloat())
+                        Offset(x, y)
+                    }
+                    if (coordinates.size > 1) {
+                        val path = Path().apply {
+                            moveTo(coordinates.first().x, coordinates.first().y)
+                            coordinates.drop(1).forEach { lineTo(it.x, it.y) }
+                        }
+                        drawPath(
+                            path = path,
+                            color = lineColor,
+                            style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                        )
+                    }
+                    coordinates.forEachIndexed { index, coordinate ->
+                        if (points[index].amountMinor > 0) {
+                            drawCircle(color = lineColor, radius = 4.dp.toPx(), center = coordinate)
+                        }
+                    }
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Spacer(Modifier.width(72.dp))
+                Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(points.firstOrNull()?.date?.format(dateFormatter).orEmpty(), style = MaterialTheme.typography.labelSmall)
+                    midpoint?.let { Text(it.format(dateFormatter), style = MaterialTheme.typography.labelSmall) }
+                    Text(points.lastOrNull()?.date?.format(dateFormatter).orEmpty(), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Text(
+                text = "Date",
+                modifier = Modifier.fillMaxWidth().padding(start = 72.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
+
+private fun formatAxisMoney(amountMinor: Long): String = when {
+    amountMinor >= 10_000_000 -> compactAxisValue(amountMinor / 10_000_000.0, "L")
+    amountMinor >= 100_000 -> compactAxisValue(amountMinor / 100_000.0, "K")
+    else -> "₹${amountMinor / 100}"
+}
+
+private fun compactAxisValue(value: Double, suffix: String): String {
+    val formatted = String.format(Locale.US, "%.1f", value).removeSuffix(".0")
+    return "₹$formatted$suffix"
+}
+
+@Composable
+private fun AccountAvailabilityTile(
+    account: AccountProfile,
+    valueMinor: Long?,
+    valueLabel: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onRefresh: () -> Unit,
+) {
+    PaisaCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(18.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = CircleShape,
+                ) {
+                    Icon(icon, contentDescription = null, modifier = Modifier.padding(10.dp).size(22.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = account.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = account.accountHint?.let { "•••• $it" } ?: account.type.label,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(
+                    onClick = onRefresh,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ${account.name}")
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(valueLabel, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (valueMinor == null) {
+                Text("Not available", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            } else {
+                MoneyText(valueMinor, style = MaterialTheme.typography.headlineSmall)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = account.availabilityFetchedAt?.let { "Fetched ${formatAvailabilityTime(it)}" }
+                    ?: "Not fetched from SMS yet",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AvailabilityEmptyCard(title: String, body: String) {
+    PaisaCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(18.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+private fun formatAvailabilityTime(timestamp: Long): String = Instant.ofEpochMilli(timestamp)
+    .atZone(ZoneId.systemDefault())
+    .format(DateTimeFormatter.ofPattern("d MMM, h:mm a", Locale.forLanguageTag("en-IN")))

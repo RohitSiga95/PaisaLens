@@ -17,12 +17,15 @@ import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.StatementImportPreview
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.sanitizeTags
 import com.paisalens.app.data.model.normalizedCurrency
 import com.paisalens.app.data.export.PaisaLensWorkbookExporter
+import com.paisalens.app.data.ocr.ReceiptOcrProcessor
+import com.paisalens.app.data.parser.ReceiptTextParser
 import com.paisalens.app.sms.SmsInboxScanner
 import com.paisalens.app.widget.PaisaLensWidgetProvider
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -46,6 +49,9 @@ class PaisaLensViewModel(
     val exchangeRates = app.repository.exchangeRates
     val merchantAliases = app.repository.merchantAliases
     val insights = app.repository.insights
+
+    private val receiptOcrProcessor = ReceiptOcrProcessor()
+    private val receiptTextParser = ReceiptTextParser(app.parser::categorize)
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning = _isScanning.asStateFlow()
@@ -79,6 +85,12 @@ class PaisaLensViewModel(
 
     private val _isRefreshingRate = MutableStateFlow(false)
     val isRefreshingRate = _isRefreshingRate.asStateFlow()
+
+    private val _receiptDraft = MutableStateFlow<ReceiptOcrDraft?>(null)
+    val receiptDraft = _receiptDraft.asStateFlow()
+
+    private val _isReceiptOcrRunning = MutableStateFlow(false)
+    val isReceiptOcrRunning = _isReceiptOcrRunning.asStateFlow()
 
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val events = _events.asSharedFlow()
@@ -137,17 +149,21 @@ class PaisaLensViewModel(
         viewModelScope.launch {
             _isScanning.value = true
             runCatching {
-                val parsed = SmsInboxScanner(context, app.parser).scan()
-                app.repository.insertParsed(parsed)
-            }.onSuccess { inserted ->
+                val scan = SmsInboxScanner(context, app.parser, app.availabilityParser).scan()
+                app.repository.ingestSms(scan.transactions, scan.availabilityUpdates)
+            }.onSuccess { result ->
                 val now = System.currentTimeMillis()
                 app.preferences.lastScanAt = now
                 _lastScanAt.value = now
                 _events.emit(
-                    if (inserted == 0) {
-                        "You're up to date"
-                    } else {
-                        "$inserted new transaction" + (if (inserted == 1) "" else "s") + " added"
+                    when {
+                        result.insertedTransactions > 0 -> {
+                            "${result.insertedTransactions} new transaction" +
+                                (if (result.insertedTransactions == 1) "" else "s") + " added" +
+                                (if (result.updatedAccounts > 0) " · balances updated" else "")
+                        }
+                        result.updatedAccounts > 0 -> "Account balances updated"
+                        else -> "You're up to date"
                     },
                 )
             }.onFailure {
@@ -155,6 +171,29 @@ class PaisaLensViewModel(
             }
             _isScanning.value = false
         }
+    }
+
+    fun recognizeReceipt(uri: Uri, sourceLabel: String, deleteAfterProcessing: Boolean = false) {
+        if (_isReceiptOcrRunning.value) return
+        viewModelScope.launch {
+            _isReceiptOcrRunning.value = true
+            runCatching { receiptOcrProcessor.recognize(app, uri) }
+                .onSuccess { text ->
+                    if (text.isBlank()) {
+                        _events.emit("No readable text found. Try a clearer bill image")
+                    } else {
+                        _receiptDraft.value = receiptTextParser.parse(text, sourceLabel)
+                        _events.emit("Bill details extracted locally. Review before saving")
+                    }
+                }
+                .onFailure { _events.emit("Could not read that bill. Try a clearer image") }
+            if (deleteAfterProcessing) runCatching { app.contentResolver.delete(uri, null, null) }
+            _isReceiptOcrRunning.value = false
+        }
+    }
+
+    fun clearReceiptDraft() {
+        _receiptDraft.value = null
     }
 
     fun addManual(
@@ -273,9 +312,20 @@ class PaisaLensViewModel(
     }
 
     fun addCustomCategory(name: String, colorHex: String) {
+        addCustomCategory(name, colorHex) { }
+    }
+
+    fun addCustomCategory(
+        name: String,
+        colorHex: String,
+        onAdded: (CustomCategory) -> Unit,
+    ) {
         viewModelScope.launch {
             runCatching { app.repository.addCustomCategory(name, colorHex) }
-                .onSuccess { _events.emit("Custom category added") }
+                .onSuccess { category ->
+                    onAdded(category)
+                    _events.emit("${category.name} category added")
+                }
                 .onFailure { _events.emit("That category name already exists") }
         }
     }

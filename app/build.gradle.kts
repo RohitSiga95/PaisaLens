@@ -12,8 +12,8 @@ android {
         applicationId = "com.paisalens.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -62,6 +62,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
+    // Bundled model: receipt OCR works immediately and never uploads bill images.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
