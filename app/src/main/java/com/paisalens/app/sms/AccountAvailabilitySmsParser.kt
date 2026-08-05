@@ -7,11 +7,21 @@ import java.math.RoundingMode
 
 class AccountAvailabilitySmsParser {
     fun parse(sender: String, body: String, timestamp: Long): AccountAvailabilityUpdate? {
+        val senderBankKey = BankSmsSupport.bankKey(sender)
+        val bankKey = senderBankKey ?: BankSmsSupport.bankKey(body) ?: senderBankFallback(sender)
         val availableCreditMinor = findAmount(body, availableCreditPatterns)
-        val balanceMinor = if (availableCreditMinor == null) findAmount(body, balancePatterns) else null
+        val senderBalancePatterns = if (senderBankKey == "hdfc") {
+            balancePatterns + hdfcDailyBalancePatterns
+        } else {
+            balancePatterns
+        }
+        val balanceMinor = if (availableCreditMinor == null) {
+            findAmount(body, senderBalancePatterns)
+        } else {
+            null
+        }
         if (balanceMinor == null && availableCreditMinor == null) return null
 
-        val bankKey = BankSmsSupport.bankKey("$sender $body") ?: senderBankFallback(sender)
         val type = if (availableCreditMinor != null) AccountType.CREDIT_CARD else AccountType.BANK_ACCOUNT
         return AccountAvailabilityUpdate(
             bankKey = bankKey,
@@ -58,6 +68,13 @@ class AccountAvailabilitySmsParser {
         val balancePatterns = listOf(
             Regex("(?i)(?:(?:available|avail\\.?|avl|current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+(?:available|is))[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
             Regex("(?i)(?:(?:available|avail\\.?|avl|current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+(?:available|is))[^0-9]{0,24}$AMOUNT\\s*(?:INR|Rupees?)"),
+        )
+
+        // VM-HDFCBK-S daily alerts can place the masked account and an as-of timestamp
+        // between "Available Balance" and the amount, so keep the relaxed gap HDFC-only.
+        val hdfcDailyBalancePatterns = listOf(
+            Regex("(?is)(?:available|avail\\.?|avl)\\s+bal(?:ance)?\\.?\\b.{0,140}?$CURRENCY\\s*$AMOUNT"),
+            Regex("(?is)bal(?:ance)?\\s+(?:in|for|of)\\s+(?:your\\s+)?(?:a/c|acct|account)\\b.{0,140}?$CURRENCY\\s*$AMOUNT"),
         )
 
         val accountHintPattern = Regex(

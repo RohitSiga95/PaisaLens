@@ -54,7 +54,7 @@
 | 🎯 | **Category budgets** | Tracks limits with progress and overspend states. |
 | 📗 | **Beautiful Excel export** | Creates a categorized workbook with transactions, trends, budgets, dashboard cards and native charts. |
 | 🏦 | **Accounts & cards** | Organizes transactions into bank accounts, credit cards, wallets, cash, or custom account profiles. |
-| 💳 | **Balances & available credit** | Combines duplicate SMS profiles by account last-four digits, uses textured bank-colored tiles, hides unfetched accounts in a collapsed section, and offers a user-confirmed SMS enquiry shortcut. |
+| 💳 | **Balances & available credit** | Reads transaction and daily HDFC available-balance alerts, combines duplicate SMS profiles by account last-four digits, uses textured bank-colored tiles, and hides unfetched accounts in a collapsed section. |
 | 🔁 | **Recurring payments** | Detects consistent weekly and monthly expenses and estimates the next due date. |
 | 🧩 | **Colorful categories & tags** | Uses meaningful category colors and icons, creates personal categories directly from any category picker, and adds searchable tags. |
 | ✅ | **Review inbox** | Holds uncertain merchant or category matches for confirmation before they affect analytics. |
@@ -116,7 +116,7 @@ You can also browse the [v1.5.1 release page](https://github.com/RohitSiga95/Pai
 **APK SHA-256**
 
 ```text
-1d8f764a2f1114b309678a66baa9d7835e1147b96805611d91673883d76b07e8
+fd6130f3a969a8dd843ab1eee8c1dea4590a2cb8a7247a186bfbce2f76a591a5
 ```
 
 ## Build it yourself
