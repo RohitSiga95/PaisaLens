@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">PaisaLens</title>
+  <desc id="desc">Private, offline expense intelligence for Android</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.55" stop-color="#17243a"/>
+      <stop offset="1" stop-color="#26366f"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#7784ff"/>
+      <stop offset="1" stop-color="#21d19f"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="360" rx="36" fill="url(#bg)"/>
+  <circle cx="1040" cy="-5" r="210" fill="#7784ff" opacity=".08"/>
+  <circle cx="1115" cy="330" r="165" fill="#21d19f" opacity=".08"/>
+  <g transform="translate(96 76)" filter="url(#shadow)">
+    <circle cx="104" cy="104" r="102" fill="#0e1a2c" stroke="url(#lens)" stroke-width="8"/>
+    <circle cx="92" cy="90" r="50" fill="none" stroke="url(#lens)" stroke-width="16"/>
+    <path d="M128 128l48 48" stroke="#21d19f" stroke-width="18" stroke-linecap="round"/>
+    <text x="91" y="110" text-anchor="middle" fill="#f5f7ff" font-family="Inter,Segoe UI,sans-serif" font-size="53" font-weight="800">₹</text>
+  </g>
+  <g transform="translate(360 95)">
+    <text x="0" y="82" fill="#f5f7ff" font-family="Inter,Segoe UI,sans-serif" font-size="80" font-weight="800" letter-spacing="-3">PaisaLens</text>
+    <text x="3" y="133" fill="#aab6cc" font-family="Inter,Segoe UI,sans-serif" font-size="27" font-weight="500">Private, offline expense intelligence for Android</text>
+    <g transform="translate(3 166)">
+      <rect width="156" height="42" rx="21" fill="#28366f"/>
+      <text x="78" y="28" text-anchor="middle" fill="#e2e5ff" font-family="Inter,Segoe UI,sans-serif" font-size="16" font-weight="700">100% ON-DEVICE</text>
+      <rect x="170" width="132" height="42" rx="21" fill="#0a4e3c"/>
+      <text x="236" y="28" text-anchor="middle" fill="#9af6d5" font-family="Inter,Segoe UI,sans-serif" font-size="16" font-weight="700">NO INTERNET</text>
+    </g>
+  </g>
+</svg>
