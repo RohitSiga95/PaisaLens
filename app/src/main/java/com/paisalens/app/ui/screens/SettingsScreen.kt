@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Rule
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Backup
@@ -77,6 +78,7 @@ fun SettingsScreen(
     reviewCount: Int,
     loanCount: Int,
     merchantAliasCount: Int,
+    smartRuleCount: Int,
     rateCount: Int,
     appLockEnabled: Boolean,
     widgetAmountsVisible: Boolean,
@@ -86,6 +88,7 @@ fun SettingsScreen(
     onManageAccounts: () -> Unit,
     onManageCategories: () -> Unit,
     onMerchantCleanup: () -> Unit,
+    onSmartCategoryRules: () -> Unit,
     onManageLoans: () -> Unit,
     onTravelMode: () -> Unit,
     onImportStatement: () -> Unit,
@@ -216,6 +219,18 @@ fun SettingsScreen(
                     title = "Custom categories",
                     subtitle = if (customCategoryCount == 0) "Create categories that match your life." else "$customCategoryCount custom categories",
                     onClick = onManageCategories,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.AutoMirrored.Rounded.Rule,
+                    title = "Smart category rules",
+                    subtitle = if (smartRuleCount == 0) {
+                        "Categorize future expenses by merchant, amount, or account."
+                    } else {
+                        "$smartRuleCount rule${if (smartRuleCount == 1) "" else "s"} running locally"
+                    },
+                    onClick = onSmartCategoryRules,
                     trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

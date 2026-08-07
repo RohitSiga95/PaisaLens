@@ -13,11 +13,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ReceiptLong
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -53,6 +55,7 @@ fun TransactionsScreen(
     transactions: List<TransactionRecord>,
     uncategorizedMerchants: List<MerchantTransactionGroup>,
     onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
+    onCalendar: () -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -85,16 +88,23 @@ fun TransactionsScreen(
             .padding(top = 12.dp),
     ) {
         Column(modifier = Modifier.padding(horizontal = 18.dp)) {
-            Text(
-                text = "Activity",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Every transaction, easy to find",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Activity",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "Every transaction, easy to find",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onCalendar) {
+                    Icon(Icons.Rounded.CalendarMonth, contentDescription = "Open spending calendar")
+                }
+            }
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(
                 value = query,
@@ -174,7 +184,7 @@ fun TransactionsScreen(
                     } else {
                         "Try a different search or filter."
                     },
-                    icon = Icons.Rounded.ReceiptLong,
+                    icon = Icons.AutoMirrored.Rounded.ReceiptLong,
                 )
             }
         } else {

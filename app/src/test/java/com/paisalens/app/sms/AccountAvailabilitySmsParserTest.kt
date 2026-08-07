@@ -36,6 +36,23 @@ class AccountAvailabilitySmsParserTest {
         assertEquals(AccountType.CREDIT_CARD, update.accountType)
         assertEquals("9876", update.accountHint)
         assertEquals(4_235_000L, update.availableCreditMinor)
+        assertNull(update.creditLimitMinor)
+        assertNull(update.balanceMinor)
+    }
+
+    @Test
+    fun extractsAvailableAndTotalCreditLimitsFromCardAlert() {
+        val update = parser.parse(
+            sender = "JD-SBICRD",
+            body = "Card XX9876: available credit INR 42,350. Your total credit limit is INR 1,00,000.",
+            timestamp = 1_700_000_000_200,
+        )
+
+        requireNotNull(update)
+        assertEquals(AccountType.CREDIT_CARD, update.accountType)
+        assertEquals("9876", update.accountHint)
+        assertEquals(4_235_000L, update.availableCreditMinor)
+        assertEquals(10_000_000L, update.creditLimitMinor)
         assertNull(update.balanceMinor)
     }
 

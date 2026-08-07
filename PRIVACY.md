@@ -1,18 +1,18 @@
 # PaisaLens Privacy Notice
 
-Last updated: 5 August 2026
+Last updated: 7 August 2026
 
 PaisaLens is designed to analyze and track personal expenses entirely on the Android device where it is installed.
 
 ## Data the app accesses
 
-If the user grants SMS permission, PaisaLens reads SMS messages to identify bank, credit-card, wallet, and UPI transaction alerts and the latest bank balance or available-credit value included in bank replies. It ignores messages recognized as OTPs, verification codes, reminders, statements, and payment requests.
+If the user grants SMS permission, PaisaLens reads SMS messages to identify bank, credit-card, wallet, and UPI transaction alerts, bank-balance snapshots, available-credit values, and total credit limits included in bank replies. It ignores messages recognized as OTPs, verification codes, reminders, statements, and payment requests.
 
 SMS permission is optional. Manual transaction tracking works without it.
 
 ## How data is used
 
-Detected transaction amount, merchant, date, source, account, direction, category, tags, review status, latest account balance, available credit, and fetched time are used only to provide the in-app dashboard, activity list, budgets, recurring-payment estimates, calendar, loan tracker, analytics, and organization tools. User-entered notes, account profiles, custom categories, tags, merchant cleanup rules, loan details, and merchant category choices are used only to organize the local ledger. SMS alert text retained with a detected transaction is encrypted with a key held by Android Keystore. For a balance-only reply, PaisaLens stores the extracted amount, sender label, account match, and timestamp—not the full reply text.
+Detected transaction amount, merchant, date, source, account, direction, category, tags, review status, account-balance history, available credit, total credit limit, and fetched time are used only to provide the in-app dashboard, activity list, budgets, utilisation tracker, due-date centre, cash-flow estimates, net-worth summary, recurring-payment estimates, calendar, loan tracker, analytics, and organization tools. User-entered notes, account profiles, bill reminders, net-worth items, custom categories, tags, smart category rules, merchant cleanup rules, loan details, and merchant category choices are used only to organize the local ledger and run on-device calculations. What-if scenarios are calculated in memory and do not change stored transactions or balances. SMS alert text retained with a detected transaction is encrypted with a key held by Android Keystore. For a balance-only reply, PaisaLens stores the extracted values, sender label, account match, and timestamp—not the full reply text.
 
 If the user taps an account refresh button, PaisaLens opens the phone's SMS app with a verified bank service number and enquiry keyword filled in where supported. PaisaLens does not send the SMS automatically, does not request Android's `SEND_SMS` permission, and cannot prevent carrier SMS charges. The user reviews and sends the message in the SMS app.
 
@@ -41,7 +41,7 @@ The home-screen widget hides financial amounts by default and whenever App lock 
 
 If the user chooses **Export Excel report**, PaisaLens writes the selected ledger data to the file location chosen through Android's system file picker. The exported workbook may be stored outside the app's private storage or in a user-selected document provider. PaisaLens does not upload the workbook, and the user controls how the exported file is stored or shared afterward.
 
-If the user chooses **Create encrypted backup**, PaisaLens creates a password-protected `.plbk` file containing the structured local ledger, budgets, account profiles, custom categories, tags, merchant rules, cleanup aliases, currency metadata, and loan trackers. The backup is encrypted on the device with AES-256-GCM using a key derived from the user's passphrase. Raw SMS message text and cached exchange-rate responses are not included. The file is written only to the location the user selects through Android's system file picker; PaisaLens does not upload it. PaisaLens cannot recover a forgotten backup passphrase.
+If the user chooses **Create encrypted backup**, PaisaLens creates a password-protected `.plbk` file containing the structured local ledger, budgets, account profiles, balance history, bill reminders, net-worth items, custom categories, tags, merchant and smart category rules, cleanup aliases, and loan trackers. The backup is encrypted on the device with AES-256-GCM using a key derived from the user's passphrase. Raw SMS message text and cached exchange-rate responses are not included. The file is written only to the location the user selects through Android's system file picker; PaisaLens does not upload it. PaisaLens cannot recover a forgotten backup passphrase.
 
 Choosing **Restore encrypted backup** replaces the current PaisaLens ledger and related organization data with the contents of the selected backup after its passphrase has been verified.
 

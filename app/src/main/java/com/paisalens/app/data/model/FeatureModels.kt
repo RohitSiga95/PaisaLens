@@ -40,7 +40,16 @@ data class LoanAccount(
     val notes: String? = null,
 ) {
     val remainingInstallments: Int get() = (tenureMonths - paidInstallments).coerceAtLeast(0)
-    val nextDueDate: LocalDate get() = LocalDate.ofEpochDay(startDateEpochDay).plusMonths(paidInstallments.toLong())
+    val nextDueDate: LocalDate
+        get() {
+            val anchor = LocalDate.ofEpochDay(startDateEpochDay)
+            val targetMonth = YearMonth.from(anchor).plusMonths(paidInstallments.toLong())
+            return if (anchor.dayOfMonth == YearMonth.from(anchor).lengthOfMonth()) {
+                targetMonth.atEndOfMonth()
+            } else {
+                targetMonth.atDay(anchor.dayOfMonth.coerceAtMost(targetMonth.lengthOfMonth()))
+            }
+        }
     val estimatedRemainingMinor: Long get() = emiMinor * remainingInstallments
     val progress: Float get() = if (tenureMonths <= 0) 0f else paidInstallments.toFloat() / tenureMonths
 }

@@ -1,15 +1,21 @@
 package com.paisalens.app.data.backup
 
 import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.NetWorthItem
+import com.paisalens.app.data.model.NetWorthKind
 import com.paisalens.app.data.model.MerchantAliasRule
 import com.paisalens.app.data.model.MerchantCategoryRule
 import com.paisalens.app.data.model.PaisaLensBackupSnapshot
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.SmartCategoryRule
+import com.paisalens.app.data.model.SmartRuleMatchType
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
@@ -94,6 +100,7 @@ object PaisaLensBackupCodec {
                 data.writeNullable(account.institution)
                 data.writeNullableLong(account.balanceMinor)
                 data.writeNullableLong(account.availableCreditMinor)
+                data.writeNullableLong(account.creditLimitMinor)
                 data.writeNullableLong(account.availabilityFetchedAt)
                 data.writeNullable(account.availabilitySender)
             }
@@ -159,6 +166,52 @@ object PaisaLensBackupCodec {
                 data.writeNullableLong(loan.accountId)
                 data.writeNullable(loan.notes)
             }
+            data.writeInt(snapshot.balanceHistory.size)
+            snapshot.balanceHistory.forEach { point ->
+                data.writeLong(point.id)
+                data.writeLong(point.accountId)
+                data.writeNullableLong(point.balanceMinor)
+                data.writeNullableLong(point.availableCreditMinor)
+                data.writeNullableLong(point.creditLimitMinor)
+                data.writeLong(point.recordedAt)
+                data.writeNullable(point.sender)
+            }
+            data.writeInt(snapshot.bills.size)
+            snapshot.bills.forEach { bill ->
+                data.writeLong(bill.id)
+                data.writeUTF(bill.title)
+                data.writeLong(bill.amountMinor)
+                data.writeLong(bill.dueDateEpochDay)
+                data.writeInt(bill.recurrenceMonths)
+                data.writeNullableLong(bill.accountId)
+                data.writeNullable(bill.notes)
+                data.writeBoolean(bill.isActive)
+                data.writeNullableLong(bill.lastPaidEpochDay)
+            }
+            data.writeInt(snapshot.netWorthItems.size)
+            snapshot.netWorthItems.forEach { item ->
+                data.writeLong(item.id)
+                data.writeUTF(item.name)
+                data.writeUTF(item.kind.name)
+                data.writeLong(item.valueMinor)
+                data.writeUTF(item.category)
+                data.writeLong(item.updatedAt)
+            }
+            data.writeInt(snapshot.smartCategoryRules.size)
+            snapshot.smartCategoryRules.forEach { rule ->
+                data.writeLong(rule.id)
+                data.writeUTF(rule.name)
+                data.writeUTF(rule.merchantPattern)
+                data.writeUTF(rule.matchType.name)
+                data.writeNullableLong(rule.minAmountMinor)
+                data.writeNullableLong(rule.maxAmountMinor)
+                data.writeNullableLong(rule.accountId)
+                data.writeUTF(rule.category.name)
+                data.writeNullableLong(rule.customCategoryId)
+                data.writeBoolean(rule.enabled)
+                data.writeInt(rule.priority)
+                data.writeLong(rule.updatedAt)
+            }
         }
         return bytes.toByteArray()
     }
@@ -175,6 +228,7 @@ object PaisaLensBackupCodec {
                     institution = data.readNullable(),
                     balanceMinor = if (formatVersion >= 3) data.readNullableLong() else null,
                     availableCreditMinor = if (formatVersion >= 3) data.readNullableLong() else null,
+                    creditLimitMinor = if (formatVersion >= 4) data.readNullableLong() else null,
                     availabilityFetchedAt = if (formatVersion >= 3) data.readNullableLong() else null,
                     availabilitySender = if (formatVersion >= 3) data.readNullable() else null,
                 )
@@ -254,6 +308,72 @@ object PaisaLensBackupCodec {
             } else {
                 emptyList()
             }
+            val balanceHistory = if (formatVersion >= 4) {
+                List(data.readSafeCount()) {
+                    AccountBalanceSnapshot(
+                        id = data.readLong(),
+                        accountId = data.readLong(),
+                        balanceMinor = data.readNullableLong(),
+                        availableCreditMinor = data.readNullableLong(),
+                        creditLimitMinor = data.readNullableLong(),
+                        recordedAt = data.readLong(),
+                        sender = data.readNullable(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val bills = if (formatVersion >= 4) {
+                List(data.readSafeCount()) {
+                    BillReminder(
+                        id = data.readLong(),
+                        title = data.readUTF(),
+                        amountMinor = data.readLong(),
+                        dueDateEpochDay = data.readLong(),
+                        recurrenceMonths = data.readInt(),
+                        accountId = data.readNullableLong(),
+                        notes = data.readNullable(),
+                        isActive = data.readBoolean(),
+                        lastPaidEpochDay = data.readNullableLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val netWorthItems = if (formatVersion >= 4) {
+                List(data.readSafeCount()) {
+                    NetWorthItem(
+                        id = data.readLong(),
+                        name = data.readUTF(),
+                        kind = data.readEnum(NetWorthKind.ASSET),
+                        valueMinor = data.readLong(),
+                        category = data.readUTF(),
+                        updatedAt = data.readLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val smartCategoryRules = if (formatVersion >= 4) {
+                List(data.readSafeCount()) {
+                    SmartCategoryRule(
+                        id = data.readLong(),
+                        name = data.readUTF(),
+                        merchantPattern = data.readUTF(),
+                        matchType = data.readEnum(SmartRuleMatchType.CONTAINS),
+                        minAmountMinor = data.readNullableLong(),
+                        maxAmountMinor = data.readNullableLong(),
+                        accountId = data.readNullableLong(),
+                        category = data.readEnum(ExpenseCategory.OTHER),
+                        customCategoryId = data.readNullableLong(),
+                        enabled = data.readBoolean(),
+                        priority = data.readInt(),
+                        updatedAt = data.readLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
             require(data.available() == 0) { "Backup contains unexpected trailing data" }
             return PaisaLensBackupSnapshot(
                 createdAt = createdAt,
@@ -264,6 +384,10 @@ object PaisaLensBackupCodec {
                 merchantRules = merchantRules,
                 merchantAliases = merchantAliases,
                 loans = loans,
+                balanceHistory = balanceHistory,
+                bills = bills,
+                netWorthItems = netWorthItems,
+                smartCategoryRules = smartCategoryRules,
             )
         }
     }
@@ -307,7 +431,7 @@ object PaisaLensBackupCodec {
         return enumValues<T>().firstOrNull { it.name == value } ?: default
     }
 
-    private const val FORMAT_VERSION = 3
+    private const val FORMAT_VERSION = 4
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

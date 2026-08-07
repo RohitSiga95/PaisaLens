@@ -5,14 +5,18 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
+import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CategorySelection
+import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.NetWorthItem
+import com.paisalens.app.data.model.NetWorthKind
 import com.paisalens.app.data.model.MerchantAliasRule
 import com.paisalens.app.data.model.MerchantCategoryRule
 import com.paisalens.app.data.model.PaisaLensBackupSnapshot
@@ -23,6 +27,9 @@ import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.StatementImportResult
+import com.paisalens.app.data.model.SmartCategoryRule
+import com.paisalens.app.data.model.SmartRuleMatchType
+import com.paisalens.app.data.model.findMatchingSmartCategoryRule
 import com.paisalens.app.sms.BankSmsSupport
 import java.util.Locale
 import java.util.UUID
@@ -42,6 +49,7 @@ class PaisaLensDatabase(context: Context) :
         createMerchantAliasesTable(db)
         createLoansTable(db)
         createExchangeRatesTable(db)
+        createFinancialPlanningTables(db)
         db.execSQL(
             """
             CREATE TABLE transactions (
@@ -112,6 +120,13 @@ class PaisaLensDatabase(context: Context) :
             db.execSQL("ALTER TABLE accounts ADD COLUMN availability_fetched_at INTEGER")
             db.execSQL("ALTER TABLE accounts ADD COLUMN availability_sender TEXT")
         }
+        if (oldVersion < 6) {
+            if (oldVersion in 3..<6) {
+                db.execSQL("ALTER TABLE accounts ADD COLUMN credit_limit_minor INTEGER")
+            }
+            createFinancialPlanningTables(db)
+            backfillBalanceHistory(db)
+        }
     }
 
     fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): Int {
@@ -119,6 +134,7 @@ class PaisaLensDatabase(context: Context) :
         val db = writableDatabase
         val merchantCategories = getMerchantCategoryMap(db)
         val merchantAliases = getMerchantAliasMap(db)
+        val smartRules = getSmartCategoryRules(db)
         var inserted = 0
         db.beginTransaction()
         try {
@@ -136,7 +152,33 @@ class PaisaLensDatabase(context: Context) :
                     source = item.source,
                     sender = item.sender,
                 )
-                val values = transactionValues(item, encryptedBody, accountId, merchantRule, canonicalMerchant)
+                val smartRule = if (merchantRule == null && item.type == TransactionType.EXPENSE) {
+                    findMatchingSmartCategoryRule(
+                        TransactionRecord(
+                            sourceMessageId = item.sourceMessageId,
+                            amountMinor = item.amountMinor,
+                            merchant = canonicalMerchant,
+                            accountHint = item.accountHint,
+                            category = item.category,
+                            type = item.type,
+                            occurredAt = item.occurredAt,
+                            source = item.source,
+                            sender = item.sender,
+                            accountId = accountId,
+                        ),
+                        smartRules,
+                    )
+                } else {
+                    null
+                }
+                val values = transactionValues(
+                    item,
+                    encryptedBody,
+                    accountId,
+                    merchantRule,
+                    smartRule,
+                    canonicalMerchant,
+                )
                 if (db.insertWithOnConflict("transactions", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L) {
                     inserted += 1
                 }
@@ -160,6 +202,7 @@ class PaisaLensDatabase(context: Context) :
         val db = writableDatabase
         val merchantCategories = getMerchantCategoryMap(db)
         val merchantAliases = getMerchantAliasMap(db)
+        val smartRules = getSmartCategoryRules(db)
         var inserted = 0
         db.beginTransaction()
         try {
@@ -167,12 +210,20 @@ class PaisaLensDatabase(context: Context) :
                 val canonical = merchantAliases[normalizedMerchantKey(original.merchant)]?.canonicalName
                     ?: original.merchant
                 val rule = merchantCategories[normalizedMerchantKey(canonical)]
+                val smartRule = if (
+                    rule == null && original.type == TransactionType.EXPENSE &&
+                    original.category == ExpenseCategory.OTHER && original.customCategoryId == null
+                ) {
+                    findMatchingSmartCategoryRule(original.copy(merchant = canonical), smartRules)
+                } else {
+                    null
+                }
                 val record = original.copy(
                     merchant = canonical,
-                    category = rule?.category ?: original.category,
-                    customCategoryId = rule?.customCategoryId ?: original.customCategoryId,
-                    reviewStatus = if (rule != null) ReviewStatus.CONFIRMED else original.reviewStatus,
-                    reviewReason = if (rule != null) null else original.reviewReason,
+                    category = rule?.category ?: smartRule?.category ?: original.category,
+                    customCategoryId = rule?.customCategoryId ?: smartRule?.customCategoryId ?: original.customCategoryId,
+                    reviewStatus = if (rule != null || smartRule != null) ReviewStatus.CONFIRMED else original.reviewStatus,
+                    reviewReason = if (rule != null || smartRule != null) null else original.reviewReason,
                 )
                 if (db.insertWithOnConflict("transactions", null, transactionValues(record), SQLiteDatabase.CONFLICT_IGNORE) != -1L) {
                     inserted += 1
@@ -425,7 +476,7 @@ class PaisaLensDatabase(context: Context) :
             "accounts",
             arrayOf(
                 "id", "name", "type", "account_hint", "institution", "balance_minor",
-                "available_credit_minor", "availability_fetched_at", "availability_sender",
+                "available_credit_minor", "credit_limit_minor", "availability_fetched_at", "availability_sender",
             ),
             null,
             null,
@@ -442,8 +493,9 @@ class PaisaLensDatabase(context: Context) :
                     institution = cursor.getString(4),
                     balanceMinor = cursor.longOrNull(5),
                     availableCreditMinor = cursor.longOrNull(6),
-                    availabilityFetchedAt = cursor.longOrNull(7),
-                    availabilitySender = cursor.getString(8),
+                    creditLimitMinor = cursor.longOrNull(7),
+                    availabilityFetchedAt = cursor.longOrNull(8),
+                    availabilitySender = cursor.getString(9),
                 )
             }
         }
@@ -469,6 +521,7 @@ class PaisaLensDatabase(context: Context) :
             put("type", account.type.name)
             val cleanHint = account.accountHint?.filter(Char::isDigit)?.takeLast(4)?.takeIf(String::isNotBlank)
             if (cleanHint == null) putNull("account_hint") else put("account_hint", cleanHint)
+            putNullableLong("credit_limit_minor", account.creditLimitMinor?.coerceAtLeast(0))
         }
         writableDatabase.update("accounts", values, "id = ?", arrayOf(account.id.toString()))
     }
@@ -481,7 +534,10 @@ class PaisaLensDatabase(context: Context) :
         try {
             updates.sortedBy { it.fetchedAt }.forEach { update ->
                 val accountId = findAvailabilityAccountId(db, update) ?: createAvailabilityAccount(db, update)
-                if (accountId != null && applyAccountAvailability(db, accountId, update)) changed += 1
+                if (accountId != null) {
+                    insertBalanceSnapshot(db, accountId, update)
+                    if (applyAccountAvailability(db, accountId, update)) changed += 1
+                }
             }
             db.setTransactionSuccessful()
         } finally {
@@ -493,6 +549,273 @@ class PaisaLensDatabase(context: Context) :
     fun deleteAccount(id: Long) {
         writableDatabase.delete("accounts", "id = ?", arrayOf(id.toString()))
     }
+
+    fun getBalanceHistory(accountId: Long? = null): List<AccountBalanceSnapshot> {
+        val result = mutableListOf<AccountBalanceSnapshot>()
+        readableDatabase.query(
+            "balance_history",
+            arrayOf(
+                "id", "account_id", "balance_minor", "available_credit_minor",
+                "credit_limit_minor", "recorded_at", "sender",
+            ),
+            accountId?.let { "account_id = ?" },
+            accountId?.let { arrayOf(it.toString()) },
+            null,
+            null,
+            "recorded_at DESC, id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += AccountBalanceSnapshot(
+                    id = cursor.getLong(0),
+                    accountId = cursor.getLong(1),
+                    balanceMinor = cursor.longOrNull(2),
+                    availableCreditMinor = cursor.longOrNull(3),
+                    creditLimitMinor = cursor.longOrNull(4),
+                    recordedAt = cursor.getLong(5),
+                    sender = cursor.getString(6),
+                )
+            }
+        }
+        return result
+    }
+
+    fun getBills(): List<BillReminder> {
+        val result = mutableListOf<BillReminder>()
+        readableDatabase.query(
+            "bills",
+            arrayOf(
+                "id", "title", "amount_minor", "due_date_epoch_day", "recurrence_months",
+                "account_id", "notes", "is_active", "last_paid_epoch_day",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "is_active DESC, due_date_epoch_day ASC, title COLLATE NOCASE ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += BillReminder(
+                    id = cursor.getLong(0),
+                    title = cursor.getString(1),
+                    amountMinor = cursor.getLong(2),
+                    dueDateEpochDay = cursor.getLong(3),
+                    recurrenceMonths = cursor.getInt(4),
+                    accountId = cursor.longOrNull(5),
+                    notes = cursor.getString(6),
+                    isActive = cursor.getInt(7) != 0,
+                    lastPaidEpochDay = cursor.longOrNull(8),
+                )
+            }
+        }
+        return result
+    }
+
+    fun upsertBill(bill: BillReminder): Long {
+        require(bill.title.isNotBlank()) { "Bill title cannot be empty" }
+        val values = ContentValues().apply {
+            put("title", bill.title.trim().replace(Regex("\\s+"), " ").take(64))
+            put("amount_minor", bill.amountMinor.coerceAtLeast(0))
+            put("due_date_epoch_day", bill.dueDateEpochDay)
+            put("recurrence_months", bill.recurrenceMonths.coerceIn(0, 120))
+            putNullableLong("account_id", bill.accountId)
+            putNullableText("notes", bill.notes?.trim()?.take(240)?.takeIf(String::isNotBlank))
+            put("is_active", if (bill.isActive) 1 else 0)
+            putNullableLong("last_paid_epoch_day", bill.lastPaidEpochDay)
+            put("updated_at", System.currentTimeMillis())
+        }
+        return if (bill.id == 0L) {
+            writableDatabase.insertOrThrow("bills", null, values)
+        } else {
+            writableDatabase.update("bills", values, "id = ?", arrayOf(bill.id.toString()))
+            bill.id
+        }
+    }
+
+    fun deleteBill(id: Long) {
+        writableDatabase.delete("bills", "id = ?", arrayOf(id.toString()))
+    }
+
+    fun getNetWorthItems(): List<NetWorthItem> {
+        val result = mutableListOf<NetWorthItem>()
+        readableDatabase.query(
+            "net_worth_items",
+            arrayOf("id", "name", "kind", "value_minor", "category", "updated_at"),
+            null,
+            null,
+            null,
+            null,
+            "kind ASC, value_minor DESC, name COLLATE NOCASE ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += NetWorthItem(
+                    id = cursor.getLong(0),
+                    name = cursor.getString(1),
+                    kind = enumValueOrDefault(cursor.getString(2), NetWorthKind.ASSET),
+                    valueMinor = cursor.getLong(3),
+                    category = cursor.getString(4),
+                    updatedAt = cursor.getLong(5),
+                )
+            }
+        }
+        return result
+    }
+
+    fun upsertNetWorthItem(item: NetWorthItem): Long {
+        require(item.name.isNotBlank()) { "Net-worth item name cannot be empty" }
+        val values = ContentValues().apply {
+            put("name", item.name.trim().replace(Regex("\\s+"), " ").take(64))
+            put("kind", item.kind.name)
+            put("value_minor", item.valueMinor.coerceAtLeast(0))
+            put("category", item.category.trim().replace(Regex("\\s+"), " ").take(48))
+            put("updated_at", System.currentTimeMillis())
+        }
+        return if (item.id == 0L) {
+            writableDatabase.insertOrThrow("net_worth_items", null, values)
+        } else {
+            writableDatabase.update("net_worth_items", values, "id = ?", arrayOf(item.id.toString()))
+            item.id
+        }
+    }
+
+    fun deleteNetWorthItem(id: Long) {
+        writableDatabase.delete("net_worth_items", "id = ?", arrayOf(id.toString()))
+    }
+
+    fun getSmartCategoryRules(): List<SmartCategoryRule> = getSmartCategoryRules(readableDatabase)
+
+    private fun getSmartCategoryRules(db: SQLiteDatabase): List<SmartCategoryRule> {
+        val result = mutableListOf<SmartCategoryRule>()
+        db.query(
+            "smart_category_rules",
+            arrayOf(
+                "id", "name", "merchant_pattern", "match_type", "min_amount_minor",
+                "max_amount_minor", "account_id", "category", "custom_category_id",
+                "enabled", "priority", "updated_at",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "priority DESC, updated_at DESC, id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += SmartCategoryRule(
+                    id = cursor.getLong(0),
+                    name = cursor.getString(1),
+                    merchantPattern = cursor.getString(2),
+                    matchType = enumValueOrDefault(cursor.getString(3), SmartRuleMatchType.CONTAINS),
+                    minAmountMinor = cursor.longOrNull(4),
+                    maxAmountMinor = cursor.longOrNull(5),
+                    accountId = cursor.longOrNull(6),
+                    category = enumValueOrDefault(cursor.getString(7), ExpenseCategory.OTHER),
+                    customCategoryId = cursor.longOrNull(8),
+                    enabled = cursor.getInt(9) != 0,
+                    priority = cursor.getInt(10),
+                    updatedAt = cursor.getLong(11),
+                )
+            }
+        }
+        return result
+    }
+
+    fun upsertSmartCategoryRule(rule: SmartCategoryRule, applyToHistory: Boolean = false): Long {
+        val cleanPattern = rule.merchantPattern.trim().replace(Regex("\\s+"), " ").take(64)
+        require(cleanPattern.isNotBlank()) { "Merchant pattern cannot be empty" }
+        require(rule.minAmountMinor == null || rule.minAmountMinor >= 0) { "Minimum amount cannot be negative" }
+        require(rule.maxAmountMinor == null || rule.maxAmountMinor >= 0) { "Maximum amount cannot be negative" }
+        require(
+            rule.minAmountMinor == null || rule.maxAmountMinor == null ||
+                rule.minAmountMinor <= rule.maxAmountMinor
+        ) { "Minimum amount cannot exceed maximum amount" }
+        val db = writableDatabase
+        val latestRuleUpdate = getSmartCategoryRules(db).maxOfOrNull { it.updatedAt } ?: Long.MIN_VALUE
+        val now = maxOf(
+            System.currentTimeMillis(),
+            if (latestRuleUpdate == Long.MAX_VALUE) Long.MAX_VALUE else latestRuleUpdate + 1,
+        )
+        val values = ContentValues().apply {
+            put("name", rule.name.trim().replace(Regex("\\s+"), " ").take(64).ifBlank { cleanPattern })
+            put("merchant_pattern", cleanPattern)
+            put("match_type", rule.matchType.name)
+            putNullableLong("min_amount_minor", rule.minAmountMinor?.coerceAtLeast(0))
+            putNullableLong("max_amount_minor", rule.maxAmountMinor?.coerceAtLeast(0))
+            putNullableLong("account_id", rule.accountId)
+            put("category", rule.category.name)
+            putNullableLong("custom_category_id", rule.customCategoryId)
+            put("enabled", if (rule.enabled) 1 else 0)
+            put("priority", rule.priority.coerceIn(-10_000, 10_000))
+            put("updated_at", now)
+        }
+        db.beginTransaction()
+        return try {
+            val id = if (rule.id == 0L) {
+                db.insertOrThrow("smart_category_rules", null, values)
+            } else {
+                db.update("smart_category_rules", values, "id = ?", arrayOf(rule.id.toString()))
+                rule.id
+            }
+            if (applyToHistory && rule.enabled) {
+                applySmartCategoryRuleToHistory(db, rule.copy(id = id, merchantPattern = cleanPattern, updatedAt = now))
+            }
+            db.setTransactionSuccessful()
+            id
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun deleteSmartCategoryRule(id: Long) {
+        writableDatabase.delete("smart_category_rules", "id = ?", arrayOf(id.toString()))
+    }
+
+    private fun applySmartCategoryRuleToHistory(db: SQLiteDatabase, rule: SmartCategoryRule): Int {
+        val exactMerchantRules = getMerchantCategoryMap(db)
+        val allSmartRules = getSmartCategoryRules(db)
+        val matchingIds = mutableListOf<Long>()
+        db.query(
+            "transactions",
+            arrayOf("id", "merchant", "amount_minor", "account_id", "type"),
+            "type = ?",
+            arrayOf(TransactionType.EXPENSE.name),
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val merchant = cursor.getString(1)
+                if (
+                    normalizedMerchantKey(merchant) !in exactMerchantRules &&
+                    findMatchingSmartCategoryRule(
+                        TransactionRecord(
+                            sourceMessageId = "history-${cursor.getLong(0)}",
+                            amountMinor = cursor.getLong(2),
+                            merchant = merchant,
+                            accountHint = null,
+                            category = ExpenseCategory.OTHER,
+                            type = TransactionType.EXPENSE,
+                            occurredAt = 0,
+                            source = TransactionSource.BANK,
+                            sender = "",
+                            accountId = cursor.longOrNull(3),
+                        ),
+                        allSmartRules,
+                    )?.id == rule.id
+                ) {
+                    matchingIds += cursor.getLong(0)
+                }
+            }
+        }
+        val values = ContentValues().apply {
+            put("category", rule.category.name)
+            putNullableLong("custom_category_id", rule.customCategoryId)
+            put("review_status", ReviewStatus.CONFIRMED.name)
+            putNull("review_reason")
+        }
+        return matchingIds.sumOf { id ->
+            db.update("transactions", values, "id = ?", arrayOf(id.toString()))
+        }
+    }
+
 
     fun getLoans(): List<LoanAccount> {
         val result = mutableListOf<LoanAccount>()
@@ -684,6 +1007,10 @@ class PaisaLensDatabase(context: Context) :
         merchantRules = getMerchantRules(),
         merchantAliases = getMerchantAliases(),
         loans = getLoans(),
+        balanceHistory = getBalanceHistory(),
+        bills = getBills(),
+        netWorthItems = getNetWorthItems(),
+        smartCategoryRules = getSmartCategoryRules(),
     )
 
     fun restore(snapshot: PaisaLensBackupSnapshot) {
@@ -704,6 +1031,7 @@ class PaisaLensDatabase(context: Context) :
                         putNullableText("institution", account.institution)
                         putNullableLong("balance_minor", account.balanceMinor)
                         putNullableLong("available_credit_minor", account.availableCreditMinor)
+                        putNullableLong("credit_limit_minor", account.creditLimitMinor)
                         putNullableLong("availability_fetched_at", account.availabilityFetchedAt)
                         putNullableText("availability_sender", account.availabilitySender)
                         put("created_at", snapshot.createdAt)
@@ -747,6 +1075,26 @@ class PaisaLensDatabase(context: Context) :
                     },
                 )
             }
+            snapshot.smartCategoryRules.forEach { rule ->
+                db.insertOrThrow(
+                    "smart_category_rules",
+                    null,
+                    ContentValues().apply {
+                        put("id", rule.id)
+                        put("name", rule.name)
+                        put("merchant_pattern", rule.merchantPattern)
+                        put("match_type", rule.matchType.name)
+                        putNullableLong("min_amount_minor", rule.minAmountMinor)
+                        putNullableLong("max_amount_minor", rule.maxAmountMinor)
+                        putNullableLong("account_id", rule.accountId)
+                        put("category", rule.category.name)
+                        putNullableLong("custom_category_id", rule.customCategoryId)
+                        put("enabled", if (rule.enabled) 1 else 0)
+                        put("priority", rule.priority)
+                        put("updated_at", rule.updatedAt)
+                    },
+                )
+            }
             snapshot.budgets.forEach { budget ->
                 db.insertOrThrow(
                     "budgets",
@@ -780,6 +1128,54 @@ class PaisaLensDatabase(context: Context) :
                     },
                 )
             }
+            snapshot.balanceHistory.forEach { point ->
+                db.insertOrThrow(
+                    "balance_history",
+                    null,
+                    ContentValues().apply {
+                        put("id", point.id)
+                        put("account_id", point.accountId)
+                        putNullableLong("balance_minor", point.balanceMinor)
+                        putNullableLong("available_credit_minor", point.availableCreditMinor)
+                        putNullableLong("credit_limit_minor", point.creditLimitMinor)
+                        put("recorded_at", point.recordedAt)
+                        put("sender", point.sender?.take(64)?.ifBlank { "Balance history" } ?: "Balance history")
+                    },
+                )
+            }
+            snapshot.bills.forEach { bill ->
+                db.insertOrThrow(
+                    "bills",
+                    null,
+                    ContentValues().apply {
+                        put("id", bill.id)
+                        put("title", bill.title)
+                        put("amount_minor", bill.amountMinor)
+                        put("due_date_epoch_day", bill.dueDateEpochDay)
+                        put("recurrence_months", bill.recurrenceMonths)
+                        putNullableLong("account_id", bill.accountId)
+                        putNullableText("notes", bill.notes)
+                        put("is_active", if (bill.isActive) 1 else 0)
+                        putNullableLong("last_paid_epoch_day", bill.lastPaidEpochDay)
+                        put("updated_at", snapshot.createdAt)
+                    },
+                )
+            }
+            snapshot.netWorthItems.forEach { item ->
+                db.insertOrThrow(
+                    "net_worth_items",
+                    null,
+                    ContentValues().apply {
+                        put("id", item.id)
+                        put("name", item.name)
+                        put("kind", item.kind.name)
+                        put("value_minor", item.valueMinor)
+                        put("category", item.category)
+                        put("updated_at", item.updatedAt)
+                    },
+                )
+            }
+            if (snapshot.balanceHistory.isEmpty()) backfillBalanceHistory(db)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -802,23 +1198,24 @@ class PaisaLensDatabase(context: Context) :
         encryptedBody: ByteArray,
         accountId: Long?,
         merchantRule: MerchantCategoryRule?,
+        smartRule: SmartCategoryRule?,
         canonicalMerchant: String,
     ) = ContentValues().apply {
         put("source_message_id", item.sourceMessageId)
         put("amount_minor", item.amountMinor)
         put("merchant", canonicalMerchant)
         putNullableText("account_hint", item.accountHint)
-        put("category", (merchantRule?.category ?: item.category).name)
+        put("category", (merchantRule?.category ?: smartRule?.category ?: item.category).name)
         put("type", item.type.name)
         put("occurred_at", item.occurredAt)
         put("source", item.source.name)
         put("sender", item.sender)
         putNull("note")
         putNullableLong("account_id", accountId)
-        putNullableLong("custom_category_id", merchantRule?.customCategoryId)
+        putNullableLong("custom_category_id", merchantRule?.customCategoryId ?: smartRule?.customCategoryId)
         put("tags", "")
-        put("review_status", if (merchantRule != null) ReviewStatus.CONFIRMED.name else item.reviewStatus.name)
-        putNullableText("review_reason", if (merchantRule != null) null else item.reviewReason)
+        put("review_status", if (merchantRule != null || smartRule != null) ReviewStatus.CONFIRMED.name else item.reviewStatus.name)
+        putNullableText("review_reason", if (merchantRule != null || smartRule != null) null else item.reviewReason)
         putNull("original_amount_minor")
         putNull("original_currency")
         putNull("exchange_rate")
@@ -869,6 +1266,7 @@ class PaisaLensDatabase(context: Context) :
                 institution TEXT,
                 balance_minor INTEGER,
                 available_credit_minor INTEGER,
+                credit_limit_minor INTEGER,
                 availability_fetched_at INTEGER,
                 availability_sender TEXT,
                 created_at INTEGER NOT NULL
@@ -938,6 +1336,72 @@ class PaisaLensDatabase(context: Context) :
             )
             """.trimIndent(),
         )
+    }
+
+    private fun createFinancialPlanningTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS balance_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                balance_minor INTEGER,
+                available_credit_minor INTEGER,
+                credit_limit_minor INTEGER,
+                recorded_at INTEGER NOT NULL,
+                sender TEXT NOT NULL,
+                UNIQUE(account_id, recorded_at, sender)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_balance_history_account_date ON balance_history(account_id, recorded_at DESC)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0),
+                due_date_epoch_day INTEGER NOT NULL,
+                recurrence_months INTEGER NOT NULL DEFAULT 0 CHECK(recurrence_months >= 0),
+                account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+                notes TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                last_paid_epoch_day INTEGER,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_bills_due_date ON bills(is_active, due_date_epoch_day)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS net_worth_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                value_minor INTEGER NOT NULL CHECK(value_minor >= 0),
+                category TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS smart_category_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                merchant_pattern TEXT NOT NULL,
+                match_type TEXT NOT NULL,
+                min_amount_minor INTEGER,
+                max_amount_minor INTEGER,
+                account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+                category TEXT NOT NULL,
+                custom_category_id INTEGER REFERENCES custom_categories(id) ON DELETE SET NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_smart_rules_priority ON smart_category_rules(enabled, priority DESC, updated_at DESC)")
     }
 
     private fun createTransactionIndexes(db: SQLiteDatabase) {
@@ -1140,15 +1604,53 @@ class PaisaLensDatabase(context: Context) :
             null,
             "1",
         ).use { cursor -> if (cursor.moveToFirst()) cursor.longOrNull(0) else null }
-        if (previousFetchedAt != null && previousFetchedAt > update.fetchedAt) return false
+        if (previousFetchedAt != null && previousFetchedAt >= update.fetchedAt) return false
 
         val values = ContentValues().apply {
             update.balanceMinor?.let { put("balance_minor", it) }
             update.availableCreditMinor?.let { put("available_credit_minor", it) }
+            update.creditLimitMinor?.let { put("credit_limit_minor", it) }
             put("availability_fetched_at", update.fetchedAt)
             put("availability_sender", update.sender.take(64))
         }
         return db.update("accounts", values, "id = ?", arrayOf(accountId.toString())) > 0
+    }
+
+    private fun insertBalanceSnapshot(
+        db: SQLiteDatabase,
+        accountId: Long,
+        update: AccountAvailabilityUpdate,
+    ) {
+        db.insertWithOnConflict(
+            "balance_history",
+            null,
+            ContentValues().apply {
+                put("account_id", accountId)
+                putNullableLong("balance_minor", update.balanceMinor)
+                putNullableLong("available_credit_minor", update.availableCreditMinor)
+                putNullableLong("credit_limit_minor", update.creditLimitMinor)
+                put("recorded_at", update.fetchedAt)
+                put("sender", update.sender.take(64).ifBlank { "Balance alert" })
+            },
+            SQLiteDatabase.CONFLICT_IGNORE,
+        )
+    }
+
+    private fun backfillBalanceHistory(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            INSERT OR IGNORE INTO balance_history (
+                account_id, balance_minor, available_credit_minor, credit_limit_minor,
+                recorded_at, sender
+            )
+            SELECT
+                id, balance_minor, available_credit_minor, credit_limit_minor,
+                availability_fetched_at, COALESCE(availability_sender, 'Saved account balance')
+            FROM accounts
+            WHERE availability_fetched_at IS NOT NULL
+              AND (balance_minor IS NOT NULL OR available_credit_minor IS NOT NULL OR credit_limit_minor IS NOT NULL)
+            """.trimIndent(),
+        )
     }
 
     private fun backfillAccounts(db: SQLiteDatabase) {
@@ -1194,6 +1696,10 @@ class PaisaLensDatabase(context: Context) :
         db.delete("merchant_categories", null, null)
         db.delete("merchant_aliases", null, null)
         db.delete("loans", null, null)
+        db.delete("balance_history", null, null)
+        db.delete("bills", null, null)
+        db.delete("net_worth_items", null, null)
+        db.delete("smart_category_rules", null, null)
         db.delete("custom_categories", null, null)
         db.delete("accounts", null, null)
         db.delete("exchange_rates", null, null)
@@ -1234,7 +1740,7 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 5
+        const val DATABASE_VERSION = 6
         const val TAG_SEPARATOR = "\u001F"
     }
 }

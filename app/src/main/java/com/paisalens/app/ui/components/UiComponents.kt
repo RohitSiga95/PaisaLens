@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Attractions
@@ -47,7 +48,6 @@ import androidx.compose.material.icons.rounded.LocalAtm
 import androidx.compose.material.icons.rounded.LocalDining
 import androidx.compose.material.icons.rounded.LocalGasStation
 import androidx.compose.material.icons.rounded.Pets
-import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.RequestQuote
 import androidx.compose.material.icons.rounded.ShoppingBasket
 import androidx.compose.material.icons.rounded.Spa
@@ -424,7 +424,7 @@ fun EmptyState(
     title: String,
     body: String,
     modifier: Modifier = Modifier,
-    icon: ImageVector = Icons.Rounded.ReceiptLong,
+    icon: ImageVector = Icons.AutoMirrored.Rounded.ReceiptLong,
 ) {
     Column(
         modifier = modifier
@@ -478,7 +478,7 @@ fun categoryIcon(category: ExpenseCategory): ImageVector = when (category) {
     ExpenseCategory.GROCERIES -> Icons.Rounded.ShoppingBasket
     ExpenseCategory.SHOPPING -> Icons.Rounded.Checkroom
     ExpenseCategory.TRANSPORT -> Icons.Rounded.DirectionsCar
-    ExpenseCategory.BILLS -> Icons.Rounded.ReceiptLong
+    ExpenseCategory.BILLS -> Icons.AutoMirrored.Rounded.ReceiptLong
     ExpenseCategory.ENTERTAINMENT -> Icons.Rounded.Attractions
     ExpenseCategory.HEALTH -> Icons.Rounded.Favorite
     ExpenseCategory.EDUCATION -> Icons.Rounded.AutoStories

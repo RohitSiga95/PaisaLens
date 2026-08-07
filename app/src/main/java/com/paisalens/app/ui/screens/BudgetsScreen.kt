@@ -54,6 +54,9 @@ fun BudgetsScreen(
     transactions: List<TransactionRecord>,
     budgets: List<CategoryBudget>,
     onSetBudget: (ExpenseCategory, Long) -> Unit,
+    modifier: Modifier = Modifier,
+    showHeader: Boolean = true,
+    contentPadding: PaddingValues = PaddingValues(start = 18.dp, top = 12.dp, end = 18.dp, bottom = 24.dp),
 ) {
     val now = remember { ZonedDateTime.now() }
     val monthlyExpenses = remember(transactions, now.monthValue, now.year) {
@@ -77,21 +80,23 @@ fun BudgetsScreen(
     var editingCategory by remember { mutableStateOf<ExpenseCategory?>(null) }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 18.dp, top = 12.dp, end = 18.dp, bottom = 24.dp),
+        modifier = modifier.fillMaxSize(),
+        contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            Text(
-                text = "Budgets",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Plan gently, adjust anytime",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        if (showHeader) {
+            item {
+                Text(
+                    text = "Budgets",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "Plan gently, adjust anytime",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         item {
             BudgetSummary(

@@ -34,6 +34,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -66,6 +67,7 @@ import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.calculateCreditUtilization
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
@@ -94,6 +96,7 @@ fun HomeScreen(
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
+    onAccountClick: (AccountProfile) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     val now = remember { ZonedDateTime.now() }
@@ -205,6 +208,7 @@ fun HomeScreen(
                     valueLabel = "Current balance",
                     icon = Icons.Rounded.AccountBalance,
                     onRefresh = { onRefreshAccount(group.account) },
+                    onClick = { onAccountClick(group.account) },
                 )
             }
         }
@@ -232,6 +236,7 @@ fun HomeScreen(
                     valueLabel = "Available credit limit",
                     icon = Icons.Rounded.CreditCard,
                     onRefresh = { onRefreshAccount(group.account) },
+                    onClick = { onAccountClick(group.account) },
                 )
             }
         }
@@ -243,6 +248,7 @@ fun HomeScreen(
                     expanded = unavailableAccountsExpanded,
                     onExpandedChange = { unavailableAccountsExpanded = it },
                     onRefreshAccount = onRefreshAccount,
+                    onAccountClick = onAccountClick,
                 )
             }
         }
@@ -820,9 +826,16 @@ private fun AccountAvailabilityTile(
     valueLabel: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onRefresh: () -> Unit,
+    onClick: () -> Unit,
 ) {
     val style = accountTileStyle(account)
+    val utilization = if (account.type == AccountType.CREDIT_CARD) {
+        calculateCreditUtilization(account.id, account.availableCreditMinor, account.creditLimitMinor)
+    } else {
+        null
+    }
     Surface(
+        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
         color = Color.Transparent,
@@ -891,6 +904,21 @@ private fun AccountAvailabilityTile(
                 } else {
                     MoneyText(valueMinor, style = MaterialTheme.typography.headlineSmall, color = style.foreground)
                 }
+                utilization?.utilizationBasisPoints?.let { basisPoints ->
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Credit used", style = MaterialTheme.typography.bodySmall, color = style.foreground.copy(alpha = 0.76f))
+                        Text("${"%.1f".format(Locale.US, basisPoints / 100.0)}%", style = MaterialTheme.typography.bodySmall, color = style.foreground, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(5.dp))
+                    LinearProgressIndicator(
+                        progress = { (basisPoints / 10_000f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(7.dp),
+                        color = style.foreground,
+                        trackColor = style.foreground.copy(alpha = 0.20f),
+                        strokeCap = StrokeCap.Round,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                     Text(
@@ -950,6 +978,7 @@ private fun UnavailableAccountsPanel(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
+    onAccountClick: (AccountProfile) -> Unit,
 ) {
     val total = bankAccounts.size + creditCards.size
     PaisaCard(Modifier.fillMaxWidth()) {
@@ -1009,9 +1038,10 @@ private fun UnavailableAccountsPanel(
                                 profileCount = group.profileCount,
                                 valueMinor = null,
                                 valueLabel = "Current balance",
-                                icon = Icons.Rounded.AccountBalance,
-                                onRefresh = { onRefreshAccount(group.account) },
-                            )
+                            icon = Icons.Rounded.AccountBalance,
+                            onRefresh = { onRefreshAccount(group.account) },
+                            onClick = { onAccountClick(group.account) },
+                        )
                         }
                     }
                     if (creditCards.isNotEmpty()) {
@@ -1027,9 +1057,10 @@ private fun UnavailableAccountsPanel(
                                 profileCount = group.profileCount,
                                 valueMinor = null,
                                 valueLabel = "Available credit limit",
-                                icon = Icons.Rounded.CreditCard,
-                                onRefresh = { onRefreshAccount(group.account) },
-                            )
+                            icon = Icons.Rounded.CreditCard,
+                            onRefresh = { onRefreshAccount(group.account) },
+                            onClick = { onAccountClick(group.account) },
+                        )
                         }
                     }
                 }
@@ -1088,6 +1119,10 @@ internal fun consolidateAvailabilityAccounts(
                 accountHint = lastFour ?: preferred.accountHint,
                 institution = preferred.institution?.takeIf(String::isNotBlank)
                     ?: matches.firstNotNullOfOrNull { it.institution?.takeIf(String::isNotBlank) },
+                creditLimitMinor = preferred.creditLimitMinor
+                    ?: matches.filter { it.creditLimitMinor != null }
+                        .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
+                        ?.creditLimitMinor,
             ),
             profileCount = matches.size,
         )

@@ -32,6 +32,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.Analytics
@@ -41,7 +42,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DonutLarge
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.Button
@@ -73,6 +73,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -111,7 +112,6 @@ import com.paisalens.app.ui.components.categoryColor
 import com.paisalens.app.ui.components.customCategoryColor
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.components.formatTransactionTime
-import com.paisalens.app.ui.screens.BudgetsScreen
 import com.paisalens.app.ui.screens.HomeScreen
 import com.paisalens.app.ui.screens.OnboardingScreen
 import com.paisalens.app.ui.screens.SettingsScreen
@@ -132,10 +132,10 @@ private enum class AppDestination(
     val showInNavigation: Boolean = true,
 ) {
     HOME("Home", Icons.Rounded.Home),
-    ACTIVITY("Activity", Icons.Rounded.ReceiptLong),
-    BUDGETS("Budgets", Icons.Rounded.DonutLarge),
+    ACTIVITY("Activity", Icons.AutoMirrored.Rounded.ReceiptLong),
+    PLAN("Plan", Icons.Rounded.DonutLarge),
+    INSIGHTS("Insights", Icons.Rounded.Analytics),
     SETTINGS("Settings", Icons.Rounded.Settings),
-    ANALYTICS("Analytics", Icons.Rounded.Analytics, false),
     CALENDAR("Calendar", Icons.Rounded.CalendarMonth, false),
 }
 
@@ -158,6 +158,10 @@ fun PaisaLensApp(
     val budgets by viewModel.budgets.collectAsStateWithLifecycle()
     val categorizedMerchantKeys by viewModel.categorizedMerchantKeys.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
+    val balanceHistory by viewModel.balanceHistory.collectAsStateWithLifecycle()
+    val bills by viewModel.bills.collectAsStateWithLifecycle()
+    val netWorthItems by viewModel.netWorthItems.collectAsStateWithLifecycle()
+    val smartCategoryRules by viewModel.smartCategoryRules.collectAsStateWithLifecycle()
     val customCategories by viewModel.customCategories.collectAsStateWithLifecycle()
     val recurringPayments by viewModel.recurringPayments.collectAsStateWithLifecycle()
     val loans by viewModel.loans.collectAsStateWithLifecycle()
@@ -177,16 +181,18 @@ fun PaisaLensApp(
     val isRefreshingRate by viewModel.isRefreshingRate.collectAsStateWithLifecycle()
     val receiptDraft by viewModel.receiptDraft.collectAsStateWithLifecycle()
     val isReceiptOcrRunning by viewModel.isReceiptOcrRunning.collectAsStateWithLifecycle()
-    var destination by remember { mutableStateOf(AppDestination.HOME) }
+    var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var showManualSheet by remember { mutableStateOf(false) }
     var selectedTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
     var selectedMerchantGroup by remember { mutableStateOf<MerchantTransactionGroup?>(null) }
+    var selectedAccount by remember { mutableStateOf<AccountProfile?>(null) }
     var showAccountManager by remember { mutableStateOf(false) }
     var showCategoryManager by remember { mutableStateOf(false) }
     var showMerchantCleanup by remember { mutableStateOf(false) }
     var showLoanManager by remember { mutableStateOf(false) }
     var showTravelMode by remember { mutableStateOf(false) }
     var showStatementImport by remember { mutableStateOf(false) }
+    var showSmartCategoryRules by remember { mutableStateOf(false) }
     var backupAction by remember { mutableStateOf<BackupAction?>(null) }
     val uncategorizedMerchants = remember(transactions, categorizedMerchantKeys) {
         findUncategorizedMerchantGroups(transactions, categorizedMerchantKeys)
@@ -195,7 +201,7 @@ fun PaisaLensApp(
     val context = LocalContext.current
 
     BackHandler(enabled = !destination.showInNavigation) {
-        destination = AppDestination.HOME
+        destination = if (destination == AppDestination.CALENDAR) AppDestination.ACTIVITY else AppDestination.HOME
     }
 
     LaunchedEffect(viewModel) {
@@ -231,7 +237,8 @@ fun PaisaLensApp(
                 ) {
                     AppDestination.entries.filter { it.showInNavigation }.forEach { item ->
                         NavigationBarItem(
-                            selected = destination == item,
+                            selected = destination == item ||
+                                (destination == AppDestination.CALENDAR && item == AppDestination.ACTIVITY),
                             onClick = { destination = item },
                             icon = {
                                 Icon(item.icon, contentDescription = item.label)
@@ -286,18 +293,40 @@ fun PaisaLensApp(
                             onRequestPermission = onRequestSmsPermission,
                             onAdd = { showManualSheet = true },
                             onRefreshAccount = onComposeBalanceSms,
+                            onAccountClick = { selectedAccount = it },
                             onTransactionClick = { selectedTransaction = it },
                         )
                         AppDestination.ACTIVITY -> TransactionsScreen(
                             transactions = transactions,
                             uncategorizedMerchants = uncategorizedMerchants,
                             onCategorizeMerchant = { selectedMerchantGroup = it },
+                            onCalendar = { destination = AppDestination.CALENDAR },
                             onTransactionClick = { selectedTransaction = it },
                         )
-                        AppDestination.BUDGETS -> BudgetsScreen(
+                        AppDestination.PLAN -> PlanningScreen(
                             transactions = transactions,
                             budgets = budgets,
+                            bills = bills,
+                            recurringPayments = recurringPayments,
+                            loans = loans,
+                            accounts = accounts,
                             onSetBudget = viewModel::setBudget,
+                            onSaveBill = viewModel::saveBill,
+                            onMarkBillPaid = viewModel::markBillPaid,
+                            onDeleteBill = viewModel::deleteBill,
+                        )
+                        AppDestination.INSIGHTS -> InsightsScreen(
+                            transactions = transactions,
+                            accounts = accounts,
+                            balanceHistory = balanceHistory,
+                            bills = bills,
+                            recurringPayments = recurringPayments,
+                            loans = loans,
+                            netWorthItems = netWorthItems,
+                            insights = insights,
+                            onTransactionClick = { selectedTransaction = it },
+                            onSaveNetWorthItem = viewModel::saveNetWorthItem,
+                            onDeleteNetWorthItem = viewModel::deleteNetWorthItem,
                         )
                         AppDestination.SETTINGS -> SettingsScreen(
                             darkMode = darkMode,
@@ -314,6 +343,7 @@ fun PaisaLensApp(
                             reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW },
                             loanCount = loans.size,
                             merchantAliasCount = merchantAliases.size,
+                            smartRuleCount = smartCategoryRules.size,
                             rateCount = exchangeRates.count { it.baseCurrency == baseCurrency },
                             appLockEnabled = appLockEnabled,
                             widgetAmountsVisible = widgetAmountsVisible,
@@ -323,6 +353,7 @@ fun PaisaLensApp(
                             onManageAccounts = { showAccountManager = true },
                             onManageCategories = { showCategoryManager = true },
                             onMerchantCleanup = { showMerchantCleanup = true },
+                            onSmartCategoryRules = { showSmartCategoryRules = true },
                             onManageLoans = { showLoanManager = true },
                             onTravelMode = { showTravelMode = true },
                             onImportStatement = { showStatementImport = true },
@@ -333,15 +364,9 @@ fun PaisaLensApp(
                             onReviewTransactions = { destination = AppDestination.ACTIVITY },
                             onClearAll = viewModel::clearAll,
                         )
-                        AppDestination.ANALYTICS -> AnalyticsScreen(
-                            transactions = transactions,
-                            insights = insights,
-                            onBack = { destination = AppDestination.HOME },
-                            onTransactionClick = { selectedTransaction = it },
-                        )
                         AppDestination.CALENDAR -> CalendarScreen(
                             transactions = transactions,
-                            onBack = { destination = AppDestination.HOME },
+                            onBack = { destination = AppDestination.ACTIVITY },
                             onTransactionClick = { selectedTransaction = it },
                         )
                     }
@@ -441,6 +466,38 @@ fun PaisaLensApp(
             )
         }
 
+        selectedAccount?.let { selected ->
+            val current = accounts.firstOrNull { it.id == selected.id }?.let { raw ->
+                raw.copy(
+                    accountHint = raw.accountHint ?: selected.accountHint,
+                    institution = raw.institution?.takeIf(String::isNotBlank) ?: selected.institution,
+                    balanceMinor = raw.balanceMinor ?: selected.balanceMinor,
+                    availableCreditMinor = raw.availableCreditMinor ?: selected.availableCreditMinor,
+                    creditLimitMinor = raw.creditLimitMinor ?: selected.creditLimitMinor,
+                    availabilityFetchedAt = raw.availabilityFetchedAt ?: selected.availabilityFetchedAt,
+                    availabilitySender = raw.availabilitySender ?: selected.availabilitySender,
+                )
+            } ?: selected
+            val relatedAccountIds = current.accountHint
+                ?.filter(Char::isDigit)
+                ?.takeLast(4)
+                ?.takeIf(String::isNotBlank)
+                ?.let { lastFour ->
+                    accounts.filter {
+                        it.type == current.type && it.accountHint?.filter(Char::isDigit)?.takeLast(4) == lastFour
+                    }.map { it.id }.toSet()
+                }
+                ?: setOf(current.id)
+            AccountFinanceSheet(
+                account = current,
+                history = balanceHistory
+                    .filter { it.accountId in relatedAccountIds }
+                    .map { if (it.accountId == current.id) it else it.copy(accountId = current.id) },
+                onUpdateAccount = viewModel::updateAccount,
+                onDismiss = { selectedAccount = null },
+            )
+        }
+
         if (showCategoryManager) {
             CustomCategoryManagerSheet(
                 categories = customCategories,
@@ -457,6 +514,19 @@ fun PaisaLensApp(
                 onRename = viewModel::renameMerchant,
                 onDeleteAlias = viewModel::deleteMerchantAlias,
                 onDismiss = { showMerchantCleanup = false },
+            )
+        }
+
+        if (showSmartCategoryRules) {
+            SmartCategoryRulesSheet(
+                rules = smartCategoryRules,
+                transactions = transactions,
+                exactMerchantKeys = categorizedMerchantKeys,
+                accounts = accounts,
+                customCategories = customCategories,
+                onSave = viewModel::saveSmartCategoryRule,
+                onDelete = viewModel::deleteSmartCategoryRule,
+                onDismiss = { showSmartCategoryRules = false },
             )
         }
 

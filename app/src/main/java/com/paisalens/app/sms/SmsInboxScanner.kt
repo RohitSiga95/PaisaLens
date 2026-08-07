@@ -13,7 +13,7 @@ class SmsInboxScanner(
 ) {
     fun scan(maxMessages: Int = 10_000): SmsScanBatch {
         val parsed = mutableListOf<ParsedTransaction>()
-        val availability = linkedMapOf<String, AccountAvailabilityUpdate>()
+        val availability = mutableListOf<AccountAvailabilityUpdate>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
@@ -46,13 +46,11 @@ class SmsInboxScanner(
                     messageId = "sms-" + cursor.getLong(idIndex),
                 )?.let(parsed::add)
                 availabilityParser.parse(sender, body, timestamp)?.let { update ->
-                    val key = "${update.bankKey}:${update.accountType}:${update.accountHint.orEmpty()}"
-                    val current = availability[key]
-                    if (current == null || update.fetchedAt > current.fetchedAt) availability[key] = update
+                    availability += update
                 }
             }
         }
-        return SmsScanBatch(parsed, availability.values.toList())
+        return SmsScanBatch(parsed, availability)
     }
 }
 

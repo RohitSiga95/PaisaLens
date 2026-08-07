@@ -13,12 +13,15 @@ import androidx.lifecycle.viewModelScope
 import com.paisalens.app.PaisaLensApplication
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.StatementImportPreview
+import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.sanitizeTags
@@ -43,6 +46,10 @@ class PaisaLensViewModel(
     val budgets = app.repository.budgets
     val categorizedMerchantKeys = app.repository.categorizedMerchantKeys
     val accounts = app.repository.accounts
+    val balanceHistory = app.repository.balanceHistory
+    val bills = app.repository.bills
+    val netWorthItems = app.repository.netWorthItems
+    val smartCategoryRules = app.repository.smartCategoryRules
     val customCategories = app.repository.customCategories
     val recurringPayments = app.repository.recurringPayments
     val loans = app.repository.loans
@@ -308,6 +315,62 @@ class PaisaLensViewModel(
         viewModelScope.launch {
             app.repository.deleteAccount(id)
             _events.emit("Account removed; transactions were kept")
+        }
+    }
+
+    fun saveBill(bill: BillReminder) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveBill(bill) }
+                .onSuccess { _events.emit("Bill reminder saved") }
+                .onFailure { _events.emit(it.message ?: "Could not save bill reminder") }
+        }
+    }
+
+    fun markBillPaid(id: Long) {
+        viewModelScope.launch {
+            app.repository.markBillPaid(id)
+            _events.emit("Bill marked paid")
+        }
+    }
+
+    fun deleteBill(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteBill(id)
+            _events.emit("Bill reminder removed")
+        }
+    }
+
+    fun saveNetWorthItem(item: NetWorthItem) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveNetWorthItem(item) }
+                .onSuccess { _events.emit("Net-worth item saved") }
+                .onFailure { _events.emit(it.message ?: "Could not save net-worth item") }
+        }
+    }
+
+    fun deleteNetWorthItem(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteNetWorthItem(id)
+            _events.emit("Net-worth item removed")
+        }
+    }
+
+    fun saveSmartCategoryRule(rule: SmartCategoryRule, applyToHistory: Boolean) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveSmartCategoryRule(rule, applyToHistory) }
+                .onSuccess {
+                    _events.emit(
+                        if (applyToHistory) "Rule saved and matching expenses updated" else "Smart category rule saved",
+                    )
+                }
+                .onFailure { _events.emit(it.message ?: "Could not save category rule") }
+        }
+    }
+
+    fun deleteSmartCategoryRule(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteSmartCategoryRule(id)
+            _events.emit("Smart category rule removed")
         }
     }
 

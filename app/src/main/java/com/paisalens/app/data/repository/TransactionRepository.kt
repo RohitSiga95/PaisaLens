@@ -5,8 +5,10 @@ import com.paisalens.app.data.backup.PaisaLensBackupCodec
 import com.paisalens.app.data.importer.StatementImporter
 import com.paisalens.app.data.local.PaisaLensDatabase
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
+import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
@@ -14,10 +16,12 @@ import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.MerchantAliasRule
+import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.model.RecurringPayment
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.SpendingInsight
+import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.StatementImportPreview
 import com.paisalens.app.data.model.StatementImportResult
 import com.paisalens.app.data.model.TransactionRecord
@@ -30,6 +34,8 @@ import com.paisalens.app.security.SensitiveDataCipher
 import com.paisalens.app.widget.PaisaLensWidgetProvider
 import java.io.InputStream
 import java.io.OutputStream
+import java.time.LocalDate
+import java.time.YearMonth
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,6 +57,18 @@ class TransactionRepository(
 
     private val _accounts = MutableStateFlow<List<AccountProfile>>(emptyList())
     val accounts: StateFlow<List<AccountProfile>> = _accounts.asStateFlow()
+
+    private val _balanceHistory = MutableStateFlow<List<AccountBalanceSnapshot>>(emptyList())
+    val balanceHistory: StateFlow<List<AccountBalanceSnapshot>> = _balanceHistory.asStateFlow()
+
+    private val _bills = MutableStateFlow<List<BillReminder>>(emptyList())
+    val bills: StateFlow<List<BillReminder>> = _bills.asStateFlow()
+
+    private val _netWorthItems = MutableStateFlow<List<NetWorthItem>>(emptyList())
+    val netWorthItems: StateFlow<List<NetWorthItem>> = _netWorthItems.asStateFlow()
+
+    private val _smartCategoryRules = MutableStateFlow<List<SmartCategoryRule>>(emptyList())
+    val smartCategoryRules: StateFlow<List<SmartCategoryRule>> = _smartCategoryRules.asStateFlow()
 
     private val _customCategories = MutableStateFlow<List<CustomCategory>>(emptyList())
     val customCategories: StateFlow<List<CustomCategory>> = _customCategories.asStateFlow()
@@ -209,6 +227,60 @@ class TransactionRepository(
         refresh()
     }
 
+    suspend fun saveBill(bill: BillReminder) = withContext(Dispatchers.IO) {
+        database.upsertBill(bill)
+        refresh()
+    }
+
+    suspend fun markBillPaid(id: Long, paidOn: LocalDate = LocalDate.now()) = withContext(Dispatchers.IO) {
+        val bill = database.getBills().firstOrNull { it.id == id } ?: return@withContext
+        val next = if (bill.recurrenceMonths > 0) {
+            val anchor = LocalDate.ofEpochDay(bill.dueDateEpochDay)
+            var occurrence = 0L
+            var currentDue = anchor
+            bill.lastPaidEpochDay?.let(LocalDate::ofEpochDay)?.let { lastPaid ->
+                while (!currentDue.isAfter(lastPaid)) {
+                    occurrence += 1
+                    currentDue = anchoredBillOccurrence(anchor, occurrence * bill.recurrenceMonths)
+                }
+            }
+            bill.copy(
+                lastPaidEpochDay = maxOf(paidOn, currentDue).toEpochDay(),
+                isActive = true,
+            )
+        } else {
+            bill.copy(lastPaidEpochDay = paidOn.toEpochDay(), isActive = false)
+        }
+        database.upsertBill(next)
+        refresh()
+    }
+
+    suspend fun deleteBill(id: Long) = withContext(Dispatchers.IO) {
+        database.deleteBill(id)
+        refresh()
+    }
+
+    suspend fun saveNetWorthItem(item: NetWorthItem) = withContext(Dispatchers.IO) {
+        database.upsertNetWorthItem(item)
+        refresh()
+    }
+
+    suspend fun deleteNetWorthItem(id: Long) = withContext(Dispatchers.IO) {
+        database.deleteNetWorthItem(id)
+        refresh()
+    }
+
+    suspend fun saveSmartCategoryRule(rule: SmartCategoryRule, applyToHistory: Boolean) =
+        withContext(Dispatchers.IO) {
+            database.upsertSmartCategoryRule(rule, applyToHistory)
+            refresh()
+        }
+
+    suspend fun deleteSmartCategoryRule(id: Long) = withContext(Dispatchers.IO) {
+        database.deleteSmartCategoryRule(id)
+        refresh()
+    }
+
     suspend fun addCustomCategory(name: String, colorHex: String): CustomCategory = withContext(Dispatchers.IO) {
         val cleanName = name.trim().take(32)
         val id = database.addCustomCategory(cleanName, colorHex)
@@ -312,6 +384,10 @@ class TransactionRepository(
         _transactions.value = currentTransactions
         _budgets.value = database.getBudgets()
         _accounts.value = database.getAccounts()
+        _balanceHistory.value = database.getBalanceHistory()
+        _bills.value = database.getBills()
+        _netWorthItems.value = database.getNetWorthItems()
+        _smartCategoryRules.value = database.getSmartCategoryRules()
         _customCategories.value = database.getCustomCategories()
         _recurringPayments.value = detectRecurringPayments(currentTransactions)
         _loans.value = database.getLoans()
@@ -320,6 +396,15 @@ class TransactionRepository(
         _insights.value = buildOnDeviceInsights(currentTransactions, _recurringPayments.value)
         _categorizedMerchantKeys.value = database.getCategorizedMerchantKeys()
         PaisaLensWidgetProvider.updateAll(context)
+    }
+}
+
+private fun anchoredBillOccurrence(anchor: LocalDate, monthsAfterAnchor: Long): LocalDate {
+    val targetMonth = YearMonth.from(anchor).plusMonths(monthsAfterAnchor)
+    return if (anchor.dayOfMonth == YearMonth.from(anchor).lengthOfMonth()) {
+        targetMonth.atEndOfMonth()
+    } else {
+        targetMonth.atDay(anchor.dayOfMonth.coerceAtMost(targetMonth.lengthOfMonth()))
     }
 }
 

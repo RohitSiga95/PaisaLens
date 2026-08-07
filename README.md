@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.1"><img alt="Release v1.5.1" src="https://img.shields.io/badge/release-v1.5.1-5965E8?style=for-the-badge"></a>
-  <img alt="Source v1.5.1" src="https://img.shields.io/badge/source-v1.5.1-1E88E5?style=for-the-badge">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.6.0"><img alt="Release v1.6.0" src="https://img.shields.io/badge/release-v1.6.0-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.6.0" src="https://img.shields.io/badge/source-v1.6.0-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
   <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.5.1/PaisaLens-v1.5.1-debug.apk"><strong>⬇ Download PaisaLens v1.5.1 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.6.0/PaisaLens-v1.6.0-debug.apk"><strong>⬇ Download PaisaLens v1.6.0 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.1">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.6.0">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -70,6 +70,13 @@
 | 🏦 | **EMI & loan tracker** | Calculates reducing-balance EMI, tracks paid installments, progress, and next due dates. |
 | ✈️ | **Travel mode** | Stores original foreign amounts and converts them with an explicitly refreshed HTTPS reference rate. |
 | ✨ | **On-device insights** | Detects possible duplicates, unusual charges, price increases, spending pace, and concentration without uploading data. |
+| 📉 | **Balance history** | Saves each distinct bank-balance and available-credit SMS snapshot and shows accessible 7-day, 30-day, 3-month, or all-time trends. |
+| 💳 | **Credit utilisation tracker** | Combines the real available credit with a detected or manually entered total limit, then highlights healthy, moderate, high, and critical usage. |
+| 🗓️ | **Bills & due-date centre** | Brings manual reminders, locally detected recurring payments, and loan EMIs into one overdue and upcoming timeline. |
+| 🔮 | **Cash-flow forecast** | Projects 30, 60, or 90 days from known bank balances, recent income/spending pace, scheduled bills, and EMIs, with assumptions shown beside the chart. |
+| 🧮 | **Net-worth dashboard** | Combines known account balances, utilised card credit, amortised loan principal, and manually added assets or liabilities. |
+| ⚙️ | **Smart category rules** | Applies prioritized merchant, amount, and account conditions to future expenses, with a preview and optional historical update. |
+| 🧪 | **What-if simulator** | Compares baseline and scenario cash positions for income changes, flexible-spend reductions, and one-time purchases without changing real data. |
 
 ### Excel reports that are ready to explore
 
@@ -99,24 +106,24 @@ currency pair only  →  HTTPS reference-rate API  →  cached rate ↗
 - SMS is read only after explicit permission and disclosure.
 - OTPs, verification codes, reminders, statements and collect requests are ignored.
 - Stored SMS alert text is encrypted with AES-GCM using a non-exportable Android Keystore key.
-- Transactions, notes, account profiles, custom categories, tags, merchant rules, cleanup aliases, loans, and cached rates use app-private platform SQLite storage.
+- Transactions, notes, account profiles, balance history, bills, net-worth items, custom categories, tags, smart rules, cleanup aliases, loans, and cached rates use app-private platform SQLite storage.
 - **Erase all** clears the local PaisaLens ledger and organization data without changing the phone's SMS inbox or previously exported files.
 
 Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.5.1-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.5.1/PaisaLens-v1.5.1-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.6.0-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.6.0/PaisaLens-v1.6.0-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.5.1 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.5.1).
+You can also browse the [v1.6.0 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.6.0).
 
 **APK SHA-256**
 
 ```text
-fd6130f3a969a8dd843ab1eee8c1dea4590a2cb8a7247a186bfbce2f76a591a5
+1cd7f04e29e3e9dc744d613101a292bc37ba04591ed6b74773593c994dd557dc
 ```
 
 ## Build it yourself
@@ -127,7 +134,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated v1.5.1 APK will be available at:
+The generated v1.6.0 APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk

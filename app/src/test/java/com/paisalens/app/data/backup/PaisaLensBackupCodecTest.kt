@@ -1,15 +1,21 @@
 package com.paisalens.app.data.backup
 
 import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.NetWorthItem
+import com.paisalens.app.data.model.NetWorthKind
 import com.paisalens.app.data.model.MerchantAliasRule
 import com.paisalens.app.data.model.MerchantCategoryRule
 import com.paisalens.app.data.model.PaisaLensBackupSnapshot
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.SmartCategoryRule
+import com.paisalens.app.data.model.SmartRuleMatchType
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
@@ -46,7 +52,19 @@ class PaisaLensBackupCodecTest {
 
     private fun sampleSnapshot() = PaisaLensBackupSnapshot(
         createdAt = 123456789L,
-        accounts = listOf(AccountProfile(1, "Daily card", AccountType.CREDIT_CARD, "4321", "Bank")),
+        accounts = listOf(
+            AccountProfile(
+                id = 1,
+                name = "Daily card",
+                type = AccountType.CREDIT_CARD,
+                accountHint = "4321",
+                institution = "Bank",
+                availableCreditMinor = 3_500_000,
+                creditLimitMinor = 5_000_000,
+                availabilityFetchedAt = 123456789L,
+                availabilitySender = "BANK",
+            ),
+        ),
         customCategories = listOf(CustomCategory(2, "Pet care", "#21D19F")),
         budgets = listOf(CategoryBudget(ExpenseCategory.FOOD, 500000)),
         merchantRules = listOf(
@@ -55,6 +73,31 @@ class PaisaLensBackupCodecTest {
         merchantAliases = listOf(MerchantAliasRule("amzn", "AMZN", "Amazon", 123456789L)),
         loans = listOf(
             LoanAccount(3, "Car loan", "Bank", 50000000, 850, 60, 20000, 1026000, 7, 1),
+        ),
+        balanceHistory = listOf(
+            AccountBalanceSnapshot(4, 1, null, 3_500_000, 5_000_000, 123456789L, "BANK"),
+        ),
+        bills = listOf(
+            BillReminder(5, "Electricity", 225_000, 21_000, 1, 1, "Autopay", true, null),
+        ),
+        netWorthItems = listOf(
+            NetWorthItem(6, "Mutual funds", NetWorthKind.ASSET, 12_500_000, "Investments", 123456789L),
+        ),
+        smartCategoryRules = listOf(
+            SmartCategoryRule(
+                id = 7,
+                name = "Food delivery",
+                merchantPattern = "swiggy",
+                matchType = SmartRuleMatchType.CONTAINS,
+                minAmountMinor = 10_000,
+                maxAmountMinor = 500_000,
+                accountId = 1,
+                category = ExpenseCategory.FOOD,
+                customCategoryId = null,
+                enabled = true,
+                priority = 10,
+                updatedAt = 123456789L,
+            ),
         ),
         transactions = listOf(
             TransactionRecord(

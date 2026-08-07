@@ -95,16 +95,32 @@ import kotlin.math.roundToLong
 fun AnalyticsScreen(
     transactions: List<TransactionRecord>,
     insights: List<SpendingInsight>,
-    onBack: () -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
+    modifier: Modifier = Modifier,
+    onBack: (() -> Unit)? = null,
+    showHeader: Boolean = true,
 ) {
     val analytics = remember(transactions) { buildSpendingAnalytics(transactions) }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { FeatureTopBar("Analytics", "Deeper patterns from confirmed expenses", onBack) }
+        if (showHeader) {
+            item {
+                if (onBack != null) {
+                    FeatureTopBar("Analytics", "Deeper patterns from confirmed expenses", onBack)
+                } else {
+                    Column {
+                        Text("Insights", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Deeper patterns from confirmed expenses",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 AnalyticsMetric("This month", analytics.currentMonthMinor, Modifier.weight(1f))
