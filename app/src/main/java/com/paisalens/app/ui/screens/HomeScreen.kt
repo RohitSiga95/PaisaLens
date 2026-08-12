@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -75,6 +77,7 @@ import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.USER_ENTERED_UPI_BALANCE_SOURCE
 import com.paisalens.app.data.model.calculateCreditUtilization
 import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
 import com.paisalens.app.data.model.transactionIdsExcludedFromSpending
@@ -115,6 +118,7 @@ fun HomeScreen(
     onOpenSavingsGoals: () -> Unit,
     onOpenCommitments: () -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
+    onCheckBalanceViaUpi: (AccountProfile, Set<Long>) -> Unit,
     onAccountClick: (AccountProfile) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
@@ -248,6 +252,7 @@ fun HomeScreen(
                                 valueLabel = "Current balance",
                                 icon = Icons.Rounded.AccountBalance,
                                 onRefresh = { onRefreshAccount(group.account) },
+                                onCheckViaUpi = { onCheckBalanceViaUpi(group.account, group.accountIds) },
                                 onClick = { onAccountClick(group.account) },
                             )
                         }
@@ -276,6 +281,7 @@ fun HomeScreen(
                                 valueLabel = "Available credit limit",
                                 icon = Icons.Rounded.CreditCard,
                                 onRefresh = { onRefreshAccount(group.account) },
+                                onCheckViaUpi = null,
                                 onClick = { onAccountClick(group.account) },
                             )
                         }
@@ -308,6 +314,7 @@ fun HomeScreen(
                     expanded = unavailableAccountsExpanded,
                     onExpandedChange = { unavailableAccountsExpanded = it },
                     onRefreshAccount = onRefreshAccount,
+                    onCheckBalanceViaUpi = onCheckBalanceViaUpi,
                     onAccountClick = onAccountClick,
                 )
             }
@@ -892,6 +899,7 @@ private fun AccountAvailabilityTile(
     valueLabel: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onRefresh: () -> Unit,
+    onCheckViaUpi: (() -> Unit)?,
     onClick: () -> Unit,
 ) {
     val style = accountTileStyle(account)
@@ -988,19 +996,54 @@ private fun AccountAvailabilityTile(
                 Spacer(Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                     Text(
-                        text = account.availabilityFetchedAt?.let { "Fetched ${formatAvailabilityTime(it)}" }
-                            ?: "Not fetched from SMS yet",
+                        text = account.availabilityFetchedAt?.let {
+                            val action = if (
+                                account.availabilitySender?.startsWith(USER_ENTERED_UPI_BALANCE_SOURCE) == true
+                            ) {
+                                "Entered"
+                            } else {
+                                "Fetched"
+                            }
+                            "$action ${formatAvailabilityTime(it)}"
+                        } ?: "No balance saved yet",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = style.foreground.copy(alpha = 0.72f),
                     )
-                    Surface(
-                        color = style.foreground.copy(alpha = 0.14f),
-                        contentColor = style.foreground,
-                        shape = CircleShape,
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = onRefresh, modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ${account.name}")
+                        onCheckViaUpi?.let { checkViaUpi ->
+                            Surface(
+                                onClick = checkViaUpi,
+                                modifier = Modifier.heightIn(min = 48.dp),
+                                color = style.foreground.copy(alpha = 0.14f),
+                                contentColor = style.foreground,
+                                shape = CircleShape,
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.AccountBalanceWallet,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(19.dp),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("UPI check", style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                        }
+                        Surface(
+                            color = style.foreground.copy(alpha = 0.14f),
+                            contentColor = style.foreground,
+                            shape = CircleShape,
+                        ) {
+                            IconButton(onClick = onRefresh, modifier = Modifier.size(48.dp)) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ${account.name} by SMS")
+                            }
                         }
                     }
                 }
@@ -1044,6 +1087,7 @@ private fun UnavailableAccountsPanel(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
+    onCheckBalanceViaUpi: (AccountProfile, Set<Long>) -> Unit,
     onAccountClick: (AccountProfile) -> Unit,
 ) {
     val total = bankAccounts.size + creditCards.size
@@ -1074,7 +1118,7 @@ private fun UnavailableAccountsPanel(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Balances not yet available", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "$total ${if (total == 1) "account needs" else "accounts need"} an SMS update",
+                            "$total ${if (total == 1) "account needs" else "accounts need"} a balance update",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1104,10 +1148,11 @@ private fun UnavailableAccountsPanel(
                                 profileCount = group.profileCount,
                                 valueMinor = null,
                                 valueLabel = "Current balance",
-                            icon = Icons.Rounded.AccountBalance,
-                            onRefresh = { onRefreshAccount(group.account) },
-                            onClick = { onAccountClick(group.account) },
-                        )
+                                icon = Icons.Rounded.AccountBalance,
+                                onRefresh = { onRefreshAccount(group.account) },
+                                onCheckViaUpi = { onCheckBalanceViaUpi(group.account, group.accountIds) },
+                                onClick = { onAccountClick(group.account) },
+                            )
                         }
                     }
                     if (creditCards.isNotEmpty()) {
@@ -1123,10 +1168,11 @@ private fun UnavailableAccountsPanel(
                                 profileCount = group.profileCount,
                                 valueMinor = null,
                                 valueLabel = "Available credit limit",
-                            icon = Icons.Rounded.CreditCard,
-                            onRefresh = { onRefreshAccount(group.account) },
-                            onClick = { onAccountClick(group.account) },
-                        )
+                                icon = Icons.Rounded.CreditCard,
+                                onRefresh = { onRefreshAccount(group.account) },
+                                onCheckViaUpi = null,
+                                onClick = { onAccountClick(group.account) },
+                            )
                         }
                     }
                 }
@@ -1161,6 +1207,7 @@ internal fun transactionsForMonth(
 internal data class AccountAvailabilityGroup(
     val key: String,
     val account: AccountProfile,
+    val accountIds: Set<Long>,
     val profileCount: Int,
 )
 
@@ -1190,6 +1237,7 @@ internal fun consolidateAvailabilityAccounts(
                         .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
                         ?.creditLimitMinor,
             ),
+            accountIds = matches.mapTo(linkedSetOf()) { it.id },
             profileCount = matches.size,
         )
     }

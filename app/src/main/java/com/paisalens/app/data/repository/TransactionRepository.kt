@@ -6,6 +6,7 @@ import com.paisalens.app.data.importer.StatementImporter
 import com.paisalens.app.data.local.PaisaLensDatabase
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountBalanceSnapshot
+import com.paisalens.app.data.model.AccountBalanceWriteResult
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.AuditBatchSummary
@@ -178,6 +179,17 @@ class TransactionRepository(
         val count = database.applyAccountAvailability(listOf(update))
         refresh()
         count
+    }
+
+    suspend fun recordUserEnteredUpiBalance(
+        accountId: Long,
+        balanceMinor: Long,
+        recordedAt: Long = System.currentTimeMillis(),
+        sourceLabel: String? = null,
+    ): AccountBalanceWriteResult = withContext(Dispatchers.IO) {
+        val result = database.recordUserEnteredUpiBalance(accountId, balanceMinor, recordedAt, sourceLabel)
+        refresh()
+        result
     }
 
     suspend fun addManual(

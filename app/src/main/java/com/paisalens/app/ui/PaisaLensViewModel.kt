@@ -490,6 +490,31 @@ class PaisaLensViewModel(
         }
     }
 
+    fun recordUserEnteredUpiBalance(
+        accountId: Long,
+        balanceMinor: Long,
+        recordedAt: Long = System.currentTimeMillis(),
+        sourceLabel: String? = null,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                app.repository.recordUserEnteredUpiBalance(accountId, balanceMinor, recordedAt, sourceLabel)
+            }.onSuccess { result ->
+                val message = when {
+                    result.currentBalanceUpdated -> "Bank balance updated"
+                    result.snapshotRecorded -> "Balance saved to history; a newer balance remains current"
+                    else -> "That balance is already recorded"
+                }
+                _events.emit(message)
+                onComplete(true)
+            }.onFailure {
+                _events.emit(it.message ?: "Could not save that bank balance")
+                onComplete(false)
+            }
+        }
+    }
+
     fun deleteAccount(id: Long) {
         viewModelScope.launch {
             app.repository.deleteAccount(id)

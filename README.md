@@ -35,6 +35,7 @@
 | 👥 | **Split expenses & reimbursements** | Allocate an expense across participants, track partial repayments, and link incoming reimbursements without double-counting spend. |
 | 🐷 | **Savings goals & sinking funds** | Create targets, record or correct contributions, and see progress, remaining value, and the pace needed to reach a target date. |
 | 🔄 | **Subscriptions & UPI AutoPay** | Review recurring suggestions and manage amounts, mandate caps, schedules, accounts, due dates, and active, paused, cancelled, or expired states. |
+| 🏦 | **UPI-assisted balance checks** | Open a supported installed UPI app to check a bank balance, then explicitly type and save it as a timestamped, user-entered snapshot—without sharing a PIN or scraping another app. |
 | 🛡️ | **Stronger trust and accuracy** | Reconcile accounts, link related transactions, audit card statements, inspect data health, verify backups, and safely undo eligible changes. |
 | 🎨 | **Theme Studio and richer exports** | Choose Material, AMOLED, or gradient themes and export eight formatted Excel sheets with reimbursement-aware analysis. |
 
@@ -86,11 +87,11 @@
 | 🎯 | **Category budgets** | Tracks limits with progress and overspend states. |
 | 📗 | **Beautiful Excel export** | Creates a categorized, link-aware workbook with recorded and analysis amounts, trends, budgets, dashboard cards and native charts. |
 | 🏦 | **Accounts & cards** | Organizes transactions into bank accounts, credit cards, wallets, cash, or custom account profiles. |
-| 💳 | **Balances & available credit** | Reads transaction and daily HDFC available-balance alerts, combines duplicate SMS profiles by account last-four digits, uses textured bank-colored tiles, and hides unfetched accounts in a collapsed section. |
+| 💳 | **Balances & available credit** | Reads supported SMS balance alerts, combines duplicate profiles by account last-four digits, and lets you open an installed UPI app, check the balance there, then save the amount locally as a clearly labelled user-entered snapshot. |
 | 🔁 | **Recurring payments** | Detects consistent weekly and monthly expenses and estimates the next due date. |
 | 👥 | **Split expenses & reimbursements** | Allocates a deducted expense across participants, tracks partial repayments, optionally links an incoming refund or income row, and keeps linked reimbursements from inflating analytics. |
 | 🐷 | **Savings goals & sinking funds** | Tracks targets, money already saved, dated contributions, progress, remaining amount, and the monthly pace needed to reach an optional target date. |
-| 🔄 | **Subscriptions & UPI AutoPay centre** | Manages recurring charges and mandate limits, pause/cancel states, accounts, due dates, and reviewed on-device suggestions without contacting a bank or UPI app. |
+| 🔄 | **Subscriptions & UPI AutoPay centre** | Manages recurring charges and mandate limits, pause/cancel states, accounts, due dates, and reviewed on-device suggestions without creating or changing a real bank or UPI mandate. |
 | 🧩 | **Colorful categories & tags** | Uses meaningful category colors and icons, creates personal categories directly from any category picker, and adds searchable tags. |
 | ✅ | **Review inbox** | Holds uncertain merchant or category matches for confirmation before they affect analytics. |
 | 🔐 | **Encrypted backup & restore** | Creates a password-protected portable backup locally and restores it when needed. |
@@ -145,6 +146,7 @@ currency pair only  →  HTTPS reference-rate API  →  cached rate ↗
 - `INTERNET` is used only after the user taps a Travel-mode rate refresh; the HTTPS request contains only the currency pair.
 - SMS, receipt images and OCR, statements, transactions, balances, merchants, loans, categories, notes, tags, budgets, participant shares, savings goals, payment commitments, and insights stay on the device.
 - Account refresh opens a prefilled system SMS composer; PaisaLens never sends an SMS automatically and requests no `SEND_SMS` permission.
+- UPI balance check only opens the selected app's normal home screen. No PIN, account identifier or balance is returned to PaisaLens; the user chooses whether to type and save the displayed amount locally.
 - Automatic cloud backup and device-transfer backup are disabled.
 - Optional manual backups are encrypted on-device with a user passphrase, exclude raw SMS text, and are saved only where the user chooses.
 - SMS is read only after explicit permission and disclosure.
@@ -167,7 +169,7 @@ You can also browse the [v1.8.0 release page](https://github.com/RohitSiga95/Pai
 **APK SHA-256**
 
 ```text
-f3129e3eaa1370b24401f17f8935c3331d6f548735ca1d4ee39063f5807b70e2
+51bc9fd056b7a09a7ed37cf98f24ddd50c899a3b0f5b2ad9cd1939fcf0108c23
 ```
 
 ## Build it yourself

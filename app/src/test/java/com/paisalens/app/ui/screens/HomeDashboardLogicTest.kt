@@ -45,6 +45,7 @@ class HomeDashboardLogicTest {
         assertEquals(2, groups.size)
         val hdfc = groups.single { it.account.accountHint == "0801" }
         assertEquals(3, hdfc.profileCount)
+        assertEquals(setOf(1L, 2L, 3L), hdfc.accountIds)
         assertEquals(25_000L, hdfc.account.balanceMinor)
         assertEquals(200L, hdfc.account.availabilityFetchedAt)
         val idfc = groups.single { it.account.accountHint == "8004" }

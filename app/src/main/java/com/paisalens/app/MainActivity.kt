@@ -18,6 +18,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
@@ -25,6 +26,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paisalens.app.ui.PaisaLensApp
 import com.paisalens.app.ui.PaisaLensViewModel
 import com.paisalens.app.ui.AppLockScreen
+import com.paisalens.app.ui.UpiAppChoice
 import com.paisalens.app.ui.theme.PaisaLensTheme
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.StatementAuditMetadata
@@ -46,6 +48,7 @@ class MainActivity : FragmentActivity() {
     private var pendingStatementAccountId: Long? = null
     private var pendingStatementAuditMetadata: StatementAuditMetadata? = null
     private var pendingReceiptUri: Uri? = null
+    private var availableUpiApps by mutableStateOf<List<UpiAppChoice>>(emptyList())
     private var isUnlocked by mutableStateOf(true)
     private var authPromptVisible = false
     private var authenticationPurpose = AuthenticationPurpose.UNLOCK
@@ -148,10 +151,16 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         updatePermissionState()
+        refreshAvailableUpiApps()
         isUnlocked = !(application as PaisaLensApplication).preferences.appLockEnabled
 
         setContent {
             val themeConfiguration by viewModel.themeConfiguration.collectAsStateWithLifecycle()
+            var upiBalanceAccountId by rememberSaveable { mutableStateOf<Long?>(null) }
+            var selectedUpiPackageName by rememberSaveable { mutableStateOf<String?>(null) }
+            var upiBalanceDraft by rememberSaveable { mutableStateOf("") }
+            var upiBalanceSaving by rememberSaveable { mutableStateOf(false) }
+            var upiBalanceError by rememberSaveable { mutableStateOf<String?>(null) }
             if (isUnlocked) {
                 PaisaLensApp(
                     viewModel = viewModel,
@@ -226,6 +235,18 @@ class MainActivity : FragmentActivity() {
                         )
                     },
                     onComposeBalanceSms = ::composeBalanceSms,
+                    availableUpiApps = availableUpiApps,
+                    upiBalanceAccountId = upiBalanceAccountId,
+                    selectedUpiPackageName = selectedUpiPackageName,
+                    upiBalanceDraft = upiBalanceDraft,
+                    upiBalanceSaving = upiBalanceSaving,
+                    upiBalanceError = upiBalanceError,
+                    onUpiBalanceAccountChange = { accountId -> upiBalanceAccountId = accountId },
+                    onSelectedUpiPackageChange = { packageName -> selectedUpiPackageName = packageName },
+                    onUpiBalanceDraftChange = { draft -> upiBalanceDraft = draft },
+                    onUpiBalanceSavingChange = { saving -> upiBalanceSaving = saving },
+                    onUpiBalanceErrorChange = { error -> upiBalanceError = error },
+                    onLaunchUpiApp = ::launchUpiApp,
                 )
             } else {
                 PaisaLensTheme(configuration = themeConfiguration) {
@@ -238,6 +259,7 @@ class MainActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         updatePermissionState()
+        refreshAvailableUpiApps()
         if (!isUnlocked && (application as PaisaLensApplication).preferences.appLockEnabled) {
             window.decorView.post { authenticate(AuthenticationPurpose.UNLOCK) }
         }
@@ -362,8 +384,44 @@ class MainActivity : FragmentActivity() {
         false
     }
 
+    private fun refreshAvailableUpiApps() {
+        availableUpiApps = SUPPORTED_UPI_APPS.filter { app ->
+            packageManager.getLaunchIntentForPackage(app.packageName) != null
+        }
+    }
+
+    private fun launchUpiApp(app: UpiAppChoice): Boolean {
+        if (SUPPORTED_UPI_APPS.none { it.packageName == app.packageName }) return false
+        val launchIntent = packageManager.getLaunchIntentForPackage(app.packageName) ?: return false
+        return try {
+            startActivity(launchIntent)
+            Toast.makeText(
+                this,
+                "Check the balance in ${app.displayName}, then return to PaisaLens",
+                Toast.LENGTH_LONG,
+            ).show()
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
     private enum class AuthenticationPurpose {
         UNLOCK,
         ENABLE_LOCK,
+    }
+
+    private companion object {
+        val SUPPORTED_UPI_APPS = listOf(
+            UpiAppChoice("in.org.npci.upiapp", "BHIM"),
+            UpiAppChoice("com.google.android.apps.nbu.paisa.user", "Google Pay"),
+            UpiAppChoice("com.phonepe.app", "PhonePe"),
+            UpiAppChoice("net.one97.paytm", "Paytm"),
+            UpiAppChoice("com.dreamplug.androidapp", "CRED"),
+            UpiAppChoice("in.amazon.mShop.android.shopping", "Amazon Pay"),
+            UpiAppChoice("com.whatsapp", "WhatsApp"),
+        )
     }
 }
