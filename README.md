@@ -26,6 +26,37 @@
 > [!IMPORTANT]
 > The downloadable file is the current **debug APK** for direct installation and testing. Android may ask you to allow installation from your browser or file manager. Requires Android 8.0 (API 26) or newer.
 
+## What's new in v1.8.0
+
+| | Update | Highlights |
+|---|---|---|
+| 🔔 | **Private notification digest** | Choose a daily or weekly on-device summary, keep amounts hidden by default, and use a generic lock-screen-safe notification. |
+| 🧱 | **Customisable Home** | Show, hide, and reorder seven dashboard modules, including balances, goals, and upcoming commitments. |
+| 👥 | **Split expenses & reimbursements** | Allocate an expense across participants, track partial repayments, and link incoming reimbursements without double-counting spend. |
+| 🐷 | **Savings goals & sinking funds** | Create targets, record or correct contributions, and see progress, remaining value, and the pace needed to reach a target date. |
+| 🔄 | **Subscriptions & UPI AutoPay** | Review recurring suggestions and manage amounts, mandate caps, schedules, accounts, due dates, and active, paused, cancelled, or expired states. |
+| 🛡️ | **Stronger trust and accuracy** | Reconcile accounts, link related transactions, audit card statements, inspect data health, verify backups, and safely undo eligible changes. |
+| 🎨 | **Theme Studio and richer exports** | Choose Material, AMOLED, or gradient themes and export eight formatted Excel sheets with reimbursement-aware analysis. |
+
+<table>
+  <tr>
+    <td align="center"><strong>Custom Home</strong></td>
+    <td align="center"><strong>Savings goals</strong></td>
+    <td align="center"><strong>Subscriptions &amp; AutoPay</strong></td>
+    <td align="center"><strong>Private digest</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens v1.8 customizable Home dashboard" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens v1.8 savings goals and sinking funds" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens v1.8 subscriptions and UPI AutoPay centre" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens v1.8 private notification digest settings" width="210"></td>
+  </tr>
+</table>
+
+<p align="center">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.0"><strong>Read the complete v1.8.0 release notes →</strong></a>
+</p>
+
 ## See PaisaLens in action
 
 <table>
