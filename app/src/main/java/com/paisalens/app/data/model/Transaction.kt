@@ -69,6 +69,8 @@ data class TransactionRecord(
     val originalAmountMinor: Long? = null,
     val originalCurrency: String? = null,
     val exchangeRate: Double? = null,
+    /** Canonical bank/card tag derived locally from the linked account or SMS sender. */
+    val institutionName: String? = null,
 )
 
 data class ParsedTransaction(

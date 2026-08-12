@@ -86,7 +86,7 @@
 | 🧱 | **Customisable Home** | Shows, hides, and reorders seven private dashboard modules—including balances, goals, and upcoming commitments—with the layout stored only on the device. |
 | 🎯 | **Category budgets** | Tracks limits with progress and overspend states. |
 | 📗 | **Beautiful Excel export** | Creates a categorized, link-aware workbook with recorded and analysis amounts, trends, budgets, dashboard cards and native charts. |
-| 🏦 | **Accounts & cards** | Organizes transactions into bank accounts, credit cards, wallets, cash, or custom account profiles. |
+| 🏦 | **Named accounts & cards** | Renames bank accounts and credit cards once, keeps that name across existing and future matching SMS, tags alerts from HDFC, IDFC, SBI, SIB and other recognized institutions, and supports multi-select bank/card filters in Activity. |
 | 💳 | **Balances & available credit** | Reads supported SMS balance alerts, combines duplicate profiles by account last-four digits, and lets you open an installed UPI app, check the balance there, then save the amount locally as a clearly labelled user-entered snapshot. |
 | 🔁 | **Recurring payments** | Detects consistent weekly and monthly expenses and estimates the next due date. |
 | 👥 | **Split expenses & reimbursements** | Allocates a deducted expense across participants, tracks partial repayments, optionally links an incoming refund or income row, and keeps linked reimbursements from inflating analytics. |
@@ -169,7 +169,7 @@ You can also browse the [v1.8.0 release page](https://github.com/RohitSiga95/Pai
 **APK SHA-256**
 
 ```text
-51bc9fd056b7a09a7ed37cf98f24ddd50c899a3b0f5b2ad9cd1939fcf0108c23
+dc6b559a3f80288a956597b44dafeeaf9bf78830623cc197733e473bad50d49f
 ```
 
 ## Build it yourself

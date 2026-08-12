@@ -414,6 +414,7 @@ fun PaisaLensApp(
                         )
                         AppDestination.ACTIVITY -> TransactionsScreen(
                             transactions = transactions,
+                            accounts = accounts,
                             uncategorizedMerchants = uncategorizedMerchants,
                             initialFilter = activityFilter,
                             onCategorizeMerchant = { selectedMerchantGroup = it },
@@ -2054,6 +2055,16 @@ private fun TransactionDetailSheet(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+            transaction.institutionName
+                ?.takeIf(String::isNotBlank)
+                ?.takeUnless { it.equals(transaction.accountName, ignoreCase = true) }
+                ?.let { institution ->
+                    Text(
+                        "Bank or card: $institution",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             if (transaction.reviewStatus == ReviewStatus.NEEDS_REVIEW) {
                 Spacer(Modifier.height(16.dp))
                 Surface(

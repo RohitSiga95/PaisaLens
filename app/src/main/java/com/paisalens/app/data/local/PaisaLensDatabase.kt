@@ -335,7 +335,7 @@ class PaisaLensDatabase(context: Context) :
                 t.category, t.type, t.occurred_at, t.source, t.sender, t.note,
                 t.account_id, a.name, t.custom_category_id, c.name, t.tags,
                 t.review_status, t.review_reason, t.original_amount_minor,
-                t.original_currency, t.exchange_rate
+                t.original_currency, t.exchange_rate, a.institution
             FROM transactions t
             LEFT JOIN accounts a ON a.id = t.account_id
             LEFT JOIN custom_categories c ON c.id = t.custom_category_id
@@ -366,6 +366,9 @@ class PaisaLensDatabase(context: Context) :
                     originalAmountMinor = cursor.longOrNull(18),
                     originalCurrency = cursor.getString(19),
                     exchangeRate = cursor.doubleOrNull(20),
+                    institutionName = BankSmsSupport.institutionNameOrNull(cursor.getString(9))
+                        ?: BankSmsSupport.institutionNameOrNull(cursor.getString(21).orEmpty())
+                        ?: cursor.getString(21)?.trim()?.takeIf(String::isNotBlank),
                 )
             }
         }
@@ -699,14 +702,116 @@ class PaisaLensDatabase(context: Context) :
     }
 
     fun updateAccountProfile(account: AccountProfile) {
+        val cleanName = account.name.trim().replace(Regex("\\s+"), " ").take(48)
+        require(cleanName.isNotBlank()) { "Account name cannot be empty" }
+        val cleanHint = account.accountHint?.filter(Char::isDigit)?.takeLast(4)?.takeIf(String::isNotBlank)
         val values = ContentValues().apply {
-            put("name", account.name.trim().take(48))
+            put("name", cleanName)
             put("type", account.type.name)
-            val cleanHint = account.accountHint?.filter(Char::isDigit)?.takeLast(4)?.takeIf(String::isNotBlank)
             if (cleanHint == null) putNull("account_hint") else put("account_hint", cleanHint)
             putNullableLong("credit_limit_minor", account.creditLimitMinor?.coerceAtLeast(0))
         }
-        writableDatabase.update("accounts", values, "id = ?", arrayOf(account.id.toString()))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            data class StoredAccount(
+                val type: AccountType,
+                val hint: String?,
+                val bankKey: String?,
+                val institution: String?,
+            )
+            val stored = db.query(
+                "accounts",
+                arrayOf("type", "account_hint", "institution", "name"),
+                "id = ?",
+                arrayOf(account.id.toString()),
+                null,
+                null,
+                null,
+                "1",
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    StoredAccount(
+                        type = enumValueOrDefault(cursor.getString(0), AccountType.OTHER),
+                        hint = cursor.getString(1),
+                        bankKey = BankSmsSupport.accountBankKey(cursor.getString(2), cursor.getString(3)),
+                        institution = cursor.getString(2),
+                    )
+                } else {
+                    null
+                }
+            }
+            requireNotNull(stored) { "Account not found" }
+            if (stored.type != account.type || stored.hint != cleanHint) {
+                // The old key encodes the former type/last-four and must never resolve a
+                // future SMS back to this edited profile. A fresh unique key lets the next
+                // matching alert promote it to the canonical sender-based identity.
+                values.put("identity_key", "edited:${UUID.randomUUID()}")
+            }
+
+            // Home deliberately treats matching type + last four as one physical account,
+            // including rows created from different sender IDs. Rename that entire group so
+            // its label stays consistent on the tile, history, and all future SMS matches.
+            val renameIds = mutableListOf(account.id)
+            if (stored.hint != null) {
+                data class RenameCandidate(
+                    val id: Long,
+                    val bankKey: String?,
+                    val institution: String?,
+                )
+                val candidates = mutableListOf<RenameCandidate>()
+                db.query(
+                    "accounts",
+                    arrayOf("id", "institution", "name"),
+                    "type = ? AND account_hint = ? AND id != ?",
+                    arrayOf(stored.type.name, stored.hint, account.id.toString()),
+                    null,
+                    null,
+                    null,
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        candidates += RenameCandidate(
+                            id = cursor.getLong(0),
+                            bankKey = BankSmsSupport.accountBankKey(cursor.getString(1), cursor.getString(2)),
+                            institution = cursor.getString(1),
+                        )
+                    }
+                }
+                val recognizedKeys = (candidates.mapNotNull(RenameCandidate::bankKey) + listOfNotNull(stored.bankKey)).toSet()
+                val unsupportedInstitutions = (candidates.mapNotNull { candidate ->
+                    candidate.institution?.trim()?.takeIf(String::isNotBlank)?.takeIf { candidate.bankKey == null }
+                } + listOfNotNull(
+                    stored.institution?.trim()?.takeIf(String::isNotBlank)?.takeIf { stored.bankKey == null },
+                )).map { it.lowercase(Locale.ROOT) }.toSet()
+                candidates.filter { candidate ->
+                    when {
+                        stored.bankKey != null -> candidate.bankKey == stored.bankKey ||
+                            (candidate.bankKey == null && candidate.institution.isNullOrBlank())
+                        stored.institution.isNullOrBlank() && recognizedKeys.size == 1 && unsupportedInstitutions.isEmpty() ->
+                            candidate.institution.isNullOrBlank() || candidate.bankKey in recognizedKeys
+                        stored.institution.isNullOrBlank() ->
+                            candidate.institution.isNullOrBlank() && candidate.bankKey == null
+                        else -> candidate.institution?.trim()?.lowercase(Locale.ROOT) ==
+                            stored.institution.trim().lowercase(Locale.ROOT)
+                    }
+                }.mapTo(renameIds) { it.id }
+            }
+            renameIds.forEach { id ->
+                if (id == account.id) {
+                    db.update("accounts", values, "id = ?", arrayOf(id.toString()))
+                } else {
+                    db.update(
+                        "accounts",
+                        ContentValues().apply { put("name", cleanName) },
+                        "id = ?",
+                        arrayOf(id.toString()),
+                    )
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun applyAccountAvailability(updates: List<AccountAvailabilityUpdate>): Int {
@@ -3052,8 +3157,9 @@ class PaisaLensDatabase(context: Context) :
         source: TransactionSource,
         sender: String,
     ): Long? {
-        val hint = accountHint?.filter(Char::isDigit)?.takeLast(4)?.takeIf(String::isNotBlank) ?: return null
-        val institution = sender
+        val hint = accountHint?.filter(Char::isDigit)?.takeLast(4)?.takeIf(String::isNotBlank)
+        val bankKey = BankSmsSupport.bankKey(sender)
+        val institution = bankKey?.let(BankSmsSupport::institutionName) ?: sender
             .replace(Regex("(?i)^(?:AD|AX|BZ|JD|JM|VK|VM|TM|CP|BP|HP|QP)-"), "")
             .replace(Regex("[^A-Za-z0-9 ]"), " ")
             .trim()
@@ -3064,10 +3170,44 @@ class PaisaLensDatabase(context: Context) :
             TransactionSource.BANK, TransactionSource.UPI -> AccountType.BANK_ACCOUNT
             TransactionSource.MANUAL, TransactionSource.STATEMENT -> AccountType.OTHER
         }
-        val identityKey = "${source.name}:${institution.lowercase(Locale.ROOT)}:$hint"
+        // A sender without an account suffix can safely map only when that institution and
+        // account type identify one physical account group. Duplicate sender profiles that
+        // share the same last four are already treated as one account throughout the app.
+        if (hint == null) {
+            if (bankKey == null) return null
+            data class NoHintCandidate(val id: Long, val hint: String?)
+            val matches = mutableListOf<NoHintCandidate>()
+            db.query(
+                "accounts",
+                arrayOf("id", "institution", "name", "account_hint"),
+                "type = ?",
+                arrayOf(accountType.name),
+                null,
+                null,
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    if (BankSmsSupport.accountBankKey(cursor.getString(1), cursor.getString(2)) == bankKey) {
+                        matches += NoHintCandidate(
+                            id = cursor.getLong(0),
+                            hint = cursor.getString(3)?.filter(Char::isDigit)?.takeLast(4),
+                        )
+                    }
+                }
+            }
+            val soleGroup = matches
+                .groupBy { candidate -> candidate.hint?.let { "last4:$it" } ?: "account:${candidate.id}" }
+                .values
+                .singleOrNull()
+                ?: return null
+            return soleGroup.minOfOrNull(NoHintCandidate::id)
+        }
+        val identityKey = "${accountType.name}:${bankKey ?: institution.lowercase(Locale.ROOT)}:$hint"
+        var staleExactId: Long? = null
+        var validExactId: Long? = null
         db.query(
             "accounts",
-            arrayOf("id"),
+            arrayOf("id", "type", "account_hint"),
             "identity_key = ?",
             arrayOf(identityKey),
             null,
@@ -3075,13 +3215,35 @@ class PaisaLensDatabase(context: Context) :
             null,
             "1",
         ).use { cursor ->
-            if (cursor.moveToFirst()) return cursor.getLong(0)
+            if (cursor.moveToFirst()) {
+                val exactId = cursor.getLong(0)
+                val exactType = enumValueOrDefault(cursor.getString(1), AccountType.OTHER)
+                val exactHint = cursor.getString(2)?.filter(Char::isDigit)?.takeLast(4)
+                if (exactType == accountType && exactHint == hint) {
+                    validExactId = exactId
+                } else {
+                    staleExactId = exactId
+                }
+            }
         }
-        data class AccountCandidate(val id: Long, val institution: String?)
+        staleExactId?.let { id ->
+            db.update(
+                "accounts",
+                ContentValues().apply { put("identity_key", "stale:${UUID.randomUUID()}") },
+                "id = ?",
+                arrayOf(id.toString()),
+            )
+        }
+        validExactId?.let { return it }
+        data class AccountCandidate(
+            val id: Long,
+            val institution: String?,
+            val name: String,
+        )
         val sameHintAndType = mutableListOf<AccountCandidate>()
         db.query(
             "accounts",
-            arrayOf("id", "institution"),
+            arrayOf("id", "institution", "name"),
             "type = ? AND account_hint = ?",
             arrayOf(accountType.name, hint),
             null,
@@ -3089,17 +3251,27 @@ class PaisaLensDatabase(context: Context) :
             null,
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                sameHintAndType += AccountCandidate(cursor.getLong(0), cursor.getString(1))
+                sameHintAndType += AccountCandidate(cursor.getLong(0), cursor.getString(1), cursor.getString(2))
             }
         }
-        val institutionKey = BankSmsSupport.bankKey(institution)
-        val compatible = sameHintAndType.firstOrNull {
-            institutionKey != null && BankSmsSupport.bankKey(it.institution.orEmpty()) == institutionKey
-        } ?: sameHintAndType.singleOrNull()
+        val institutionKey = bankKey ?: BankSmsSupport.bankKey(institution)
+        val compatible = if (institutionKey != null) {
+            sameHintAndType
+                .filter { BankSmsSupport.accountBankKey(it.institution, it.name) == institutionKey }
+                .minByOrNull(AccountCandidate::id)
+                ?: sameHintAndType.singleOrNull()?.takeIf {
+                    it.institution.isNullOrBlank() && BankSmsSupport.accountBankKey(it.institution, it.name) == null
+                }
+        } else {
+            null
+        }
         compatible?.let { candidate ->
             db.update(
                 "accounts",
-                ContentValues().apply { put("identity_key", identityKey) },
+                ContentValues().apply {
+                    put("identity_key", identityKey)
+                    institutionKey?.let { put("institution", BankSmsSupport.institutionName(it)) }
+                },
                 "id = ?",
                 arrayOf(candidate.id.toString()),
             )
@@ -3128,6 +3300,7 @@ class PaisaLensDatabase(context: Context) :
             val type: AccountType,
             val hint: String?,
             val bankKey: String?,
+            val institution: String?,
         )
 
         val candidates = mutableListOf<Candidate>()
@@ -3145,14 +3318,17 @@ class PaisaLensDatabase(context: Context) :
                     id = cursor.getLong(0),
                     type = enumValueOrDefault(cursor.getString(1), AccountType.OTHER),
                     hint = cursor.getString(2),
-                    bankKey = BankSmsSupport.bankKey("${cursor.getString(3).orEmpty()} ${cursor.getString(4).orEmpty()}"),
+                    bankKey = BankSmsSupport.accountBankKey(cursor.getString(3), cursor.getString(4)),
+                    institution = cursor.getString(3),
                 )
             }
         }
         val sameType = candidates.filter { it.type == update.accountType }
         update.accountHint?.let { hint ->
             sameType.firstOrNull { it.hint == hint && it.bankKey == update.bankKey }?.let { return it.id }
-            sameType.firstOrNull { it.hint == hint }?.let { return it.id }
+            sameType.filter { it.hint == hint }.singleOrNull()
+                ?.takeIf { it.institution.isNullOrBlank() && it.bankKey == null }
+                ?.let { return it.id }
         }
         return sameType.filter { it.bankKey == update.bankKey }.singleOrNull()?.id
     }
@@ -3195,19 +3371,32 @@ class PaisaLensDatabase(context: Context) :
         accountId: Long,
         update: AccountAvailabilityUpdate,
     ): Boolean {
-        val previousFetchedAt = db.query(
+        val currentAccount = db.query(
             "accounts",
-            arrayOf("availability_fetched_at"),
+            arrayOf("availability_fetched_at", "institution"),
             "id = ?",
             arrayOf(accountId.toString()),
             null,
             null,
             null,
             "1",
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.longOrNull(0) else null }
-        if (previousFetchedAt != null && previousFetchedAt >= update.fetchedAt) return false
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.longOrNull(0) to cursor.getString(1)
+            } else {
+                null
+            }
+        } ?: return false
+        currentAccount.first?.let { fetchedAt -> if (fetchedAt >= update.fetchedAt) return false }
 
         val values = ContentValues().apply {
+            if (currentAccount.second.isNullOrBlank()) {
+                put("institution", update.institutionName)
+                put(
+                    "identity_key",
+                    "availability:${update.bankKey}:${update.accountHint.orEmpty()}:${update.accountType.name}",
+                )
+            }
             update.balanceMinor?.let { put("balance_minor", it) }
             update.availableCreditMinor?.let { put("available_credit_minor", it) }
             update.creditLimitMinor?.let { put("credit_limit_minor", it) }

@@ -73,6 +73,7 @@ import com.paisalens.app.data.model.buildDailyBalanceHistory
 import com.paisalens.app.data.model.balanceSourceDisplayName
 import com.paisalens.app.data.model.calculateCreditUtilization
 import com.paisalens.app.data.model.previewSmartCategoryRuleApplication
+import com.paisalens.app.sms.BankSmsSupport
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.CreditUtilizationBar
 import com.paisalens.app.ui.components.CustomCategoryIcon
@@ -106,6 +107,7 @@ internal fun AccountFinanceSheet(
 ) {
     var selectedRange by remember { mutableStateOf(BalanceHistoryRange.MONTH) }
     var showLimitDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     val accountHistory = remember(history, account.id) {
         history.filter { it.accountId == account.id }.sortedByDescending { it.recordedAt }
     }
@@ -141,7 +143,9 @@ internal fun AccountFinanceSheet(
         ) {
             FinancialSheetHeader(
                 title = account.name,
-                subtitle = account.type.label + (account.accountHint?.let { " · •••• $it" } ?: ""),
+                subtitle = account.financeSubtitle(),
+                onEditTitle = { showRenameDialog = true },
+                editTitleDescription = "Rename ${account.name}",
                 onDismiss = onDismiss,
             )
             LazyColumn(
@@ -315,6 +319,55 @@ internal fun AccountFinanceSheet(
             },
         )
     }
+
+    if (showRenameDialog) {
+        AccountRenameDialog(
+            account = account,
+            onDismiss = { showRenameDialog = false },
+            onSave = { name ->
+                onUpdateAccount(account.copy(name = name))
+                showRenameDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun AccountRenameDialog(
+    account: AccountProfile,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var name by remember(account.id, account.name) { mutableStateOf(account.name) }
+    val cleanName = name.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (account.type == AccountType.CREDIT_CARD) "Rename credit card" else "Rename bank account")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(48) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Display name") },
+                    supportingText = {
+                        Text("This name is used across Home, Activity, filters, exports, and future matching SMS.")
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(cleanName) },
+                enabled = cleanName.isNotBlank() && cleanName != account.name,
+            ) { Text("Save name") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -883,7 +936,13 @@ private fun EmptyFinanceState(title: String, detail: String) {
 }
 
 @Composable
-private fun FinancialSheetHeader(title: String, subtitle: String, onDismiss: () -> Unit) {
+private fun FinancialSheetHeader(
+    title: String,
+    subtitle: String,
+    onDismiss: () -> Unit,
+    onEditTitle: (() -> Unit)? = null,
+    editTitleDescription: String = "Edit name",
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, bottom = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -892,12 +951,28 @@ private fun FinancialSheetHeader(title: String, subtitle: String, onDismiss: () 
             Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        onEditTitle?.let { editTitle ->
+            IconButton(onClick = editTitle) {
+                Icon(Icons.Rounded.Edit, contentDescription = editTitleDescription)
+            }
+        }
         IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, contentDescription = "Close") }
     }
 }
 
 private fun AccountProfile.currentFinanceAmount(): Long? =
     if (type == AccountType.CREDIT_CARD) availableCreditMinor else balanceMinor
+
+private fun AccountProfile.financeSubtitle(): String = buildList {
+    val institutionName = BankSmsSupport.accountBankKey(institution, name)
+        ?.let(BankSmsSupport::institutionName)
+        ?: institution?.trim()?.takeIf(String::isNotBlank)
+    institutionName
+        ?.takeUnless { it.equals(name, ignoreCase = true) }
+        ?.let(::add)
+    add(type.label)
+    accountHint?.let { add("•••• $it") }
+}.joinToString(" · ")
 
 private fun AccountBalanceSnapshot.chartAmount(accountType: AccountType): Long? =
     if (accountType == AccountType.CREDIT_CARD) availableCreditMinor else balanceMinor

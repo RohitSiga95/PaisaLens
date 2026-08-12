@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
@@ -60,6 +62,7 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.sms.BankSmsSupport
 import com.paisalens.app.ui.components.CustomCategoryIcon
 
 internal enum class BackupAction {
@@ -89,75 +92,88 @@ internal fun AccountManagerSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.92f)
                 .navigationBarsPadding(),
+            contentPadding = PaddingValues(bottom = 32.dp),
         ) {
-            SheetHeader("Accounts & cards", "Organize spending and keep transfers out of expenses.", onDismiss)
-            Column(
-                modifier = Modifier.padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it.take(48) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Account name") },
-                    placeholder = { Text("Everyday account") },
-                    singleLine = true,
-                    shape = MaterialTheme.shapes.medium,
+            item(key = "accounts-header") {
+                SheetHeader(
+                    "Accounts & cards",
+                    "Rename bank accounts and cards once; the chosen names stay attached to matching SMS.",
+                    onDismiss,
                 )
-                OutlinedTextField(
-                    value = hint,
-                    onValueChange = { hint = it.filter(Char::isDigit).take(4) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Last 4 digits (optional)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                    singleLine = true,
-                    shape = MaterialTheme.shapes.medium,
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(AccountType.entries) { option ->
-                        FilterChip(
-                            selected = type == option,
-                            onClick = { type = option },
-                            label = { Text(option.label) },
-                        )
+            }
+            item(key = "add-account-form") {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it.take(48) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Account name") },
+                        placeholder = { Text("Everyday account") },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.medium,
+                    )
+                    OutlinedTextField(
+                        value = hint,
+                        onValueChange = { hint = it.filter(Char::isDigit).take(4) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Last 4 digits (optional)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.medium,
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(AccountType.entries) { option ->
+                            FilterChip(
+                                selected = type == option,
+                                onClick = { type = option },
+                                label = { Text(option.label) },
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            onAdd(name, type, hint.takeIf(String::isNotBlank))
+                            name = ""
+                            hint = ""
+                        },
+                        enabled = name.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Add account")
                     }
                 }
-                Button(
-                    onClick = {
-                        onAdd(name, type, hint.takeIf(String::isNotBlank))
-                        name = ""
-                        hint = ""
-                    },
-                    enabled = name.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = MaterialTheme.shapes.medium,
-                ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Add account")
-                }
             }
-            Text(
-                "Detected and added accounts",
-                modifier = Modifier.padding(start = 22.dp, top = 20.dp, bottom = 8.dp),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (accounts.isEmpty()) {
+            item(key = "accounts-section-title") {
                 Text(
-                    "Accounts with recognizable last-four digits will also appear automatically after an SMS scan.",
-                    modifier = Modifier.padding(horizontal = 22.dp),
-                    style = MaterialTheme.typography.bodyMedium,
+                    "Detected and added accounts",
+                    modifier = Modifier.padding(start = 22.dp, top = 20.dp, bottom = 8.dp),
+                    style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (accounts.isEmpty()) {
+                item(key = "accounts-empty") {
+                    Text(
+                        "Accounts with recognizable last-four digits will also appear automatically after an SMS scan.",
+                        modifier = Modifier.padding(horizontal = 22.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             } else {
-                LazyColumn(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                    items(accounts, key = { it.id }) { account ->
+                items(accounts, key = { it.id }) { account ->
+                    Column(modifier = Modifier.padding(horizontal = 20.dp)) {
                         Surface(color = Color.Transparent, shape = MaterialTheme.shapes.medium) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
@@ -168,13 +184,13 @@ internal fun AccountManagerSheet(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(account.name, style = MaterialTheme.typography.titleMedium)
                                     Text(
-                                        account.type.label + (account.accountHint?.let { " · •$it" } ?: ""),
+                                        account.managementSubtitle(),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                                 IconButton(onClick = { editing = account }) {
-                                    Icon(Icons.Rounded.Edit, contentDescription = "Edit ${account.name}")
+                                    Icon(Icons.Rounded.Edit, contentDescription = "Rename or edit ${account.name}")
                                 }
                                 IconButton(onClick = { deleting = account }) {
                                     Icon(
@@ -218,6 +234,17 @@ internal fun AccountManagerSheet(
     }
 }
 
+private fun AccountProfile.managementSubtitle(): String = buildList {
+    val institutionName = BankSmsSupport.accountBankKey(institution, name)
+        ?.let(BankSmsSupport::institutionName)
+        ?: institution?.trim()?.takeIf(String::isNotBlank)
+    institutionName
+        ?.takeUnless { it.equals(name, ignoreCase = true) }
+        ?.let(::add)
+    add(type.label)
+    accountHint?.let { add("•••• $it") }
+}.joinToString(" · ")
+
 @Composable
 private fun AccountEditDialog(
     account: AccountProfile,
@@ -229,13 +256,19 @@ private fun AccountEditDialog(
     var type by remember(account.id) { mutableStateOf(account.type) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Edit account") },
+        title = {
+            Text(if (account.type == AccountType.CREDIT_CARD) "Rename or edit card" else "Rename or edit account")
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it.take(48) },
-                    label = { Text("Account name") },
+                    label = { Text("Display name") },
+                    supportingText = { Text("Used everywhere, including future matching SMS.") },
                     singleLine = true,
                 )
                 OutlinedTextField(
@@ -260,7 +293,7 @@ private fun AccountEditDialog(
             TextButton(
                 onClick = { onSave(account.copy(name = name.trim(), type = type, accountHint = hint.takeIf(String::isNotBlank))) },
                 enabled = name.isNotBlank(),
-            ) { Text("Save") }
+            ) { Text("Save changes") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
