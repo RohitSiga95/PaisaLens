@@ -132,6 +132,7 @@ data class BillReminder(
 enum class DueItemSource {
     MANUAL_BILL,
     RECURRING_PAYMENT,
+    PAYMENT_COMMITMENT,
     LOAN_EMI,
 }
 
@@ -267,6 +268,42 @@ fun buildDueItems(
     return dueItems.sortedWith(compareBy<DueItem> { it.dueDate }.thenBy { it.title.lowercase() })
 }
 
+/** Builds due occurrences for user-reviewed subscriptions and UPI AutoPay planning records. */
+fun buildPaymentCommitmentDueItems(
+    commitments: List<PaymentCommitment>,
+    today: LocalDate,
+    horizonDays: Int = 60,
+    includeRepeatingOccurrences: Boolean = false,
+    accountNamesById: Map<Long, String> = emptyMap(),
+): List<DueItem> {
+    require(horizonDays >= 0) { "horizonDays must be non-negative" }
+    val endDateExclusive = today.plusDays(horizonDays.toLong())
+    return buildList {
+        commitments
+            .filter { it.status == PaymentCommitmentStatus.ACTIVE && it.amountMinor > 0 }
+            .forEach { commitment ->
+                var dueDate = currentPaymentDueDate(commitment, today)
+                while (dueDate.isBefore(endDateExclusive)) {
+                    add(
+                        DueItem(
+                            stableId = "commitment:${commitment.id}:${dueDate.toEpochDay()}",
+                            source = DueItemSource.PAYMENT_COMMITMENT,
+                            title = commitment.name,
+                            amountMinor = commitment.amountMinor,
+                            dueDate = dueDate,
+                            accountId = commitment.accountId,
+                            accountName = commitment.accountId?.let(accountNamesById::get),
+                            notes = commitment.notes,
+                            status = classifyDueDate(dueDate, today),
+                        ),
+                    )
+                    if (!includeRepeatingOccurrences) break
+                    dueDate = calculateNextPaymentDue(commitment, dueDate)
+                }
+            }
+    }.sortedWith(compareBy<DueItem> { it.dueDate }.thenBy { it.title.lowercase() })
+}
+
 data class CashFlowBaseline(
     val lookbackDays: Int,
     val averageDailyIncomeMinor: Long,
@@ -297,12 +334,13 @@ fun buildCashFlowForecast(
     zoneId: ZoneId,
     horizonDays: Int = 30,
     lookbackDays: Int = 90,
+    transactionLinks: List<TransactionLink> = emptyList(),
 ): CashFlowForecast {
     require(horizonDays > 0) { "horizonDays must be positive" }
     require(lookbackDays > 0) { "lookbackDays must be positive" }
     val start = asOf.minusDays(lookbackDays.toLong())
     val scheduledMerchantKeys = dueItems.map { normalizedMerchantKey(it.title) }.filter(String::isNotBlank).toSet()
-    val history = transactions.filter { transaction ->
+    val history = cashFlowRelevantTransactions(transactions, transactionLinks).filter { transaction ->
         if (transaction.reviewStatus != ReviewStatus.CONFIRMED) return@filter false
         val date = Instant.ofEpochMilli(transaction.occurredAt).atZone(zoneId).toLocalDate()
         !date.isBefore(start) && date.isBefore(asOf)

@@ -385,6 +385,30 @@ class FinancialPlanningModelsTest {
         assertEquals(listOf(6_000L, 2_000L, 8_000L), simulation.points.map { it.improvementMinor })
     }
 
+    @Test
+    fun paymentCommitmentDuesAdvanceStaleAnchorAndRepeatWithinHorizon() {
+        val today = LocalDate.of(2026, 3, 1)
+        val commitment = PaymentCommitment(
+            id = 7,
+            name = "Streaming",
+            amountMinor = 499_00,
+            nextDueEpochDay = LocalDate.of(2026, 1, 31).toEpochDay(),
+            accountId = 4,
+        )
+
+        val due = buildPaymentCommitmentDueItems(
+            commitments = listOf(commitment),
+            today = today,
+            horizonDays = 70,
+            includeRepeatingOccurrences = true,
+            accountNamesById = mapOf(4L to "Primary card"),
+        )
+
+        assertEquals(listOf(LocalDate.of(2026, 3, 31), LocalDate.of(2026, 4, 30)), due.map { it.dueDate })
+        assertTrue(due.all { it.source == DueItemSource.PAYMENT_COMMITMENT })
+        assertTrue(due.all { it.accountName == "Primary card" })
+    }
+
     private fun instant(date: LocalDate, hour: Int = 0): Long =
         date.atTime(hour, 0).atZone(utc).toInstant().toEpochMilli()
 

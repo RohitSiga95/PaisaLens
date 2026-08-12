@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreditCard
+import androidx.compose.material.icons.rounded.DashboardCustomize
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Refresh
@@ -41,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,10 +66,18 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.HomeLayoutConfiguration
+import com.paisalens.app.data.model.HomeModule
+import com.paisalens.app.data.model.PaymentCommitment
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.SavingsContribution
+import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.TransactionRecord
+import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.calculateCreditUtilization
+import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
+import com.paisalens.app.data.model.transactionIdsExcludedFromSpending
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
@@ -88,13 +98,22 @@ import kotlin.math.abs
 @Composable
 fun HomeScreen(
     transactions: List<TransactionRecord>,
+    effectiveExpenseTransactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
     budgets: List<CategoryBudget>,
     accounts: List<AccountProfile>,
+    homeLayout: HomeLayoutConfiguration,
+    savingsGoals: List<SavingsGoal>,
+    savingsContributions: List<SavingsContribution>,
+    paymentCommitments: List<PaymentCommitment>,
     isScanning: Boolean,
     hasSmsPermission: Boolean,
     onScan: () -> Unit,
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
+    onCustomizeHome: () -> Unit,
+    onOpenSavingsGoals: () -> Unit,
+    onOpenCommitments: () -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
     onAccountClick: (AccountProfile) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
@@ -104,22 +123,41 @@ fun HomeScreen(
     var selectedMonth by remember { mutableStateOf(currentMonth) }
     var selectedCategory by remember { mutableStateOf<ExpenseCategory?>(null) }
     var unavailableAccountsExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(homeLayout, currentMonth) {
+        if (!homeLayout.isVisible(HomeModule.SPENDING_BREAKDOWN)) selectedMonth = currentMonth
+    }
     val confirmedTransactions = remember(transactions) {
         transactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
     }
-    val earliestMonth = remember(confirmedTransactions, currentMonth) {
-        confirmedTransactions.minOfOrNull {
+    val earliestMonth = remember(effectiveExpenseTransactions, currentMonth) {
+        effectiveExpenseTransactions.minOfOrNull {
             YearMonth.from(Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault()))
         } ?: currentMonth
     }
     val monthly = remember(confirmedTransactions, selectedMonth) {
         transactionsForMonth(confirmedTransactions, selectedMonth)
     }
-    val monthlyExpenses = monthly.filter { it.type == TransactionType.EXPENSE }
+    val monthlyExpenses = remember(effectiveExpenseTransactions, selectedMonth) {
+        transactionsForMonth(effectiveExpenseTransactions, selectedMonth)
+    }
+    val excludedFromSpending = remember(transactionLinks) {
+        transactionIdsExcludedFromSpending(transactionLinks)
+    }
+    val linkedOffsetTransactionIds = remember(transactionLinks, confirmedTransactions) {
+        transactionIdsAppliedAsExpenseOffsets(confirmedTransactions, transactionLinks)
+    }
+    val grossExpenseTotal = monthly
+        .filter { it.type == TransactionType.EXPENSE && it.id !in excludedFromSpending }
+        .sumOf { it.amountMinor }
     val expenseTotal = monthlyExpenses.sumOf { it.amountMinor }
     val refunds = monthly.filter { it.type == TransactionType.REFUND }.sumOf { it.amountMinor }
-    val spent = (expenseTotal - refunds).coerceAtLeast(0)
-    val income = monthly.filter { it.type == TransactionType.INCOME }.sumOf { it.amountMinor }
+    val unlinkedRefunds = monthly
+        .filter { it.type == TransactionType.REFUND && it.id !in linkedOffsetTransactionIds }
+        .sumOf { it.amountMinor }
+    val spent = (expenseTotal - unlinkedRefunds).coerceAtLeast(0)
+    val income = monthly
+        .filter { it.type == TransactionType.INCOME && it.id !in linkedOffsetTransactionIds }
+        .sumOf { it.amountMinor }
     val budgetTotal = budgets.sumOf { it.limitMinor }
     val remaining = if (budgetTotal > 0) budgetTotal - spent else income - spent
     val categoryTotals = monthlyExpenses
@@ -150,101 +188,123 @@ fun HomeScreen(
                 onScan = onScan,
                 onRequestPermission = onRequestPermission,
                 onAdd = onAdd,
+                onCustomizeHome = onCustomizeHome,
             )
         }
-        item {
-            BalanceHero(
-                spent = spent,
-                remaining = remaining,
-                hasBudget = budgetTotal > 0,
-                hasIncome = income > 0,
-                month = selectedMonth,
-                isCurrentMonth = selectedMonth == currentMonth,
-            )
+        homeLayout.normalized().orderedVisibleModules.forEach { module ->
+            when (module) {
+                HomeModule.MONTHLY_SPEND -> item(key = module.storageId) {
+                    BalanceHero(
+                        spent = spent,
+                        remaining = remaining,
+                        hasBudget = budgetTotal > 0,
+                        hasIncome = income > 0,
+                        month = selectedMonth,
+                        isCurrentMonth = selectedMonth == currentMonth,
+                    )
+                }
+                HomeModule.SPEND_OVERVIEW -> item(key = module.storageId) {
+                    SpendOverviewCard(
+                        expenseTotal = grossExpenseTotal,
+                        refunds = refunds,
+                        income = income,
+                        remaining = remaining,
+                        hasPlan = budgetTotal > 0 || income > 0,
+                        month = selectedMonth,
+                    )
+                }
+                HomeModule.SPENDING_BREAKDOWN -> item(key = module.storageId) {
+                    CategorySpendCard(
+                        categoryTotals = categoryTotals,
+                        expenseTotal = expenseTotal,
+                        month = selectedMonth,
+                        canGoPrevious = selectedMonth > earliestMonth,
+                        canGoNext = selectedMonth < currentMonth,
+                        onPreviousMonth = { selectedMonth = selectedMonth.minusMonths(1) },
+                        onNextMonth = { selectedMonth = selectedMonth.plusMonths(1) },
+                        onCategoryClick = { selectedCategory = it },
+                    )
+                }
+                HomeModule.BANK_BALANCES -> {
+                    item(key = "${module.storageId}-header") { SectionHeader("Bank balances") }
+                    when {
+                        bankAccountGroups.isEmpty() -> item(key = "${module.storageId}-empty") {
+                            AvailabilityEmptyCard(
+                                title = "No bank accounts detected",
+                                body = "Scan SMS alerts containing account last-four digits, or add an account in Settings.",
+                            )
+                        }
+                        availableBankAccounts.isEmpty() -> item(key = "${module.storageId}-unfetched") {
+                            AvailabilityEmptyCard(
+                                title = "No fetched balances yet",
+                                body = "Accounts waiting for a balance are tucked into the expandable section below.",
+                            )
+                        }
+                        else -> items(availableBankAccounts, key = { "bank-${it.key}" }) { group ->
+                            AccountAvailabilityTile(
+                                account = group.account,
+                                profileCount = group.profileCount,
+                                valueMinor = group.account.balanceMinor,
+                                valueLabel = "Current balance",
+                                icon = Icons.Rounded.AccountBalance,
+                                onRefresh = { onRefreshAccount(group.account) },
+                                onClick = { onAccountClick(group.account) },
+                            )
+                        }
+                    }
+                }
+                HomeModule.CREDIT_AVAILABLE -> {
+                    item(key = "${module.storageId}-header") { SectionHeader("Credit available") }
+                    when {
+                        creditCardGroups.isEmpty() -> item(key = "${module.storageId}-empty") {
+                            AvailabilityEmptyCard(
+                                title = "No credit cards detected",
+                                body = "Cards appear after a card SMS is scanned or when you add one in Settings.",
+                            )
+                        }
+                        availableCreditCards.isEmpty() -> item(key = "${module.storageId}-unfetched") {
+                            AvailabilityEmptyCard(
+                                title = "No available limits fetched yet",
+                                body = "Cards waiting for an available-credit update are tucked into the expandable section below.",
+                            )
+                        }
+                        else -> items(availableCreditCards, key = { "card-${it.key}" }) { group ->
+                            AccountAvailabilityTile(
+                                account = group.account,
+                                profileCount = group.profileCount,
+                                valueMinor = group.account.availableCreditMinor,
+                                valueLabel = "Available credit limit",
+                                icon = Icons.Rounded.CreditCard,
+                                onRefresh = { onRefreshAccount(group.account) },
+                                onClick = { onAccountClick(group.account) },
+                            )
+                        }
+                    }
+                }
+                HomeModule.SAVINGS_GOALS -> item(key = module.storageId) {
+                    SavingsGoalsHomeModule(
+                        goals = savingsGoals,
+                        contributions = savingsContributions,
+                        onOpen = onOpenSavingsGoals,
+                    )
+                }
+                HomeModule.UPCOMING_COMMITMENTS -> item(key = module.storageId) {
+                    UpcomingCommitmentsHomeModule(
+                        commitments = paymentCommitments,
+                        onOpen = onOpenCommitments,
+                    )
+                }
+            }
         }
-        item {
-            SpendOverviewCard(
-                expenseTotal = expenseTotal,
-                refunds = refunds,
-                income = income,
-                remaining = remaining,
-                hasPlan = budgetTotal > 0 || income > 0,
-                month = selectedMonth,
-            )
-        }
-        item {
-            CategorySpendCard(
-                categoryTotals = categoryTotals,
-                expenseTotal = expenseTotal,
-                month = selectedMonth,
-                canGoPrevious = selectedMonth > earliestMonth,
-                canGoNext = selectedMonth < currentMonth,
-                onPreviousMonth = { selectedMonth = selectedMonth.minusMonths(1) },
-                onNextMonth = { selectedMonth = selectedMonth.plusMonths(1) },
-                onCategoryClick = { selectedCategory = it },
-            )
-        }
-        item { SectionHeader("Bank balances") }
-        if (bankAccountGroups.isEmpty()) {
-            item {
-                AvailabilityEmptyCard(
-                    title = "No bank accounts detected",
-                    body = "Scan SMS alerts containing account last-four digits, or add an account in Settings.",
-                )
-            }
-        } else if (availableBankAccounts.isEmpty()) {
-            item {
-                AvailabilityEmptyCard(
-                    title = "No fetched balances yet",
-                    body = "Accounts waiting for a balance are tucked into the expandable section below.",
-                )
-            }
-        } else {
-            items(availableBankAccounts, key = { "bank-${it.key}" }) { group ->
-                AccountAvailabilityTile(
-                    account = group.account,
-                    profileCount = group.profileCount,
-                    valueMinor = group.account.balanceMinor,
-                    valueLabel = "Current balance",
-                    icon = Icons.Rounded.AccountBalance,
-                    onRefresh = { onRefreshAccount(group.account) },
-                    onClick = { onAccountClick(group.account) },
-                )
-            }
-        }
-        item { SectionHeader("Credit available") }
-        if (creditCardGroups.isEmpty()) {
-            item {
-                AvailabilityEmptyCard(
-                    title = "No credit cards detected",
-                    body = "Cards appear after a card SMS is scanned or when you add one in Settings.",
-                )
-            }
-        } else if (availableCreditCards.isEmpty()) {
-            item {
-                AvailabilityEmptyCard(
-                    title = "No available limits fetched yet",
-                    body = "Cards waiting for an available-credit update are tucked into the expandable section below.",
-                )
-            }
-        } else {
-            items(availableCreditCards, key = { "card-${it.key}" }) { group ->
-                AccountAvailabilityTile(
-                    account = group.account,
-                    profileCount = group.profileCount,
-                    valueMinor = group.account.availableCreditMinor,
-                    valueLabel = "Available credit limit",
-                    icon = Icons.Rounded.CreditCard,
-                    onRefresh = { onRefreshAccount(group.account) },
-                    onClick = { onAccountClick(group.account) },
-                )
-            }
-        }
-        if (unavailableBankAccounts.isNotEmpty() || unavailableCreditCards.isNotEmpty()) {
+        val showBankUnavailable = homeLayout.isVisible(HomeModule.BANK_BALANCES)
+        val showCardUnavailable = homeLayout.isVisible(HomeModule.CREDIT_AVAILABLE)
+        val visibleUnavailableBanks = if (showBankUnavailable) unavailableBankAccounts else emptyList()
+        val visibleUnavailableCards = if (showCardUnavailable) unavailableCreditCards else emptyList()
+        if (visibleUnavailableBanks.isNotEmpty() || visibleUnavailableCards.isNotEmpty()) {
             item {
                 UnavailableAccountsPanel(
-                    bankAccounts = unavailableBankAccounts,
-                    creditCards = unavailableCreditCards,
+                    bankAccounts = visibleUnavailableBanks,
+                    creditCards = visibleUnavailableCards,
                     expanded = unavailableAccountsExpanded,
                     onExpandedChange = { unavailableAccountsExpanded = it },
                     onRefreshAccount = onRefreshAccount,
@@ -281,6 +341,7 @@ private fun HomeHeader(
     onScan: () -> Unit,
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
+    onCustomizeHome: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -300,6 +361,9 @@ private fun HomeHeader(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            HomeActionButton(contentDescription = "Customise Home", onClick = onCustomizeHome) {
+                Icon(Icons.Rounded.DashboardCustomize, contentDescription = null)
+            }
             HomeActionButton(
                 contentDescription = if (hasSmsPermission) "Scan SMS" else "Enable SMS access",
                 onClick = if (hasSmsPermission) onScan else onRequestPermission,
@@ -349,8 +413,10 @@ private fun BalanceHero(
     month: YearMonth,
     isCurrentMonth: Boolean,
 ) {
-    val primary = MaterialTheme.colorScheme.primary
-    val secondary = MaterialTheme.colorScheme.secondary
+    val primary = MaterialTheme.colorScheme.primaryContainer
+    val secondary = MaterialTheme.colorScheme.secondaryContainer
+    val tertiary = MaterialTheme.colorScheme.tertiaryContainer
+    val heroForeground = MaterialTheme.colorScheme.onPrimaryContainer
     val monthFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -360,7 +426,7 @@ private fun BalanceHero(
         Box(
             modifier = Modifier.background(
                 Brush.linearGradient(
-                    listOf(primary.copy(alpha = 0.92f), Color(0xFF4656D9), secondary.copy(alpha = 0.82f)),
+                    listOf(primary, tertiary, secondary),
                 ),
             ),
         ) {
@@ -369,21 +435,21 @@ private fun BalanceHero(
                     .align(Alignment.TopEnd)
                     .padding(top = 10.dp, end = 2.dp)
                     .size(126.dp)
-                    .background(Color.White.copy(alpha = 0.07f), CircleShape),
+                    .background(heroForeground.copy(alpha = 0.07f), CircleShape),
             )
             Column(modifier = Modifier.padding(horizontal = 22.dp, vertical = 24.dp)) {
                 Text(
                     text = if (isCurrentMonth) "SPENT THIS MONTH" else "SPENT IN ${month.format(monthFormatter).uppercase(Locale.ENGLISH)}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.82f),
+                    color = heroForeground.copy(alpha = 0.82f),
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(5.dp))
-                MoneyText(amountMinor = spent, style = MaterialTheme.typography.displayLarge, color = Color.White)
+                MoneyText(amountMinor = spent, style = MaterialTheme.typography.displayLarge, color = heroForeground)
                 Spacer(Modifier.height(22.dp))
                 Surface(
-                    color = Color.Black.copy(alpha = 0.15f),
-                    contentColor = Color.White,
+                    color = heroForeground.copy(alpha = 0.10f),
+                    contentColor = heroForeground,
                     shape = MaterialTheme.shapes.medium,
                 ) {
                     Row(
@@ -398,7 +464,7 @@ private fun BalanceHero(
                                 else -> "Add income or a budget"
                             },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.85f),
+                            color = heroForeground.copy(alpha = 0.85f),
                         )
                         if (hasBudget || hasIncome) {
                             Text(
@@ -933,7 +999,7 @@ private fun AccountAvailabilityTile(
                         contentColor = style.foreground,
                         shape = CircleShape,
                     ) {
-                        IconButton(onClick = onRefresh, modifier = Modifier.size(42.dp)) {
+                        IconButton(onClick = onRefresh, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ${account.name}")
                         }
                     }

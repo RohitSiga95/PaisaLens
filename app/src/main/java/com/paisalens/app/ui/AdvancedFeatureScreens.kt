@@ -72,10 +72,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.ExchangeRate
+import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.MerchantAliasRule
 import com.paisalens.app.data.model.SpendingInsight
 import com.paisalens.app.data.model.StatementImportPreview
+import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.buildCalendarSpend
 import com.paisalens.app.data.model.buildMerchantCleanupGroups
@@ -94,13 +96,18 @@ import kotlin.math.roundToLong
 @Composable
 fun AnalyticsScreen(
     transactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
+    expenseSplits: List<ExpenseSplit> = emptyList(),
     insights: List<SpendingInsight>,
     onTransactionClick: (TransactionRecord) -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     showHeader: Boolean = true,
 ) {
-    val analytics = remember(transactions) { buildSpendingAnalytics(transactions) }
+    val analytics = remember(transactions, transactionLinks, expenseSplits) {
+        buildSpendingAnalytics(transactions, transactionLinks = transactionLinks, expenseSplits = expenseSplits)
+    }
+    val rawTransactionsById = remember(transactions) { transactions.associateBy(TransactionRecord::id) }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
@@ -151,10 +158,11 @@ fun AnalyticsScreen(
             item { RankedSpendCard("Top merchants", analytics.topMerchants.map { it.label to it.amountMinor }) }
         }
         analytics.largestExpense?.let { largest ->
+            val rawLargest = rawTransactionsById[largest.id] ?: largest
             item {
                 Text("Largest expense this month", style = MaterialTheme.typography.titleLarge)
                 PaisaCard(Modifier.fillMaxWidth()) {
-                    TransactionRow(largest, onClick = { onTransactionClick(largest) }, modifier = Modifier.padding(12.dp))
+                    TransactionRow(largest, onClick = { onTransactionClick(rawLargest) }, modifier = Modifier.padding(12.dp))
                 }
             }
         }
@@ -245,12 +253,16 @@ private fun InsightRow(insight: SpendingInsight) {
 @Composable
 fun CalendarScreen(
     transactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
+    expenseSplits: List<ExpenseSplit> = emptyList(),
     onBack: () -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     var month by remember { mutableStateOf(YearMonth.now()) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
-    val daily = remember(transactions, month) { buildCalendarSpend(transactions, month) }
+    val daily = remember(transactions, transactionLinks, expenseSplits, month) {
+        buildCalendarSpend(transactions, month, transactionLinks = transactionLinks, expenseSplits = expenseSplits)
+    }
     val firstOffset = month.atDay(1).dayOfWeek.value - 1
     val cells = List(firstOffset) { null } + (1..month.lengthOfMonth()).map(month::atDay)
     LazyColumn(

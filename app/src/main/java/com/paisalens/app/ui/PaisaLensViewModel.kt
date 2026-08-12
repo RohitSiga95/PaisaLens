@@ -13,20 +13,36 @@ import androidx.lifecycle.viewModelScope
 import com.paisalens.app.PaisaLensApplication
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AppThemeConfiguration
 import com.paisalens.app.data.model.BillReminder
+import com.paisalens.app.data.model.BackupVerificationMetadata
+import com.paisalens.app.data.model.AuditUndoResult
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.ExpenseSplit
+import com.paisalens.app.data.model.HomeLayoutConfiguration
 import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.MonthlyReconciliation
 import com.paisalens.app.data.model.NetWorthItem
+import com.paisalens.app.data.model.NotificationDigestConfiguration
+import com.paisalens.app.data.model.PaymentCommitment
 import com.paisalens.app.data.model.ReceiptOcrDraft
+import com.paisalens.app.data.model.SavingsContribution
+import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.StatementImportPreview
 import com.paisalens.app.data.model.SmartCategoryRule
+import com.paisalens.app.data.model.StatementAuditMetadata
+import com.paisalens.app.data.model.StatementAuditReport
+import com.paisalens.app.data.model.StatementAuditRow
 import com.paisalens.app.data.model.TransactionRecord
+import com.paisalens.app.data.model.TransactionLink
+import com.paisalens.app.data.model.TransactionLinkSuggestion
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.sanitizeTags
 import com.paisalens.app.data.model.normalizedCurrency
 import com.paisalens.app.data.export.PaisaLensWorkbookExporter
+import com.paisalens.app.data.importer.CreditCardStatementAuditor
 import com.paisalens.app.data.ocr.ReceiptOcrProcessor
 import com.paisalens.app.data.parser.ReceiptTextParser
 import com.paisalens.app.sms.SmsInboxScanner
@@ -43,6 +59,7 @@ class PaisaLensViewModel(
     private val app: PaisaLensApplication,
 ) : ViewModel() {
     val transactions = app.repository.transactions
+    val effectiveExpenseTransactions = app.repository.effectiveExpenseTransactions
     val budgets = app.repository.budgets
     val categorizedMerchantKeys = app.repository.categorizedMerchantKeys
     val accounts = app.repository.accounts
@@ -50,12 +67,26 @@ class PaisaLensViewModel(
     val bills = app.repository.bills
     val netWorthItems = app.repository.netWorthItems
     val smartCategoryRules = app.repository.smartCategoryRules
+    val reconciliations = app.repository.reconciliations
+    val transactionLinks = app.repository.transactionLinks
+    val transactionLinkSuggestions = app.repository.transactionLinkSuggestions
+    val auditEvents = app.repository.auditEvents
+    val auditBatches = app.repository.auditBatches
+    val dataHealth = app.repository.dataHealth
     val customCategories = app.repository.customCategories
     val recurringPayments = app.repository.recurringPayments
     val loans = app.repository.loans
     val exchangeRates = app.repository.exchangeRates
     val merchantAliases = app.repository.merchantAliases
     val insights = app.repository.insights
+    val expenseSplits = app.repository.expenseSplits
+    val savingsGoals = app.repository.savingsGoals
+    val savingsContributions = app.repository.savingsContributions
+    val paymentCommitments = app.repository.paymentCommitments
+    val paymentCommitmentSuggestions = app.repository.paymentCommitmentSuggestions
+    val themeConfiguration = app.preferences.themeConfiguration
+    val homeLayout = app.preferences.homeLayout
+    val notificationDigest = app.preferences.notificationDigest
 
     private val receiptOcrProcessor = ReceiptOcrProcessor()
     private val receiptTextParser = ReceiptTextParser(app.parser::categorize)
@@ -66,11 +97,29 @@ class PaisaLensViewModel(
     private val _onboardingComplete = MutableStateFlow(app.preferences.onboardingComplete)
     val onboardingComplete = _onboardingComplete.asStateFlow()
 
-    private val _darkMode = MutableStateFlow(app.preferences.darkMode)
-    val darkMode = _darkMode.asStateFlow()
-
     private val _lastScanAt = MutableStateFlow(app.preferences.lastScanAt)
     val lastScanAt = _lastScanAt.asStateFlow()
+
+    private val _lastBackupCreatedAt = MutableStateFlow(app.preferences.lastBackupCreatedAt)
+    val lastBackupCreatedAt = _lastBackupCreatedAt.asStateFlow()
+
+    private val _lastBackupVerifiedAt = MutableStateFlow(app.preferences.lastBackupVerifiedAt)
+    val lastBackupVerifiedAt = _lastBackupVerifiedAt.asStateFlow()
+
+    private val _backupVerification = MutableStateFlow<BackupVerificationMetadata?>(null)
+    val backupVerification = _backupVerification.asStateFlow()
+
+    private val _backupVerificationError = MutableStateFlow<String?>(null)
+    val backupVerificationError = _backupVerificationError.asStateFlow()
+
+    private val _isVerifyingBackup = MutableStateFlow(false)
+    val isVerifyingBackup = _isVerifyingBackup.asStateFlow()
+
+    private val _lastUndoResult = MutableStateFlow<AuditUndoResult?>(null)
+    val lastUndoResult = _lastUndoResult.asStateFlow()
+
+    private val _undoInProgressBatchId = MutableStateFlow<String?>(null)
+    val undoInProgressBatchId = _undoInProgressBatchId.asStateFlow()
 
     private val _appLockEnabled = MutableStateFlow(app.preferences.appLockEnabled)
     val appLockEnabled = _appLockEnabled.asStateFlow()
@@ -89,6 +138,15 @@ class PaisaLensViewModel(
 
     private val _isImporting = MutableStateFlow(false)
     val isImporting = _isImporting.asStateFlow()
+
+    private val _statementAuditReport = MutableStateFlow<StatementAuditReport?>(null)
+    val statementAuditReport = _statementAuditReport.asStateFlow()
+
+    private val _statementAuditError = MutableStateFlow<String?>(null)
+    val statementAuditError = _statementAuditError.asStateFlow()
+
+    private val _isAuditingStatement = MutableStateFlow(false)
+    val isAuditingStatement = _isAuditingStatement.asStateFlow()
 
     private val _isRefreshingRate = MutableStateFlow(false)
     val isRefreshingRate = _isRefreshingRate.asStateFlow()
@@ -111,9 +169,127 @@ class PaisaLensViewModel(
         _onboardingComplete.value = true
     }
 
-    fun setDarkMode(enabled: Boolean) {
-        app.preferences.darkMode = enabled
-        _darkMode.value = enabled
+    fun setThemeConfiguration(configuration: AppThemeConfiguration) {
+        app.preferences.setThemeConfiguration(configuration)
+        PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 250L)
+    }
+
+    fun setHomeLayout(configuration: HomeLayoutConfiguration) {
+        app.preferences.setHomeLayout(configuration)
+    }
+
+    fun setNotificationDigest(configuration: NotificationDigestConfiguration) {
+        app.preferences.setNotificationDigest(configuration)
+    }
+
+    fun setNotificationDigestEnabled(enabled: Boolean) {
+        app.preferences.setNotificationDigestEnabled(enabled)
+    }
+
+    fun saveExpenseSplit(split: ExpenseSplit) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveExpenseSplit(split) }
+                .onSuccess { _events.emit("Shared expense saved") }
+                .onFailure { _events.emit(it.message ?: "Could not save that split") }
+        }
+    }
+
+    fun deleteExpenseSplit(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteExpenseSplit(id)
+            _events.emit("Participant removed")
+        }
+    }
+
+    fun replaceExpenseSplits(
+        transactionId: Long,
+        splits: List<ExpenseSplit>,
+        deletedIds: Set<Long>,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching { app.repository.replaceExpenseSplits(transactionId, splits, deletedIds) }
+                .onSuccess {
+                    _events.emit("Shared expense saved")
+                    onComplete(true)
+                }
+                .onFailure {
+                    _events.emit(it.message ?: "Could not save that split")
+                    onComplete(false)
+                }
+        }
+    }
+
+    fun saveSavingsGoal(
+        goal: SavingsGoal,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveSavingsGoal(goal) }
+                .onSuccess {
+                    _events.emit("Savings goal saved")
+                    onComplete(true)
+                }
+                .onFailure {
+                    _events.emit(it.message ?: "Could not save that goal")
+                    onComplete(false)
+                }
+        }
+    }
+
+    fun deleteSavingsGoal(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteSavingsGoal(id)
+            _events.emit("Savings goal removed")
+        }
+    }
+
+    fun saveSavingsContribution(
+        contribution: SavingsContribution,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveSavingsContribution(contribution) }
+                .onSuccess {
+                    _events.emit("Contribution recorded")
+                    onComplete(true)
+                }
+                .onFailure {
+                    _events.emit(it.message ?: "Could not record contribution")
+                    onComplete(false)
+                }
+        }
+    }
+
+    fun deleteSavingsContribution(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteSavingsContribution(id)
+            _events.emit("Contribution removed")
+        }
+    }
+
+    fun savePaymentCommitment(
+        commitment: PaymentCommitment,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching { app.repository.savePaymentCommitment(commitment) }
+                .onSuccess {
+                    _events.emit("Payment commitment saved")
+                    onComplete(true)
+                }
+                .onFailure {
+                    _events.emit(it.message ?: "Could not save that commitment")
+                    onComplete(false)
+                }
+        }
+    }
+
+    fun deletePaymentCommitment(id: Long) {
+        viewModelScope.launch {
+            app.repository.deletePaymentCommitment(id)
+            _events.emit("Payment commitment removed")
+        }
     }
 
     fun setAppLock(enabled: Boolean) {
@@ -123,13 +299,13 @@ class PaisaLensViewModel(
             app.preferences.widgetAmountsVisible = false
             _widgetAmountsVisible.value = false
         }
-        PaisaLensWidgetProvider.updateAll(app)
+        PaisaLensWidgetProvider.scheduleUpdateAll(app)
     }
 
     fun setWidgetAmountsVisible(enabled: Boolean) {
         app.preferences.widgetAmountsVisible = enabled
         _widgetAmountsVisible.value = enabled
-        PaisaLensWidgetProvider.updateAll(app)
+        PaisaLensWidgetProvider.scheduleUpdateAll(app)
     }
 
     fun setTravelMode(enabled: Boolean) {
@@ -291,8 +467,11 @@ class PaisaLensViewModel(
 
     fun updateTransactionType(id: Long, type: TransactionType) {
         viewModelScope.launch {
-            app.repository.updateTransactionType(id, type)
-            _events.emit(if (type == TransactionType.TRANSFER) "Marked as transfer" else "Transaction type updated")
+            runCatching { app.repository.updateTransactionType(id, type) }
+                .onSuccess {
+                    _events.emit(if (type == TransactionType.TRANSFER) "Marked as transfer" else "Transaction type updated")
+                }
+                .onFailure { _events.emit(it.message ?: "Could not change that transaction type") }
         }
     }
 
@@ -464,6 +643,154 @@ class PaisaLensViewModel(
         _statementPreview.value = null
     }
 
+    fun auditCardStatement(
+        contentResolver: ContentResolver,
+        uri: Uri,
+        metadata: StatementAuditMetadata,
+    ) {
+        if (_isAuditingStatement.value) return
+        viewModelScope.launch {
+            _isAuditingStatement.value = true
+            _statementAuditError.value = null
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val resolvedMetadata = resolveStatementAuditAccount(metadata)
+                    val fileName = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                        ?: "card-statement.csv"
+                    val support = CreditCardStatementAuditor.sourceSupport(fileName)
+                    require(support.directParsingSupported) { support.message }
+                    val input = contentResolver.openInputStream(uri)
+                        ?: error("Could not open the selected statement")
+                    val preview = input.use {
+                        app.repository.previewStatement(
+                            input = it,
+                            fileName = fileName,
+                            accountId = resolvedMetadata.accountId,
+                            baseCurrency = resolvedMetadata.currency,
+                        )
+                    }
+                    CreditCardStatementAuditor.auditImported(
+                        metadata = resolvedMetadata.copy(sourceFileName = fileName),
+                        importedRows = preview.rows,
+                        existingTransactions = transactions.value,
+                    ).let { report ->
+                        report.copy(warnings = (report.warnings + preview.warnings).distinct())
+                    }
+                }
+            }
+            _isAuditingStatement.value = false
+            result.onSuccess { report ->
+                _statementAuditReport.value = report
+                _events.emit("Statement audited locally · ${report.matchedCount} SMS matches")
+            }.onFailure {
+                _statementAuditError.value = it.message ?: "Could not audit statement"
+                _events.emit(_statementAuditError.value!!)
+            }
+        }
+    }
+
+    fun auditCardStatementRows(metadata: StatementAuditMetadata, rows: List<StatementAuditRow>) {
+        if (_isAuditingStatement.value) return
+        viewModelScope.launch {
+            _isAuditingStatement.value = true
+            _statementAuditError.value = null
+            val result = withContext(Dispatchers.Default) {
+                runCatching {
+                    CreditCardStatementAuditor.audit(resolveStatementAuditAccount(metadata), rows, transactions.value)
+                }
+            }
+            result.onSuccess { report ->
+                _statementAuditReport.value = report
+                _events.emit("Statement audited locally · ${report.matchedCount} SMS matches")
+            }.onFailure {
+                _statementAuditError.value = it.message ?: "Could not audit statement"
+                _events.emit(_statementAuditError.value!!)
+            }
+            _isAuditingStatement.value = false
+        }
+    }
+
+    fun clearStatementAudit() {
+        _statementAuditReport.value = null
+        _statementAuditError.value = null
+    }
+
+    private fun resolveStatementAuditAccount(metadata: StatementAuditMetadata): StatementAuditMetadata {
+        if (metadata.accountId != null) return metadata
+        val lastFour = metadata.cardLast4?.filter(Char::isDigit)?.takeLast(4).orEmpty()
+        if (lastFour.isBlank()) return metadata
+        val account = accounts.value.firstOrNull {
+            it.type == AccountType.CREDIT_CARD &&
+                it.accountHint?.filter(Char::isDigit)?.takeLast(4) == lastFour
+        } ?: return metadata
+        return metadata.copy(
+            accountId = account.id,
+            accountName = metadata.accountName ?: account.name,
+        )
+    }
+
+    fun saveReconciliation(reconciliation: MonthlyReconciliation) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveReconciliation(reconciliation) }
+                .onSuccess { _events.emit("Monthly reconciliation saved") }
+                .onFailure { _events.emit(it.message ?: "Could not save reconciliation") }
+        }
+    }
+
+    fun deleteReconciliation(id: Long) {
+        viewModelScope.launch {
+            runCatching { app.repository.deleteReconciliation(id) }
+                .onSuccess { _events.emit("Reconciliation removed · undo is available in Data Health") }
+                .onFailure { _events.emit(it.message ?: "Could not remove reconciliation") }
+        }
+    }
+
+    fun acceptTransactionLink(suggestion: TransactionLinkSuggestion) {
+        viewModelScope.launch {
+            runCatching {
+                app.repository.createTransactionLink(
+                    TransactionLink(
+                        sourceTransactionId = suggestion.sourceTransactionId,
+                        targetTransactionId = suggestion.targetTransactionId,
+                        type = suggestion.type,
+                        note = suggestion.reason,
+                    ),
+                )
+            }.onSuccess { _events.emit("Transactions linked · undo is available in Data Health") }
+                .onFailure { _events.emit(it.message ?: "Could not link transactions") }
+        }
+    }
+
+    fun deleteTransactionLink(id: Long) {
+        viewModelScope.launch {
+            runCatching { app.repository.deleteTransactionLink(id) }
+                .onSuccess { _events.emit("Transactions unlinked · undo is available in Data Health") }
+                .onFailure { _events.emit(it.message ?: "Could not unlink transactions") }
+        }
+    }
+
+    fun undoAuditBatch(batchId: String) {
+        if (_undoInProgressBatchId.value != null) return
+        viewModelScope.launch {
+            _undoInProgressBatchId.value = batchId
+            runCatching { app.repository.undoAuditBatch(batchId) }
+                .onSuccess { result ->
+                    _lastUndoResult.value = result
+                    _events.emit(
+                        "Change undone · ${result.insertedEntities + result.updatedEntities + result.deletedEntities} record" +
+                            if (result.insertedEntities + result.updatedEntities + result.deletedEntities == 1) " restored" else "s restored",
+                    )
+                }
+                .onFailure { _events.emit(it.message ?: "Could not undo that change") }
+            _undoInProgressBatchId.value = null
+        }
+    }
+
+    fun dismissUndoResult() {
+        _lastUndoResult.value = null
+    }
+
     fun saveLoan(loan: LoanAccount) {
         viewModelScope.launch {
             runCatching { app.repository.saveLoan(loan) }
@@ -492,8 +819,9 @@ class PaisaLensViewModel(
 
     fun deleteTransaction(id: Long) {
         viewModelScope.launch {
-            app.repository.deleteTransaction(id)
-            _events.emit("Transaction removed")
+            runCatching { app.repository.deleteTransaction(id) }
+                .onSuccess { _events.emit("Transaction removed") }
+                .onFailure { _events.emit(it.message ?: "Could not remove that transaction") }
         }
     }
 
@@ -515,6 +843,11 @@ class PaisaLensViewModel(
                             transactions = transactions.value,
                             budgets = budgets.value,
                             outputStream = it,
+                            transactionLinks = transactionLinks.value,
+                            expenseSplits = expenseSplits.value,
+                            savingsGoals = savingsGoals.value,
+                            savingsContributions = savingsContributions.value,
+                            paymentCommitments = paymentCommitments.value,
                         )
                     }
                 }
@@ -542,7 +875,52 @@ class PaisaLensViewModel(
                     passphrase.fill('\u0000')
                 }
             }
+            result.onSuccess {
+                val now = System.currentTimeMillis()
+                app.preferences.lastBackupCreatedAt = now
+                _lastBackupCreatedAt.value = now
+            }
             _events.emit(if (result.isSuccess) "Encrypted backup created" else result.exceptionOrNull()?.message ?: "Could not create backup")
+        }
+    }
+
+    fun verifyBackup(contentResolver: ContentResolver, uri: Uri, passphrase: CharArray) {
+        if (_isVerifyingBackup.value) {
+            passphrase.fill('\u0000')
+            return
+        }
+        viewModelScope.launch {
+            _isVerifyingBackup.value = true
+            _backupVerification.value = null
+            _backupVerificationError.value = null
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    runCatching {
+                        val input = contentResolver.openInputStream(uri)
+                            ?: error("Could not open the selected file")
+                        input.use { app.repository.verifyBackup(it, passphrase) }
+                    }
+                } finally {
+                    passphrase.fill('\u0000')
+                }
+            }
+            result.onSuccess { metadata ->
+                val now = System.currentTimeMillis()
+                app.preferences.lastBackupVerifiedAt = now
+                _lastBackupVerifiedAt.value = now
+                _backupVerification.value = metadata
+            }
+            result.onFailure { error ->
+                _backupVerification.value = null
+                _backupVerificationError.value = error.message ?: "Could not verify backup"
+            }
+            _events.emit(
+                result.fold(
+                    onSuccess = { metadata -> "Backup verified · ${metadata.totalRecordCount} protected records" },
+                    onFailure = { it.message ?: "Could not verify backup" },
+                ),
+            )
+            _isVerifyingBackup.value = false
         }
     }
 
@@ -573,15 +951,25 @@ class PaisaLensViewModel(
             app.repository.clearAll()
             app.preferences.lastScanAt = 0L
             _lastScanAt.value = 0L
+            app.preferences.lastBackupCreatedAt = 0L
+            app.preferences.lastBackupVerifiedAt = 0L
+            _lastBackupCreatedAt.value = 0L
+            _lastBackupVerifiedAt.value = 0L
+            _backupVerification.value = null
+            _backupVerificationError.value = null
+            _isVerifyingBackup.value = false
+            _lastUndoResult.value = null
+            _undoInProgressBatchId.value = null
             app.preferences.appLockEnabled = false
             app.preferences.widgetAmountsVisible = false
             app.preferences.travelModeEnabled = false
             app.preferences.baseCurrency = "INR"
+            app.preferences.setNotificationDigestEnabled(false)
             _appLockEnabled.value = false
             _widgetAmountsVisible.value = false
             _travelModeEnabled.value = false
             _baseCurrency.value = "INR"
-            PaisaLensWidgetProvider.updateAll(app)
+            PaisaLensWidgetProvider.scheduleUpdateAll(app)
             _events.emit("All local financial data erased")
         }
     }

@@ -63,19 +63,27 @@ import com.paisalens.app.data.model.DueItem
 import com.paisalens.app.data.model.DueItemSource
 import com.paisalens.app.data.model.DueStatus
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.NetWorthKind
+import com.paisalens.app.data.model.PaymentCommitment
 import com.paisalens.app.data.model.RecurringPayment
+import com.paisalens.app.data.model.SavingsContribution
+import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.SpendingInsight
+import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.WhatIfScenario
 import com.paisalens.app.data.model.buildCashFlowForecast
 import com.paisalens.app.data.model.buildDueItems
+import com.paisalens.app.data.model.buildPaymentCommitmentDueItems
+import com.paisalens.app.data.model.buildEffectiveExpenseTransactions
 import com.paisalens.app.data.model.buildNetWorthSummary
 import com.paisalens.app.data.model.simulateWhatIfMonthly
+import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.ui.components.MoneyChartPoint
 import com.paisalens.app.ui.components.MoneyLineChart
 import com.paisalens.app.ui.components.MoneyText
@@ -93,6 +101,8 @@ import kotlin.math.abs
 private enum class PlanSection(val label: String) {
     BUDGETS("Budgets"),
     BILLS("Bills & dues"),
+    GOALS("Goals"),
+    AUTOPAY("AutoPay"),
     WHAT_IF("What-if"),
 }
 
@@ -105,26 +115,46 @@ private enum class InsightSection(val label: String) {
 @Composable
 fun PlanningScreen(
     transactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
+    expenseSplits: List<ExpenseSplit>,
     budgets: List<CategoryBudget>,
     bills: List<BillReminder>,
     recurringPayments: List<RecurringPayment>,
     loans: List<LoanAccount>,
     accounts: List<AccountProfile>,
+    savingsGoals: List<SavingsGoal>,
+    savingsContributions: List<SavingsContribution>,
+    paymentCommitments: List<PaymentCommitment>,
+    paymentCommitmentSuggestions: List<PaymentCommitment>,
     onSetBudget: (ExpenseCategory, Long) -> Unit,
     onSaveBill: (BillReminder) -> Unit,
     onMarkBillPaid: (Long) -> Unit,
     onDeleteBill: (Long) -> Unit,
+    onAddSavingsGoal: () -> Unit,
+    onEditSavingsGoal: (SavingsGoal) -> Unit,
+    onDeleteSavingsGoal: (SavingsGoal) -> Unit,
+    onContributeSavingsGoal: (SavingsGoal) -> Unit,
+    onSaveSavingsContribution: (SavingsContribution) -> Unit,
+    onDeleteSavingsContribution: (SavingsContribution) -> Unit,
+    onAddPaymentCommitment: () -> Unit,
+    onEditPaymentCommitment: (PaymentCommitment) -> Unit,
+    onUpdatePaymentCommitment: (PaymentCommitment) -> Unit,
+    onDeletePaymentCommitment: (PaymentCommitment) -> Unit,
+    onAcceptPaymentSuggestion: (PaymentCommitment) -> Unit,
 ) {
     var section by remember { mutableStateOf(PlanSection.BUDGETS) }
     var editingBill by remember { mutableStateOf<BillReminder?>(null) }
     var addingBill by remember { mutableStateOf(false) }
+    val effectiveExpenseTransactions = remember(transactions, transactionLinks, expenseSplits) {
+        buildEffectiveExpenseTransactions(transactions, transactionLinks, expenseSplits)
+    }
     Column(Modifier.fillMaxSize()) {
         HubHeader("Plan", "Budgets, due dates, and consequence-free scenarios")
         HubSectionPicker(PlanSection.entries, section, { it.label }) { section = it }
         Box(Modifier.fillMaxSize()) {
             when (section) {
                 PlanSection.BUDGETS -> BudgetsScreen(
-                    transactions = transactions,
+                    transactions = effectiveExpenseTransactions,
                     budgets = budgets,
                     onSetBudget = onSetBudget,
                     showHeader = false,
@@ -133,6 +163,7 @@ fun PlanningScreen(
                 PlanSection.BILLS -> BillsContent(
                     bills = bills,
                     recurringPayments = recurringPayments,
+                    paymentCommitments = paymentCommitments,
                     loans = loans,
                     accounts = accounts,
                     onAdd = { addingBill = true },
@@ -140,7 +171,37 @@ fun PlanningScreen(
                     onMarkPaid = onMarkBillPaid,
                     onDelete = onDeleteBill,
                 )
-                PlanSection.WHAT_IF -> WhatIfContent(transactions, accounts, recurringPayments, loans)
+                PlanSection.GOALS -> SavingsGoalsCenterContent(
+                    goals = savingsGoals,
+                    contributions = savingsContributions,
+                    accounts = accounts,
+                    onAddGoal = onAddSavingsGoal,
+                    onEditGoal = onEditSavingsGoal,
+                    onDeleteGoal = onDeleteSavingsGoal,
+                    onContribute = onContributeSavingsGoal,
+                    onSaveContribution = onSaveSavingsContribution,
+                    onDeleteContribution = onDeleteSavingsContribution,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                PlanSection.AUTOPAY -> SubscriptionAutopayCenterContent(
+                    commitments = paymentCommitments,
+                    detectedSuggestions = paymentCommitmentSuggestions,
+                    accounts = accounts,
+                    onAddCommitment = onAddPaymentCommitment,
+                    onEditCommitment = onEditPaymentCommitment,
+                    onUpdateCommitment = onUpdatePaymentCommitment,
+                    onDeleteCommitment = onDeletePaymentCommitment,
+                    onAcceptSuggestion = onAcceptPaymentSuggestion,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                PlanSection.WHAT_IF -> WhatIfContent(
+                    transactions = transactions,
+                    transactionLinks = transactionLinks,
+                    effectiveExpenseTransactions = effectiveExpenseTransactions,
+                    accounts = accounts,
+                    recurringPayments = recurringPayments,
+                    loans = loans,
+                )
             }
         }
     }
@@ -162,6 +223,7 @@ fun PlanningScreen(
 private fun BillsContent(
     bills: List<BillReminder>,
     recurringPayments: List<RecurringPayment>,
+    paymentCommitments: List<PaymentCommitment>,
     loans: List<LoanAccount>,
     accounts: List<AccountProfile>,
     onAdd: () -> Unit,
@@ -172,9 +234,27 @@ private fun BillsContent(
     var deletingBill by remember { mutableStateOf<BillReminder?>(null) }
     val today = remember { LocalDate.now() }
     val zoneId = remember { ZoneId.systemDefault() }
-    val dueItems = remember(bills, recurringPayments, loans, accounts, today, zoneId) {
+    val dueItems = remember(bills, recurringPayments, paymentCommitments, loans, accounts, today, zoneId) {
         val accountNames = accounts.associate { it.id to it.name }
-        buildDueItems(bills, recurringPayments, loans, today, zoneId, horizonDays = 3_650)
+        val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
+        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf()) {
+            Triple(normalizedMerchantKey(it.merchantKey.ifBlank { it.name }), it.accountId, it.kind)
+        }
+        val dedupedRecurring = recurringPayments.filterNot {
+            Triple(
+                normalizedMerchantKey(it.merchant),
+                it.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByName::get),
+                com.paisalens.app.data.model.PaymentCommitmentKind.SUBSCRIPTION,
+            ) in commitmentKeys
+        }
+        (buildDueItems(bills, dedupedRecurring, loans, today, zoneId, horizonDays = 3_650) +
+            buildPaymentCommitmentDueItems(
+                commitments = paymentCommitments,
+                today = today,
+                horizonDays = 3_650,
+                accountNamesById = accountNames,
+            ))
+            .sortedWith(compareBy<DueItem> { it.dueDate }.thenBy { it.title })
             .map { item ->
                 if (item.source == DueItemSource.MANUAL_BILL && item.accountId != null) {
                     item.copy(accountName = accountNames[item.accountId])
@@ -275,6 +355,7 @@ private fun DueItemCard(
                         when (item.source) {
                             DueItemSource.MANUAL_BILL -> Icons.Rounded.Event
                             DueItemSource.RECURRING_PAYMENT -> Icons.Rounded.Payments
+                            DueItemSource.PAYMENT_COMMITMENT -> Icons.Rounded.Payments
                             DueItemSource.LOAN_EMI -> Icons.Rounded.Savings
                         },
                         contentDescription = null,
@@ -395,6 +476,8 @@ private fun BillEditorDialog(
 @Composable
 private fun WhatIfContent(
     transactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
+    effectiveExpenseTransactions: List<TransactionRecord>,
     accounts: List<AccountProfile>,
     recurringPayments: List<RecurringPayment>,
     loans: List<LoanAccount>,
@@ -414,9 +497,21 @@ private fun WhatIfContent(
             it.reviewStatus == ReviewStatus.CONFIRMED && !date.isBefore(lookbackStart) && date.isBefore(today)
         }
     }
-    val monthlyIncome = recent.filter { it.type == TransactionType.INCOME || it.type == TransactionType.REFUND }
+    val linkedTransactionIds = remember(transactionLinks) {
+        transactionLinks.flatMap { listOf(it.sourceTransactionId, it.targetTransactionId) }.toSet()
+    }
+    val monthlyIncome = recent.filter {
+        (it.type == TransactionType.INCOME || it.type == TransactionType.REFUND) &&
+            it.id !in linkedTransactionIds
+    }
         .sumOf { it.amountMinor } / 3
-    val monthlyExpense = recent.filter { it.type == TransactionType.EXPENSE }.sumOf { it.amountMinor } / 3
+    val recentEffectiveExpenses = remember(effectiveExpenseTransactions, today, zoneId) {
+        effectiveExpenseTransactions.filter {
+            val date = Instant.ofEpochMilli(it.occurredAt).atZone(zoneId).toLocalDate()
+            !date.isBefore(lookbackStart) && date.isBefore(today)
+        }
+    }
+    val monthlyExpense = recentEffectiveExpenses.sumOf { it.amountMinor } / 3
     val monthlyFixed = (
         recurringPayments.sumOf { if (it.intervalDays <= 9) it.typicalAmountMinor * 52 / 12 else it.typicalAmountMinor } +
             loans.filter { it.remainingInstallments > 0 }.sumOf { it.emiMinor }
@@ -522,10 +617,13 @@ private fun WhatIfContent(
 @Composable
 fun InsightsScreen(
     transactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
+    expenseSplits: List<ExpenseSplit> = emptyList(),
     accounts: List<AccountProfile>,
     balanceHistory: List<AccountBalanceSnapshot>,
     bills: List<BillReminder>,
     recurringPayments: List<RecurringPayment>,
+    paymentCommitments: List<PaymentCommitment>,
     loans: List<LoanAccount>,
     netWorthItems: List<NetWorthItem>,
     insights: List<SpendingInsight>,
@@ -541,11 +639,21 @@ fun InsightsScreen(
             when (section) {
                 InsightSection.OVERVIEW -> AnalyticsScreen(
                     transactions = transactions,
+                    transactionLinks = transactionLinks,
+                    expenseSplits = expenseSplits,
                     insights = insights,
                     onTransactionClick = onTransactionClick,
                     showHeader = false,
                 )
-                InsightSection.CASH_FLOW -> CashFlowContent(transactions, accounts, bills, recurringPayments, loans)
+                InsightSection.CASH_FLOW -> CashFlowContent(
+                    transactions = transactions,
+                    transactionLinks = transactionLinks,
+                    accounts = accounts,
+                    bills = bills,
+                    recurringPayments = recurringPayments,
+                    paymentCommitments = paymentCommitments,
+                    loans = loans,
+                )
                 InsightSection.NET_WORTH -> NetWorthContent(
                     accounts,
                     balanceHistory,
@@ -562,28 +670,61 @@ fun InsightsScreen(
 @Composable
 private fun CashFlowContent(
     transactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
     accounts: List<AccountProfile>,
     bills: List<BillReminder>,
     recurringPayments: List<RecurringPayment>,
+    paymentCommitments: List<PaymentCommitment>,
     loans: List<LoanAccount>,
 ) {
     val today = remember { LocalDate.now() }
     val zoneId = remember { ZoneId.systemDefault() }
     var horizon by remember { mutableIntStateOf(30) }
-    val dueItems = remember(bills, recurringPayments, loans, today, zoneId, horizon) {
+    val dueItems = remember(bills, recurringPayments, paymentCommitments, accounts, loans, today, zoneId, horizon) {
+        val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
+        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf()) {
+            Triple(normalizedMerchantKey(it.merchantKey.ifBlank { it.name }), it.accountId, it.kind)
+        }
+        val dedupedRecurring = recurringPayments.filterNot {
+            Triple(
+                normalizedMerchantKey(it.merchant),
+                it.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByName::get),
+                com.paisalens.app.data.model.PaymentCommitmentKind.SUBSCRIPTION,
+            ) in commitmentKeys
+        }
         buildDueItems(
             bills,
-            recurringPayments,
+            dedupedRecurring,
             loans,
             today,
             zoneId,
             horizonDays = horizon,
             includeRepeatingOccurrences = true,
+        ) + buildPaymentCommitmentDueItems(
+            commitments = paymentCommitments,
+            today = today,
+            horizonDays = horizon,
+            includeRepeatingOccurrences = true,
+            accountNamesById = accounts.associate { it.id to it.name },
         )
     }
     val opening = remember(accounts) { consolidatedBankBalance(accounts) }
-    val forecast = remember(opening, transactions, dueItems, today, zoneId, horizon) {
-        buildCashFlowForecast(opening, transactions, dueItems, today, zoneId, horizonDays = horizon)
+    val bankAccountIds = remember(accounts) {
+        accounts.filter { it.type == AccountType.BANK_ACCOUNT }.mapTo(mutableSetOf(), AccountProfile::id)
+    }
+    val cashFlowTransactions = remember(transactions, bankAccountIds) {
+        transactions.filter { it.accountId == null || it.accountId in bankAccountIds }
+    }
+    val forecast = remember(opening, cashFlowTransactions, transactionLinks, dueItems, today, zoneId, horizon) {
+        buildCashFlowForecast(
+            openingBalanceMinor = opening,
+            transactions = cashFlowTransactions,
+            dueItems = dueItems,
+            asOf = today,
+            zoneId = zoneId,
+            horizonDays = horizon,
+            transactionLinks = transactionLinks,
+        )
     }
     val chartPoints = remember(forecast, horizon) {
         val step = (horizon / 8).coerceAtLeast(1)
@@ -632,7 +773,8 @@ private fun CashFlowContent(
                     Text("Flexible daily spending · ${formatMoney(forecast.baseline.averageDailyFlexibleExpenseMinor)}")
                     Text("Scheduled bills and EMIs · ${formatMoney(dueItems.sumOf { it.amountMinor })}")
                     Text(
-                        "Uses the last ${forecast.baseline.lookbackDays} days of confirmed activity. Transfers are excluded.",
+                        "Uses the last ${forecast.baseline.lookbackDays} days of confirmed bank and unassigned activity. " +
+                            "Own-account transfers and assigned card purchases are excluded.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -881,6 +1023,7 @@ private fun DueStatus.label(): String = when (this) {
 private fun DueItemSource.label(): String = when (this) {
     DueItemSource.MANUAL_BILL -> "Bill reminder"
     DueItemSource.RECURRING_PAYMENT -> "Detected recurring"
+    DueItemSource.PAYMENT_COMMITMENT -> "Subscription or AutoPay"
     DueItemSource.LOAN_EMI -> "Loan EMI"
 }
 
