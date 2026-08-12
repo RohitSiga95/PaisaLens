@@ -23,7 +23,7 @@ class TransactionSmsParser {
         if (amountMinor <= 0) return null
 
         val type = detectType(normalized) ?: return null
-        val source = detectSource(normalized)
+        val source = detectSource(normalized, sender)
         val merchantMatch = extractMerchant(body, sender, type)
         val merchant = merchantMatch.name
         val category = when (type) {
@@ -187,11 +187,17 @@ class TransactionSmsParser {
             ?: ExpenseCategory.OTHER
     }
 
-    private fun detectSource(text: String): TransactionSource = when {
+    private fun detectSource(text: String, sender: String): TransactionSource = when {
+        isCardSender(sender) -> TransactionSource.CARD
         text.contains("upi") || text.contains("vpa") -> TransactionSource.UPI
         text.contains("wallet") || text.contains("paytm") || text.contains("mobikwik") -> TransactionSource.WALLET
         text.contains("card") || text.contains("pos") -> TransactionSource.CARD
         else -> TransactionSource.BANK
+    }
+
+    private fun isCardSender(sender: String): Boolean {
+        val senderId = sender.lowercase().replace(Regex("[^a-z0-9]+"), "")
+        return "card" in senderId || "crd" in senderId
     }
 
     private fun stableId(sender: String, body: String, timestamp: Long): String {

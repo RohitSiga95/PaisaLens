@@ -4,6 +4,7 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AccountAvailabilitySmsParserTest {
@@ -113,5 +114,30 @@ class AccountAvailabilitySmsParserTest {
         assertEquals("BAL", sbiBank.message)
         assertEquals("5676791", sbiCard.destination)
         assertEquals("AVAIL 9876", sbiCard.message)
+    }
+
+    @Test
+    fun recognizesInstitutionAliasesInSmsSenderIds() {
+        assertEquals("HDFC Bank", BankSmsSupport.institutionNameOrNull("VM-HDFCBK-S"))
+        assertEquals("IDFC FIRST Bank", BankSmsSupport.institutionNameOrNull("VM-IDFCBK"))
+        assertEquals("IDFC FIRST Bank", BankSmsSupport.institutionNameOrNull("VM-IDFCFB"))
+        assertEquals("State Bank of India", BankSmsSupport.institutionNameOrNull("VM-SBIINB"))
+        assertEquals("South Indian Bank", BankSmsSupport.institutionNameOrNull("VM-SIB-S"))
+        assertEquals("SBI Card", BankSmsSupport.institutionNameOrNull("JD-SBICRD"))
+    }
+
+    @Test
+    fun doesNotMistakeWordsContainingSibForSouthIndianBank() {
+        assertNull(BankSmsSupport.institutionNameOrNull("My Possible Savings"))
+        assertTrue(BankSmsSupport.bankKey("South Indian Bank") == "sib")
+    }
+
+    @Test
+    fun doesNotInferBankFromLettersSpanningOrdinaryCustomNameWords() {
+        assertNull(BankSmsSupport.institutionNameOrNull("Savings Bills"))
+        assertNull(BankSmsSupport.institutionNameOrNull("Taxi System"))
+        assertNull(BankSmsSupport.institutionNameOrNull("Bob's savings"))
+        assertEquals("State Bank of India", BankSmsSupport.institutionNameOrNull("VM-SBIINB"))
+        assertEquals("Axis Bank", BankSmsSupport.institutionNameOrNull("AX-AXISBK"))
     }
 }

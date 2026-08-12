@@ -75,6 +75,43 @@ class TransactionSmsParserTest {
     }
 
     @Test
+    fun recognizesCreditCardSenderWhenBodyDoesNotSayCard() {
+        val result = parser.parse(
+            sender = "JD-SBICRD",
+            body = "INR 1,299 spent from A/c XX4567 at AMAZON.",
+            timestamp = 1_700_000_000_000,
+        )
+
+        requireNotNull(result)
+        assertEquals(TransactionSource.CARD, result.source)
+        assertEquals("4567", result.accountHint)
+    }
+
+    @Test
+    fun creditCardSenderWinsWhenBodyMentionsUpi() {
+        val result = parser.parse(
+            sender = "JD-SBICRD",
+            body = "INR 899 spent from XX4567 via UPI at AMAZON.",
+            timestamp = 1_700_000_000_000,
+        )
+
+        requireNotNull(result)
+        assertEquals(TransactionSource.CARD, result.source)
+    }
+
+    @Test
+    fun ordinaryBankSenderRemainsBankSource() {
+        val result = parser.parse(
+            sender = "VM-IDFCBK",
+            body = "INR 500 debited from account XX9012 at CAFE.",
+            timestamp = 1_700_000_000_000,
+        )
+
+        requireNotNull(result)
+        assertEquals(TransactionSource.BANK, result.source)
+    }
+
+    @Test
     fun excludesOtpEvenWhenAmountIsPresent() {
         val result = parser.parse(
             sender = "VK-BANK",
