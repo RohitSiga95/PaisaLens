@@ -7,10 +7,75 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class FinancialPlanningModelsTest {
     private val utc: ZoneId = ZoneOffset.UTC
+
+    @Test
+    fun userEnteredUpiBalanceAcceptsOnlySafeBankAccountValues() {
+        val now = 1_800_000_000_000L
+
+        validateUserEnteredUpiBalance(
+            accountId = 7,
+            accountType = AccountType.BANK_ACCOUNT,
+            balanceMinor = -MAX_USER_ENTERED_BALANCE_MINOR,
+            recordedAt = now,
+            now = now,
+        )
+        validateUserEnteredUpiBalance(
+            accountId = 7,
+            accountType = AccountType.BANK_ACCOUNT,
+            balanceMinor = MAX_USER_ENTERED_BALANCE_MINOR,
+            recordedAt = now,
+            now = now,
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            validateUserEnteredUpiBalance(7, AccountType.CREDIT_CARD, 10_000, now, now)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            validateUserEnteredUpiBalance(
+                7,
+                AccountType.BANK_ACCOUNT,
+                -MAX_USER_ENTERED_BALANCE_MINOR - 1,
+                now,
+                now,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            validateUserEnteredUpiBalance(
+                7,
+                AccountType.BANK_ACCOUNT,
+                MAX_USER_ENTERED_BALANCE_MINOR + 1,
+                now,
+                now,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            validateUserEnteredUpiBalance(0, AccountType.BANK_ACCOUNT, 10_000, now, now)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            validateUserEnteredUpiBalance(7, AccountType.BANK_ACCOUNT, 10_000, now + 300_001, now)
+        }
+        assertEquals(
+            "User entered after UPI check",
+            balanceSourceDisplayName(USER_ENTERED_UPI_BALANCE_SOURCE),
+        )
+        val phonePeSource = encodeUserEnteredUpiBalanceSource(" User   entered after PhonePe check ")
+        assertEquals("USER_ENTERED_UPI|PhonePe", phonePeSource)
+        assertEquals("User entered after PhonePe check", balanceSourceDisplayName(phonePeSource))
+        assertEquals(
+            USER_ENTERED_UPI_BALANCE_SOURCE,
+            encodeUserEnteredUpiBalanceSource("Untrusted sender label"),
+        )
+        assertEquals(
+            "USER_ENTERED_UPI|UnsafeApp",
+            encodeUserEnteredUpiBalanceSource("User entered after Unsafe|App<> check"),
+        )
+        assertEquals("VM-HDFCBK", balanceSourceDisplayName("VM-HDFCBK"))
+    }
 
     @Test
     fun dailyBalanceHistoryKeepsLatestSnapshotPerAccountAndDay() {

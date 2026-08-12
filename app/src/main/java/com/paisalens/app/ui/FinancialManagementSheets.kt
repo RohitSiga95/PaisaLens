@@ -70,6 +70,7 @@ import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.SmartRuleMatchType
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.buildDailyBalanceHistory
+import com.paisalens.app.data.model.balanceSourceDisplayName
 import com.paisalens.app.data.model.calculateCreditUtilization
 import com.paisalens.app.data.model.previewSmartCategoryRuleApplication
 import com.paisalens.app.ui.components.CategoryIcon
@@ -168,12 +169,23 @@ internal fun AccountFinanceSheet(
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
-                                account.availabilityFetchedAt?.let { "Fetched ${fullDateTime(it)}" }
-                                    ?: "No balance update has been detected yet",
+                                account.availabilityFetchedAt?.let { timestamp ->
+                                    val action = if (
+                                        balanceSourceDisplayName(account.availabilitySender)
+                                            ?.startsWith("User entered") == true
+                                    ) {
+                                        "Entered"
+                                    } else {
+                                        "Fetched"
+                                    }
+                                    "$action ${fullDateTime(timestamp)}"
+                                } ?: "No balance update has been saved yet",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            account.availabilitySender?.takeIf(String::isNotBlank)?.let { sender ->
+                            balanceSourceDisplayName(account.availabilitySender)
+                                ?.takeIf(String::isNotBlank)
+                                ?.let { sender ->
                                 Text(
                                     "Source: $sender",
                                     style = MaterialTheme.typography.labelSmall,
@@ -259,7 +271,7 @@ internal fun AccountFinanceSheet(
                         if (chartPoints.isEmpty()) {
                             EmptyFinanceState(
                                 title = "No history in this range",
-                                detail = "New balance messages will add points to this chart automatically.",
+                                detail = "New SMS and user-entered balance updates will add points to this chart.",
                             )
                         } else {
                             Column(Modifier.padding(16.dp)) {
@@ -767,7 +779,7 @@ private fun BalanceHistoryRow(snapshot: AccountBalanceSnapshot, accountType: Acc
     val detail = if (accountType == AccountType.CREDIT_CARD) {
         snapshot.creditLimitMinor?.let { "Limit ${formatMoney(it)}" }
     } else {
-        snapshot.sender?.takeIf(String::isNotBlank)
+        balanceSourceDisplayName(snapshot.sender)?.takeIf(String::isNotBlank)
     }
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),

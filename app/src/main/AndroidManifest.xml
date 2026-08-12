@@ -12,6 +12,21 @@
         android:name="android.hardware.telephony"
         android:required="false" />
 
+    <!--
+      PaisaLens only checks this narrow allow-list so the user can explicitly open an
+      installed UPI app. It never requests broad installed-app visibility and never
+      sends account, balance, or payment data to these packages.
+    -->
+    <queries>
+        <package android:name="in.org.npci.upiapp" />
+        <package android:name="com.google.android.apps.nbu.paisa.user" />
+        <package android:name="com.phonepe.app" />
+        <package android:name="net.one97.paytm" />
+        <package android:name="com.dreamplug.androidapp" />
+        <package android:name="in.amazon.mShop.android.shopping" />
+        <package android:name="com.whatsapp" />
+    </queries>
+
     <application
         android:name=".PaisaLensApplication"
         android:allowBackup="false"

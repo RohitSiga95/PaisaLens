@@ -17,6 +17,73 @@ data class AccountBalanceSnapshot(
     val sender: String? = null,
 )
 
+/** Machine-readable source stored for balances the user copies from a UPI app. */
+const val USER_ENTERED_UPI_BALANCE_SOURCE = "USER_ENTERED_UPI"
+
+private const val USER_ENTERED_UPI_BALANCE_SOURCE_SEPARATOR = '|'
+private const val USER_ENTERED_UPI_LABEL_PREFIX = "User entered after "
+private const val USER_ENTERED_UPI_LABEL_SUFFIX = " check"
+
+/** ₹1 trillion, stored in minor units. This also keeps later arithmetic far from Long overflow. */
+const val MAX_USER_ENTERED_BALANCE_MINOR = 100_000_000_000_000L
+
+private const val MAX_USER_ENTERED_BALANCE_FUTURE_SKEW_MILLIS = 5L * 60L * 1000L
+
+data class AccountBalanceWriteResult(
+    val snapshotRecorded: Boolean,
+    val currentBalanceUpdated: Boolean,
+)
+
+fun encodeUserEnteredUpiBalanceSource(sourceLabel: String?): String {
+    val cleanLabel = sourceLabel?.trim()?.replace(Regex("\\s+"), " ").orEmpty()
+    val appName = cleanLabel
+        .takeIf {
+            it.startsWith(USER_ENTERED_UPI_LABEL_PREFIX) &&
+                it.endsWith(USER_ENTERED_UPI_LABEL_SUFFIX)
+        }
+        ?.removePrefix(USER_ENTERED_UPI_LABEL_PREFIX)
+        ?.removeSuffix(USER_ENTERED_UPI_LABEL_SUFFIX)
+        .sanitizeUpiAppName()
+    return appName?.let { "$USER_ENTERED_UPI_BALANCE_SOURCE$USER_ENTERED_UPI_BALANCE_SOURCE_SEPARATOR$it" }
+        ?: USER_ENTERED_UPI_BALANCE_SOURCE
+}
+
+fun balanceSourceDisplayName(source: String?): String? = when {
+    source == USER_ENTERED_UPI_BALANCE_SOURCE -> "User entered after UPI check"
+    source?.startsWith("$USER_ENTERED_UPI_BALANCE_SOURCE$USER_ENTERED_UPI_BALANCE_SOURCE_SEPARATOR") == true -> {
+        val appName = source.substringAfter(USER_ENTERED_UPI_BALANCE_SOURCE_SEPARATOR).sanitizeUpiAppName()
+        appName?.let { "User entered after $it check" } ?: "User entered after UPI check"
+    }
+    else -> source
+}
+
+private fun String?.sanitizeUpiAppName(): String? = this
+    ?.replace(Regex("[^\\p{L}\\p{N} .&'()+_-]"), "")
+    ?.trim()
+    ?.replace(Regex("\\s+"), " ")
+    ?.take(30)
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+
+fun validateUserEnteredUpiBalance(
+    accountId: Long,
+    accountType: AccountType,
+    balanceMinor: Long,
+    recordedAt: Long,
+    now: Long = System.currentTimeMillis(),
+) {
+    require(accountId > 0) { "Select a valid bank account" }
+    require(accountType == AccountType.BANK_ACCOUNT) {
+        "UPI balance entry is available only for bank accounts"
+    }
+    require(balanceMinor in -MAX_USER_ENTERED_BALANCE_MINOR..MAX_USER_ENTERED_BALANCE_MINOR) {
+        "Enter a bank balance between -₹1 trillion and ₹1 trillion"
+    }
+    require(recordedAt > 0 && recordedAt <= now + MAX_USER_ENTERED_BALANCE_FUTURE_SKEW_MILLIS) {
+        "Balance timestamp is invalid"
+    }
+}
+
 data class DailyBalancePoint(
     val accountId: Long,
     val date: LocalDate,

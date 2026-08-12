@@ -170,6 +170,18 @@ fun PaisaLensApp(
     onCaptureReceipt: () -> Unit,
     onPickReceipt: () -> Unit,
     onComposeBalanceSms: (AccountProfile) -> Unit,
+    availableUpiApps: List<UpiAppChoice>,
+    upiBalanceAccountId: Long?,
+    selectedUpiPackageName: String?,
+    upiBalanceDraft: String,
+    upiBalanceSaving: Boolean,
+    upiBalanceError: String?,
+    onUpiBalanceAccountChange: (Long?) -> Unit,
+    onSelectedUpiPackageChange: (String?) -> Unit,
+    onUpiBalanceDraftChange: (String) -> Unit,
+    onUpiBalanceSavingChange: (Boolean) -> Unit,
+    onUpiBalanceErrorChange: (String?) -> Unit,
+    onLaunchUpiApp: (UpiAppChoice) -> Boolean,
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
     val effectiveExpenseTransactions by viewModel.effectiveExpenseTransactions.collectAsStateWithLifecycle()
@@ -383,6 +395,18 @@ fun PaisaLensApp(
                             onOpenSavingsGoals = { showSavingsGoals = true },
                             onOpenCommitments = { showPaymentCommitments = true },
                             onRefreshAccount = onComposeBalanceSms,
+                            onCheckBalanceViaUpi = { account, accountIds ->
+                                val canonicalId = accountIds
+                                    .mapNotNull { id -> accounts.firstOrNull { it.id == id } }
+                                    .minByOrNull { it.id }
+                                    ?.id
+                                    ?: account.id
+                                onUpiBalanceAccountChange(canonicalId)
+                                onSelectedUpiPackageChange(null)
+                                onUpiBalanceDraftChange("")
+                                onUpiBalanceSavingChange(false)
+                                onUpiBalanceErrorChange(null)
+                            },
                             onAccountClick = { selectedAccount = it },
                             onTransactionClick = { homeRecord ->
                                 selectedTransaction = transactions.firstOrNull { it.id == homeRecord.id } ?: homeRecord
@@ -615,6 +639,56 @@ fun PaisaLensApp(
                 onDelete = viewModel::deleteAccount,
                 onDismiss = { showAccountManager = false },
             )
+        }
+
+        upiBalanceAccountId?.let { accountId ->
+            val account = accounts.firstOrNull { it.id == accountId }
+            if (account != null) {
+                UpiBalanceCheckSheet(
+                    account = account,
+                    availableUpiApps = availableUpiApps,
+                    amountInput = upiBalanceDraft,
+                    onAmountInputChange = onUpiBalanceDraftChange,
+                    onLaunchUpiApp = { app ->
+                        onLaunchUpiApp(app).also { launched ->
+                            if (launched) onSelectedUpiPackageChange(app.packageName)
+                        }
+                    },
+                    isSaving = upiBalanceSaving,
+                    errorMessage = upiBalanceError,
+                    initialSelectedPackageName = selectedUpiPackageName,
+                    onSaveBalance = { record ->
+                        if (upiBalanceSaving || record.accountId != accountId) return@UpiBalanceCheckSheet
+                        onUpiBalanceSavingChange(true)
+                        onUpiBalanceErrorChange(null)
+                        viewModel.recordUserEnteredUpiBalance(
+                            accountId = record.accountId,
+                            balanceMinor = record.balanceMinor,
+                            recordedAt = record.recordedAt,
+                            sourceLabel = record.sourceLabel,
+                        ) { saved ->
+                            onUpiBalanceSavingChange(false)
+                            if (saved) {
+                                onUpiBalanceAccountChange(null)
+                                onSelectedUpiPackageChange(null)
+                                onUpiBalanceDraftChange("")
+                            } else {
+                                onUpiBalanceErrorChange(
+                                    "The balance could not be saved. Check the amount and try again.",
+                                )
+                            }
+                        }
+                    },
+                    onDismiss = {
+                        if (!upiBalanceSaving) {
+                            onUpiBalanceAccountChange(null)
+                            onSelectedUpiPackageChange(null)
+                            onUpiBalanceDraftChange("")
+                            onUpiBalanceErrorChange(null)
+                        }
+                    },
+                )
+            }
         }
 
         selectedAccount?.let { selected ->

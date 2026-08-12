@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteOpenHelper
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountBalanceSnapshot
+import com.paisalens.app.data.model.AccountBalanceWriteResult
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.AuditAction
@@ -62,6 +63,8 @@ import com.paisalens.app.data.model.validateTransactionLink
 import com.paisalens.app.data.model.validateTransactionTypeChange
 import com.paisalens.app.data.model.expenseSplitStatus
 import com.paisalens.app.data.model.validateExpenseSplits
+import com.paisalens.app.data.model.encodeUserEnteredUpiBalanceSource
+import com.paisalens.app.data.model.validateUserEnteredUpiBalance
 import com.paisalens.app.sms.BankSmsSupport
 import java.util.Locale
 import java.util.UUID
@@ -724,6 +727,73 @@ class PaisaLensDatabase(context: Context) :
             db.endTransaction()
         }
         return changed
+    }
+
+    fun recordUserEnteredUpiBalance(
+        accountId: Long,
+        balanceMinor: Long,
+        recordedAt: Long = System.currentTimeMillis(),
+        sourceLabel: String? = null,
+    ): AccountBalanceWriteResult {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val accountType = db.query(
+                "accounts",
+                arrayOf("type"),
+                "id = ?",
+                arrayOf(accountId.toString()),
+                null,
+                null,
+                null,
+                "1",
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    enumValueOrDefault(cursor.getString(0), AccountType.OTHER)
+                } else {
+                    null
+                }
+            }
+            requireNotNull(accountType) { "Bank account not found" }
+            validateUserEnteredUpiBalance(
+                accountId = accountId,
+                accountType = accountType,
+                balanceMinor = balanceMinor,
+                recordedAt = recordedAt,
+            )
+            val encodedSource = encodeUserEnteredUpiBalanceSource(sourceLabel)
+
+            val snapshotId = db.insertWithOnConflict(
+                "balance_history",
+                null,
+                ContentValues().apply {
+                    put("account_id", accountId)
+                    put("balance_minor", balanceMinor)
+                    putNull("available_credit_minor")
+                    putNull("credit_limit_minor")
+                    put("recorded_at", recordedAt)
+                    put("sender", encodedSource)
+                },
+                SQLiteDatabase.CONFLICT_IGNORE,
+            )
+            val currentUpdated = db.update(
+                "accounts",
+                ContentValues().apply {
+                    put("balance_minor", balanceMinor)
+                    put("availability_fetched_at", recordedAt)
+                    put("availability_sender", encodedSource)
+                },
+                "id = ? AND type = ? AND (availability_fetched_at IS NULL OR availability_fetched_at < ?)",
+                arrayOf(accountId.toString(), AccountType.BANK_ACCOUNT.name, recordedAt.toString()),
+            ) > 0
+            db.setTransactionSuccessful()
+            return AccountBalanceWriteResult(
+                snapshotRecorded = snapshotId != -1L,
+                currentBalanceUpdated = currentUpdated,
+            )
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun deleteAccount(id: Long) {
