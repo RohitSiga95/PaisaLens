@@ -65,6 +65,7 @@ import com.paisalens.app.ui.components.CustomCategoryIcon
 internal enum class BackupAction {
     CREATE,
     RESTORE,
+    VERIFY,
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -477,17 +478,28 @@ internal fun BackupPassphraseDialog(
     var visible by remember { mutableStateOf(false) }
     val creating = action == BackupAction.CREATE
     val valid = passphrase.length >= 8 && (!creating || passphrase == confirmation)
+    val title = when (action) {
+        BackupAction.CREATE -> "Create encrypted backup"
+        BackupAction.RESTORE -> "Restore encrypted backup"
+        BackupAction.VERIFY -> "Verify encrypted backup"
+    }
+    val explanation = when (action) {
+        BackupAction.CREATE -> "Choose a password you will remember. It is required to restore this backup on any phone."
+        BackupAction.RESTORE -> "Restoring replaces the current local ledger, accounts, categories and budgets. Enter the backup password."
+        BackupAction.VERIFY -> "Check a backup's password, encryption and contents without changing anything on this phone."
+    }
+    val confirmLabel = when (action) {
+        BackupAction.CREATE -> "Choose location"
+        BackupAction.RESTORE -> "Choose backup"
+        BackupAction.VERIFY -> "Choose backup to verify"
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (creating) "Create encrypted backup" else "Restore encrypted backup") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    if (creating) {
-                        "Choose a password you will remember. It is required to restore this backup on any phone."
-                    } else {
-                        "Restoring replaces the current local ledger, accounts, categories and budgets. Enter the backup password."
-                    },
+                    explanation,
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 OutlinedTextField(
@@ -527,7 +539,7 @@ internal fun BackupPassphraseDialog(
             Button(
                 onClick = { onSubmit(passphrase.toCharArray()) },
                 enabled = valid,
-            ) { Text(if (creating) "Choose location" else "Choose backup") }
+            ) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

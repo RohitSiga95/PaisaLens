@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
+import androidx.compose.material.icons.automirrored.rounded.CallSplit
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.Analytics
@@ -41,10 +44,10 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DonutLarge
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -73,6 +76,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -95,15 +99,23 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.MerchantTransactionGroup
+import com.paisalens.app.data.model.ReconciliationStatus
+import com.paisalens.app.data.model.SavingsGoal
+import com.paisalens.app.data.model.PaymentCommitment
 import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.StatementAuditMetadata
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.calculateReconciliationMetrics
 import com.paisalens.app.data.model.findUncategorizedMerchantGroups
 import com.paisalens.app.data.model.normalizedMerchantKey
+import com.paisalens.app.data.model.suggestReconciliationStatus
+import com.paisalens.app.data.importer.CreditCardStatementAuditor
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.CustomCategoryIcon
 import com.paisalens.app.ui.components.MoneyText
@@ -111,16 +123,17 @@ import com.paisalens.app.ui.components.categoryColor
 import com.paisalens.app.ui.components.customCategoryColor
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.components.formatTransactionTime
-import com.paisalens.app.ui.screens.BudgetsScreen
 import com.paisalens.app.ui.screens.HomeScreen
 import com.paisalens.app.ui.screens.OnboardingScreen
 import com.paisalens.app.ui.screens.SettingsScreen
 import com.paisalens.app.ui.screens.TransactionsScreen
+import com.paisalens.app.ui.screens.TransactionFilter
 import com.paisalens.app.ui.theme.PaisaLensTheme
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -132,10 +145,10 @@ private enum class AppDestination(
     val showInNavigation: Boolean = true,
 ) {
     HOME("Home", Icons.Rounded.Home),
-    ACTIVITY("Activity", Icons.Rounded.ReceiptLong),
-    BUDGETS("Budgets", Icons.Rounded.DonutLarge),
+    ACTIVITY("Activity", Icons.AutoMirrored.Rounded.ReceiptLong),
+    PLAN("Plan", Icons.Rounded.DonutLarge),
+    INSIGHTS("Insights", Icons.Rounded.Analytics),
     SETTINGS("Settings", Icons.Rounded.Settings),
-    ANALYTICS("Analytics", Icons.Rounded.Analytics, false),
     CALENDAR("Calendar", Icons.Rounded.CalendarMonth, false),
 }
 
@@ -144,58 +157,117 @@ private enum class AppDestination(
 fun PaisaLensApp(
     viewModel: PaisaLensViewModel,
     hasSmsPermission: Boolean,
+    hasNotificationPermission: Boolean,
     onRequestSmsPermission: () -> Unit,
+    onRequestNotificationPermission: () -> Unit,
     onExportData: () -> Unit,
     onCreateBackup: (CharArray) -> Unit,
     onRestoreBackup: (CharArray) -> Unit,
+    onVerifyBackup: (CharArray) -> Unit,
     onImportStatement: (Long?) -> Unit,
+    onAuditCardStatement: (StatementAuditMetadata) -> Unit,
     onAppLockChange: (Boolean) -> Unit,
     onCaptureReceipt: () -> Unit,
     onPickReceipt: () -> Unit,
     onComposeBalanceSms: (AccountProfile) -> Unit,
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val effectiveExpenseTransactions by viewModel.effectiveExpenseTransactions.collectAsStateWithLifecycle()
     val budgets by viewModel.budgets.collectAsStateWithLifecycle()
     val categorizedMerchantKeys by viewModel.categorizedMerchantKeys.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
+    val balanceHistory by viewModel.balanceHistory.collectAsStateWithLifecycle()
+    val bills by viewModel.bills.collectAsStateWithLifecycle()
+    val netWorthItems by viewModel.netWorthItems.collectAsStateWithLifecycle()
+    val smartCategoryRules by viewModel.smartCategoryRules.collectAsStateWithLifecycle()
+    val reconciliations by viewModel.reconciliations.collectAsStateWithLifecycle()
+    val transactionLinks by viewModel.transactionLinks.collectAsStateWithLifecycle()
+    val transactionLinkSuggestions by viewModel.transactionLinkSuggestions.collectAsStateWithLifecycle()
+    val auditEvents by viewModel.auditEvents.collectAsStateWithLifecycle()
+    val auditBatches by viewModel.auditBatches.collectAsStateWithLifecycle()
+    val dataHealth by viewModel.dataHealth.collectAsStateWithLifecycle()
     val customCategories by viewModel.customCategories.collectAsStateWithLifecycle()
     val recurringPayments by viewModel.recurringPayments.collectAsStateWithLifecycle()
     val loans by viewModel.loans.collectAsStateWithLifecycle()
     val exchangeRates by viewModel.exchangeRates.collectAsStateWithLifecycle()
     val merchantAliases by viewModel.merchantAliases.collectAsStateWithLifecycle()
     val insights by viewModel.insights.collectAsStateWithLifecycle()
+    val expenseSplits by viewModel.expenseSplits.collectAsStateWithLifecycle()
+    val savingsGoals by viewModel.savingsGoals.collectAsStateWithLifecycle()
+    val savingsContributions by viewModel.savingsContributions.collectAsStateWithLifecycle()
+    val paymentCommitments by viewModel.paymentCommitments.collectAsStateWithLifecycle()
+    val paymentCommitmentSuggestions by viewModel.paymentCommitmentSuggestions.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val onboardingComplete by viewModel.onboardingComplete.collectAsStateWithLifecycle()
-    val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
+    val themeConfiguration by viewModel.themeConfiguration.collectAsStateWithLifecycle()
+    val homeLayout by viewModel.homeLayout.collectAsStateWithLifecycle()
+    val notificationDigest by viewModel.notificationDigest.collectAsStateWithLifecycle()
     val lastScanAt by viewModel.lastScanAt.collectAsStateWithLifecycle()
+    val lastBackupCreatedAt by viewModel.lastBackupCreatedAt.collectAsStateWithLifecycle()
+    val lastBackupVerifiedAt by viewModel.lastBackupVerifiedAt.collectAsStateWithLifecycle()
+    val backupVerification by viewModel.backupVerification.collectAsStateWithLifecycle()
+    val backupVerificationError by viewModel.backupVerificationError.collectAsStateWithLifecycle()
+    val isVerifyingBackup by viewModel.isVerifyingBackup.collectAsStateWithLifecycle()
+    val lastUndoResult by viewModel.lastUndoResult.collectAsStateWithLifecycle()
+    val undoInProgressBatchId by viewModel.undoInProgressBatchId.collectAsStateWithLifecycle()
     val appLockEnabled by viewModel.appLockEnabled.collectAsStateWithLifecycle()
     val widgetAmountsVisible by viewModel.widgetAmountsVisible.collectAsStateWithLifecycle()
     val travelModeEnabled by viewModel.travelModeEnabled.collectAsStateWithLifecycle()
     val baseCurrency by viewModel.baseCurrency.collectAsStateWithLifecycle()
     val statementPreview by viewModel.statementPreview.collectAsStateWithLifecycle()
     val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
+    val statementAuditReport by viewModel.statementAuditReport.collectAsStateWithLifecycle()
+    val statementAuditError by viewModel.statementAuditError.collectAsStateWithLifecycle()
+    val isAuditingStatement by viewModel.isAuditingStatement.collectAsStateWithLifecycle()
     val isRefreshingRate by viewModel.isRefreshingRate.collectAsStateWithLifecycle()
     val receiptDraft by viewModel.receiptDraft.collectAsStateWithLifecycle()
     val isReceiptOcrRunning by viewModel.isReceiptOcrRunning.collectAsStateWithLifecycle()
-    var destination by remember { mutableStateOf(AppDestination.HOME) }
+    var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var showManualSheet by remember { mutableStateOf(false) }
     var selectedTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
     var selectedMerchantGroup by remember { mutableStateOf<MerchantTransactionGroup?>(null) }
+    var selectedAccount by remember { mutableStateOf<AccountProfile?>(null) }
     var showAccountManager by remember { mutableStateOf(false) }
     var showCategoryManager by remember { mutableStateOf(false) }
     var showMerchantCleanup by remember { mutableStateOf(false) }
     var showLoanManager by remember { mutableStateOf(false) }
     var showTravelMode by remember { mutableStateOf(false) }
     var showStatementImport by remember { mutableStateOf(false) }
+    var showTrustCenter by remember { mutableStateOf(false) }
+    var showDataHealth by remember { mutableStateOf(false) }
+    var showCardStatementAudit by remember { mutableStateOf(false) }
+    var showManualCardStatementAudit by remember { mutableStateOf(false) }
+    var showThemeStudio by remember { mutableStateOf(false) }
+    var showHomeCustomization by remember { mutableStateOf(false) }
+    var showPrivateDigest by remember { mutableStateOf(false) }
+    var showSharedExpenses by remember { mutableStateOf(false) }
+    var showSavingsGoals by remember { mutableStateOf(false) }
+    var showPaymentCommitments by remember { mutableStateOf(false) }
+    var splitTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
+    var splitEditorSaving by remember { mutableStateOf(false) }
+    var editingSavingsGoal by remember { mutableStateOf<SavingsGoal?>(null) }
+    var addingSavingsGoal by remember { mutableStateOf(false) }
+    var savingsGoalEditorSaving by remember { mutableStateOf(false) }
+    var contributingSavingsGoal by remember { mutableStateOf<SavingsGoal?>(null) }
+    var savingsContributionSaving by remember { mutableStateOf(false) }
+    var editingPaymentCommitment by remember { mutableStateOf<PaymentCommitment?>(null) }
+    var addingPaymentCommitment by remember { mutableStateOf(false) }
+    var paymentCommitmentEditorSaving by remember { mutableStateOf(false) }
+    var trustPeriod by remember { mutableStateOf(YearMonth.now()) }
+    var trustAccountId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var ignoredLinkSuggestions by remember { mutableStateOf(emptySet<String>()) }
+    var activityFilter by remember { mutableStateOf(TransactionFilter.ALL) }
+    var showSmartCategoryRules by remember { mutableStateOf(false) }
     var backupAction by remember { mutableStateOf<BackupAction?>(null) }
     val uncategorizedMerchants = remember(transactions, categorizedMerchantKeys) {
         findUncategorizedMerchantGroups(transactions, categorizedMerchantKeys)
     }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val systemInDarkTheme = isSystemInDarkTheme()
 
     BackHandler(enabled = !destination.showInNavigation) {
-        destination = AppDestination.HOME
+        destination = if (destination == AppDestination.CALENDAR) AppDestination.ACTIVITY else AppDestination.HOME
     }
 
     LaunchedEffect(viewModel) {
@@ -208,7 +280,20 @@ fun PaisaLensApp(
         if (receiptDraft != null) showManualSheet = true
     }
 
-    PaisaLensTheme(darkTheme = darkMode) {
+    LaunchedEffect(showTrustCenter, accounts) {
+        if (showTrustCenter && accounts.none { it.id == trustAccountId }) {
+            trustAccountId = accounts.firstOrNull()?.id
+        }
+    }
+
+    LaunchedEffect(showManualCardStatementAudit, statementAuditReport) {
+        if (showManualCardStatementAudit && statementAuditReport != null) {
+            showManualCardStatementAudit = false
+            showCardStatementAudit = true
+        }
+    }
+
+    PaisaLensTheme(configuration = themeConfiguration) {
         if (!onboardingComplete) {
             OnboardingScreen(
                 onAllowSms = {
@@ -222,6 +307,8 @@ fun PaisaLensApp(
 
         Scaffold(
             modifier = Modifier.fillMaxSize(),
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onBackground,
             contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(snackbarHostState) },
             bottomBar = {
@@ -231,7 +318,8 @@ fun PaisaLensApp(
                 ) {
                     AppDestination.entries.filter { it.showInNavigation }.forEach { item ->
                         NavigationBarItem(
-                            selected = destination == item,
+                            selected = destination == item ||
+                                (destination == AppDestination.CALENDAR && item == AppDestination.ACTIVITY),
                             onClick = { destination = item },
                             icon = {
                                 Icon(item.icon, contentDescription = item.label)
@@ -278,33 +366,108 @@ fun PaisaLensApp(
                     when (screen) {
                         AppDestination.HOME -> HomeScreen(
                             transactions = transactions,
+                            effectiveExpenseTransactions = effectiveExpenseTransactions,
+                            transactionLinks = transactionLinks,
                             budgets = budgets,
                             accounts = accounts,
+                            homeLayout = homeLayout,
+                            savingsGoals = savingsGoals,
+                            savingsContributions = savingsContributions,
+                            paymentCommitments = paymentCommitments,
                             isScanning = isScanning,
                             hasSmsPermission = hasSmsPermission,
                             onScan = { viewModel.scanSms(context) },
                             onRequestPermission = onRequestSmsPermission,
                             onAdd = { showManualSheet = true },
+                            onCustomizeHome = { showHomeCustomization = true },
+                            onOpenSavingsGoals = { showSavingsGoals = true },
+                            onOpenCommitments = { showPaymentCommitments = true },
                             onRefreshAccount = onComposeBalanceSms,
-                            onTransactionClick = { selectedTransaction = it },
+                            onAccountClick = { selectedAccount = it },
+                            onTransactionClick = { homeRecord ->
+                                selectedTransaction = transactions.firstOrNull { it.id == homeRecord.id } ?: homeRecord
+                            },
                         )
                         AppDestination.ACTIVITY -> TransactionsScreen(
                             transactions = transactions,
                             uncategorizedMerchants = uncategorizedMerchants,
+                            initialFilter = activityFilter,
                             onCategorizeMerchant = { selectedMerchantGroup = it },
+                            onTrustCenter = { showTrustCenter = true },
+                            onSharedExpenses = { showSharedExpenses = true },
+                            onCalendar = { destination = AppDestination.CALENDAR },
                             onTransactionClick = { selectedTransaction = it },
                         )
-                        AppDestination.BUDGETS -> BudgetsScreen(
+                        AppDestination.PLAN -> PlanningScreen(
                             transactions = transactions,
+                            transactionLinks = transactionLinks,
+                            expenseSplits = expenseSplits,
                             budgets = budgets,
+                            bills = bills,
+                            recurringPayments = recurringPayments,
+                            loans = loans,
+                            accounts = accounts,
+                            savingsGoals = savingsGoals,
+                            savingsContributions = savingsContributions,
+                            paymentCommitments = paymentCommitments,
+                            paymentCommitmentSuggestions = paymentCommitmentSuggestions,
                             onSetBudget = viewModel::setBudget,
+                            onSaveBill = viewModel::saveBill,
+                            onMarkBillPaid = viewModel::markBillPaid,
+                            onDeleteBill = viewModel::deleteBill,
+                            onAddSavingsGoal = {
+                                showSavingsGoals = false
+                                addingSavingsGoal = true
+                            },
+                            onEditSavingsGoal = {
+                                showSavingsGoals = false
+                                editingSavingsGoal = it
+                            },
+                            onDeleteSavingsGoal = { viewModel.deleteSavingsGoal(it.id) },
+                            onContributeSavingsGoal = { contributingSavingsGoal = it },
+                            onSaveSavingsContribution = { viewModel.saveSavingsContribution(it) },
+                            onDeleteSavingsContribution = { viewModel.deleteSavingsContribution(it.id) },
+                            onAddPaymentCommitment = {
+                                showPaymentCommitments = false
+                                addingPaymentCommitment = true
+                            },
+                            onEditPaymentCommitment = {
+                                showPaymentCommitments = false
+                                editingPaymentCommitment = it
+                            },
+                            onUpdatePaymentCommitment = { viewModel.savePaymentCommitment(it) },
+                            onDeletePaymentCommitment = { viewModel.deletePaymentCommitment(it.id) },
+                            onAcceptPaymentSuggestion = {
+                                showPaymentCommitments = false
+                                editingPaymentCommitment = it
+                            },
+                        )
+                        AppDestination.INSIGHTS -> InsightsScreen(
+                            transactions = transactions,
+                            transactionLinks = transactionLinks,
+                            expenseSplits = expenseSplits,
+                            accounts = accounts,
+                            balanceHistory = balanceHistory,
+                            bills = bills,
+                            recurringPayments = recurringPayments,
+                            paymentCommitments = paymentCommitments,
+                            loans = loans,
+                            netWorthItems = netWorthItems,
+                            insights = insights,
+                            onTransactionClick = { selectedTransaction = it },
+                            onSaveNetWorthItem = viewModel::saveNetWorthItem,
+                            onDeleteNetWorthItem = viewModel::deleteNetWorthItem,
                         )
                         AppDestination.SETTINGS -> SettingsScreen(
-                            darkMode = darkMode,
+                            themeConfiguration = themeConfiguration,
+                            homeLayout = homeLayout,
+                            notificationDigest = notificationDigest,
                             hasSmsPermission = hasSmsPermission,
                             isScanning = isScanning,
                             lastScanAt = lastScanAt,
-                            onDarkModeChange = viewModel::setDarkMode,
+                            onCustomizeTheme = { showThemeStudio = true },
+                            onCustomizeHome = { showHomeCustomization = true },
+                            onPrivateDigest = { showPrivateDigest = true },
                             onRequestSms = onRequestSmsPermission,
                             onScan = { viewModel.scanSms(context) },
                             transactionCount = transactions.size,
@@ -314,6 +477,7 @@ fun PaisaLensApp(
                             reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW },
                             loanCount = loans.size,
                             merchantAliasCount = merchantAliases.size,
+                            smartRuleCount = smartCategoryRules.size,
                             rateCount = exchangeRates.count { it.baseCurrency == baseCurrency },
                             appLockEnabled = appLockEnabled,
                             widgetAmountsVisible = widgetAmountsVisible,
@@ -323,26 +487,28 @@ fun PaisaLensApp(
                             onManageAccounts = { showAccountManager = true },
                             onManageCategories = { showCategoryManager = true },
                             onMerchantCleanup = { showMerchantCleanup = true },
+                            onSmartCategoryRules = { showSmartCategoryRules = true },
                             onManageLoans = { showLoanManager = true },
                             onTravelMode = { showTravelMode = true },
                             onImportStatement = { showStatementImport = true },
+                            onAuditCardStatement = { showCardStatementAudit = true },
+                            onDataHealth = { showDataHealth = true },
                             onAppLockChange = onAppLockChange,
                             onWidgetAmountsChange = viewModel::setWidgetAmountsVisible,
                             onCreateBackup = { backupAction = BackupAction.CREATE },
                             onRestoreBackup = { backupAction = BackupAction.RESTORE },
+                            onVerifyBackup = { backupAction = BackupAction.VERIFY },
                             onReviewTransactions = { destination = AppDestination.ACTIVITY },
                             onClearAll = viewModel::clearAll,
                         )
-                        AppDestination.ANALYTICS -> AnalyticsScreen(
-                            transactions = transactions,
-                            insights = insights,
-                            onBack = { destination = AppDestination.HOME },
-                            onTransactionClick = { selectedTransaction = it },
-                        )
                         AppDestination.CALENDAR -> CalendarScreen(
                             transactions = transactions,
-                            onBack = { destination = AppDestination.HOME },
-                            onTransactionClick = { selectedTransaction = it },
+                            transactionLinks = transactionLinks,
+                            expenseSplits = expenseSplits,
+                            onBack = { destination = AppDestination.ACTIVITY },
+                            onTransactionClick = { calendarRecord ->
+                                selectedTransaction = transactions.firstOrNull { it.id == calendarRecord.id } ?: calendarRecord
+                            },
                         )
                     }
                 }
@@ -396,6 +562,11 @@ fun PaisaLensApp(
         }
 
         selectedTransaction?.let { transaction ->
+            val hasSharedExpenseData = expenseSplits.any {
+                it.transactionId == transaction.id || it.linkedIncomingTransactionId == transaction.id
+            } || transactionLinks.any {
+                it.sourceTransactionId == transaction.id || it.targetTransactionId == transaction.id
+            }
             TransactionDetailSheet(
                 transaction = transaction,
                 accounts = accounts,
@@ -424,6 +595,11 @@ fun PaisaLensApp(
                     viewModel.updateTransactionType(transaction.id, type)
                     selectedTransaction = null
                 },
+                onSplitExpense = {
+                    splitTransaction = transaction
+                    selectedTransaction = null
+                },
+                hasSharedExpenseData = hasSharedExpenseData,
                 onDelete = {
                     viewModel.deleteTransaction(transaction.id)
                     selectedTransaction = null
@@ -438,6 +614,38 @@ fun PaisaLensApp(
                 onUpdate = viewModel::updateAccount,
                 onDelete = viewModel::deleteAccount,
                 onDismiss = { showAccountManager = false },
+            )
+        }
+
+        selectedAccount?.let { selected ->
+            val current = accounts.firstOrNull { it.id == selected.id }?.let { raw ->
+                raw.copy(
+                    accountHint = raw.accountHint ?: selected.accountHint,
+                    institution = raw.institution?.takeIf(String::isNotBlank) ?: selected.institution,
+                    balanceMinor = raw.balanceMinor ?: selected.balanceMinor,
+                    availableCreditMinor = raw.availableCreditMinor ?: selected.availableCreditMinor,
+                    creditLimitMinor = raw.creditLimitMinor ?: selected.creditLimitMinor,
+                    availabilityFetchedAt = raw.availabilityFetchedAt ?: selected.availabilityFetchedAt,
+                    availabilitySender = raw.availabilitySender ?: selected.availabilitySender,
+                )
+            } ?: selected
+            val relatedAccountIds = current.accountHint
+                ?.filter(Char::isDigit)
+                ?.takeLast(4)
+                ?.takeIf(String::isNotBlank)
+                ?.let { lastFour ->
+                    accounts.filter {
+                        it.type == current.type && it.accountHint?.filter(Char::isDigit)?.takeLast(4) == lastFour
+                    }.map { it.id }.toSet()
+                }
+                ?: setOf(current.id)
+            AccountFinanceSheet(
+                account = current,
+                history = balanceHistory
+                    .filter { it.accountId in relatedAccountIds }
+                    .map { if (it.accountId == current.id) it else it.copy(accountId = current.id) },
+                onUpdateAccount = viewModel::updateAccount,
+                onDismiss = { selectedAccount = null },
             )
         }
 
@@ -457,6 +665,19 @@ fun PaisaLensApp(
                 onRename = viewModel::renameMerchant,
                 onDeleteAlias = viewModel::deleteMerchantAlias,
                 onDismiss = { showMerchantCleanup = false },
+            )
+        }
+
+        if (showSmartCategoryRules) {
+            SmartCategoryRulesSheet(
+                rules = smartCategoryRules,
+                transactions = transactions,
+                exactMerchantKeys = categorizedMerchantKeys,
+                accounts = accounts,
+                customCategories = customCategories,
+                onSave = viewModel::saveSmartCategoryRule,
+                onDelete = viewModel::deleteSmartCategoryRule,
+                onDismiss = { showSmartCategoryRules = false },
             )
         }
 
@@ -494,12 +715,428 @@ fun PaisaLensApp(
             )
         }
 
+        if (showTrustCenter) {
+            val zoneId = remember { ZoneId.systemDefault() }
+            val transactionsById = remember(transactions) { transactions.associateBy(TransactionRecord::id) }
+            val reconciliation = remember(reconciliations, trustAccountId, trustPeriod) {
+                reconciliations.firstOrNull {
+                    it.accountId == trustAccountId && it.year == trustPeriod.year && it.month == trustPeriod.monthValue
+                }
+            }
+            val selectedAccountType = remember(accounts, trustAccountId) {
+                accounts.firstOrNull { it.id == trustAccountId }?.type ?: AccountType.BANK_ACCOUNT
+            }
+            val metrics = remember(reconciliation, transactions, transactionLinks, selectedAccountType, zoneId) {
+                reconciliation?.let {
+                    calculateReconciliationMetrics(
+                        reconciliation = it,
+                        transactions = transactions,
+                        zoneId = zoneId,
+                        accountType = selectedAccountType,
+                        transactionLinks = transactionLinks,
+                    )
+                }
+            }
+            val visibleSuggestions = remember(
+                transactionLinkSuggestions,
+                transactionsById,
+                trustPeriod,
+                trustAccountId,
+                ignoredLinkSuggestions,
+                zoneId,
+            ) {
+                transactionLinkSuggestions.filter { suggestion ->
+                    val source = transactionsById[suggestion.sourceTransactionId]
+                    val target = transactionsById[suggestion.targetTransactionId]
+                    val inMonth = listOfNotNull(source, target).any {
+                        YearMonth.from(Instant.ofEpochMilli(it.occurredAt).atZone(zoneId)) == trustPeriod
+                    }
+                    val inAccount = trustAccountId == null || listOfNotNull(source, target).any {
+                        it.accountId == trustAccountId
+                    }
+                    val key = "${suggestion.sourceTransactionId}:${suggestion.targetTransactionId}:${suggestion.type}"
+                    inMonth && inAccount && key !in ignoredLinkSuggestions
+                }
+            }
+            TrustCenterSheet(
+                selectedPeriod = trustPeriod,
+                accounts = accounts,
+                selectedAccountId = trustAccountId,
+                reconciliation = reconciliation,
+                metrics = metrics,
+                suggestions = visibleSuggestions,
+                links = transactionLinks,
+                transactionsById = transactionsById,
+                isLoading = false,
+                errorMessage = null,
+                canNavigateToNextMonth = trustPeriod < YearMonth.now(),
+                onAccountSelected = { trustAccountId = it },
+                onPreviousMonth = { trustPeriod = trustPeriod.minusMonths(1) },
+                onNextMonth = { if (trustPeriod < YearMonth.now()) trustPeriod = trustPeriod.plusMonths(1) },
+                onSaveReconciliation = { draft ->
+                    val draftAccountType = accounts.firstOrNull { it.id == draft.accountId }?.type
+                        ?: AccountType.BANK_ACCOUNT
+                    val draftMetrics = calculateReconciliationMetrics(
+                        reconciliation = draft,
+                        transactions = transactions,
+                        zoneId = zoneId,
+                        accountType = draftAccountType,
+                        transactionLinks = transactionLinks,
+                    )
+                    val suggestedStatus = suggestReconciliationStatus(draftMetrics)
+                    viewModel.saveReconciliation(
+                        draft.copy(
+                            status = suggestedStatus,
+                            reconciledAt = null,
+                        ),
+                    )
+                },
+                onStatusChange = { status ->
+                    reconciliation?.let {
+                        viewModel.saveReconciliation(
+                            it.copy(
+                                status = status,
+                                reconciledAt = if (status == ReconciliationStatus.RECONCILED) {
+                                    System.currentTimeMillis()
+                                } else {
+                                    null
+                                },
+                            ),
+                        )
+                    }
+                },
+                onAcceptSuggestion = viewModel::acceptTransactionLink,
+                onIgnoreSuggestion = { suggestion ->
+                    ignoredLinkSuggestions = ignoredLinkSuggestions +
+                        "${suggestion.sourceTransactionId}:${suggestion.targetTransactionId}:${suggestion.type}"
+                },
+                onUnlink = { viewModel.deleteTransactionLink(it.id) },
+                onTransactionClick = { id ->
+                    selectedTransaction = transactionsById[id]
+                    showTrustCenter = false
+                },
+                onRetry = {},
+                onDismiss = { showTrustCenter = false },
+            )
+        }
+
+        if (showDataHealth) {
+            DataHealthCenterSheet(
+                hasSmsPermission = hasSmsPermission,
+                lastScanAt = lastScanAt.takeIf { it > 0 },
+                reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW },
+                uncategorizedMerchantCount = uncategorizedMerchants.size,
+                unassignedAccountCount = transactions.count {
+                    it.reviewStatus == ReviewStatus.CONFIRMED && it.accountId == null
+                },
+                lastBackupCreatedAt = lastBackupCreatedAt.takeIf { it > 0 },
+                lastBackupVerifiedAt = lastBackupVerifiedAt.takeIf { it > 0 },
+                backupVerification = backupVerification,
+                backupVerificationError = backupVerificationError,
+                dataHealth = dataHealth,
+                auditBatches = auditBatches,
+                auditEvents = auditEvents,
+                lastUndoResult = lastUndoResult,
+                isLoading = false,
+                errorMessage = null,
+                isScanning = isScanning,
+                isVerifyingBackup = isVerifyingBackup,
+                undoInProgressBatchId = undoInProgressBatchId,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onScanSms = { viewModel.scanSms(context) },
+                onReviewTransactions = {
+                    showDataHealth = false
+                    activityFilter = TransactionFilter.REVIEW
+                    destination = AppDestination.ACTIVITY
+                },
+                onReviewCategories = {
+                    showDataHealth = false
+                    activityFilter = TransactionFilter.UNCATEGORIZED
+                    destination = AppDestination.ACTIVITY
+                },
+                onRefreshBalancesOnHome = {
+                    showDataHealth = false
+                    destination = AppDestination.HOME
+                },
+                onReviewUnassignedTransactions = {
+                    showDataHealth = false
+                    activityFilter = TransactionFilter.UNASSIGNED
+                    destination = AppDestination.ACTIVITY
+                },
+                onOpenTrustCenter = {
+                    showDataHealth = false
+                    showTrustCenter = true
+                },
+                onCreateBackup = { backupAction = BackupAction.CREATE },
+                onVerifyBackup = { backupAction = BackupAction.VERIFY },
+                onUndoAuditBatch = viewModel::undoAuditBatch,
+                onDismissUndoResult = viewModel::dismissUndoResult,
+                onRetry = {},
+                onDismiss = { showDataHealth = false },
+            )
+        }
+
+        if (showCardStatementAudit) {
+            val initialMetadata = remember(statementAuditReport, baseCurrency) {
+                statementAuditReport?.metadata ?: StatementAuditMetadata(
+                    statementId = "audit-${System.currentTimeMillis()}",
+                    currency = baseCurrency,
+                )
+            }
+            val sourceSupport = remember(statementAuditReport?.metadata?.sourceFileName) {
+                CreditCardStatementAuditor.sourceSupport(
+                    statementAuditReport?.metadata?.sourceFileName ?: "statement.csv",
+                )
+            }
+            CreditCardStatementAuditSheet(
+                report = statementAuditReport,
+                sourceSupport = sourceSupport,
+                initialMetadata = initialMetadata,
+                isLoading = isAuditingStatement,
+                errorMessage = statementAuditError,
+                onChooseStructuredFile = onAuditCardStatement,
+                onReauditWithMetadata = { metadata ->
+                    val rows = statementAuditReport?.lines?.map { it.row }.orEmpty()
+                    if (rows.isNotEmpty()) viewModel.auditCardStatementRows(metadata, rows)
+                },
+                onOpenManualFallback = {
+                    viewModel.clearStatementAudit()
+                    showCardStatementAudit = false
+                    showManualCardStatementAudit = true
+                },
+                onOpenTransaction = { id ->
+                    selectedTransaction = transactions.firstOrNull { it.id == id }
+                    showCardStatementAudit = false
+                },
+                onRetry = { onAuditCardStatement(initialMetadata) },
+                onDismiss = {
+                    showCardStatementAudit = false
+                    viewModel.clearStatementAudit()
+                },
+            )
+        }
+
+        if (showManualCardStatementAudit) {
+            val manualMetadata = remember(baseCurrency) {
+                StatementAuditMetadata(
+                    statementId = "manual-audit-${System.currentTimeMillis()}",
+                    currency = baseCurrency,
+                )
+            }
+            val manualSupport = remember { CreditCardStatementAuditor.sourceSupport("statement.pdf") }
+            CreditCardStatementManualEntrySheet(
+                initialMetadata = manualMetadata,
+                requiredManualFields = manualSupport.requiredManualFields,
+                isSubmitting = isAuditingStatement,
+                errorMessage = statementAuditError,
+                onSubmit = { metadata, rows ->
+                    viewModel.auditCardStatementRows(metadata, rows)
+                },
+                onDismiss = {
+                    showManualCardStatementAudit = false
+                    showCardStatementAudit = true
+                },
+            )
+        }
+
+        if (showThemeStudio) {
+            ThemeStudioSheet(
+                configuration = themeConfiguration,
+                systemInDarkTheme = systemInDarkTheme,
+                onConfigurationChange = viewModel::setThemeConfiguration,
+                onDismiss = { showThemeStudio = false },
+            )
+        }
+
+        if (showHomeCustomization) {
+            HomeCustomizationSheet(
+                configuration = homeLayout,
+                onConfigurationChange = viewModel::setHomeLayout,
+                onDismiss = { showHomeCustomization = false },
+            )
+        }
+
+        if (showPrivateDigest) {
+            PrivateDigestSettingsSheet(
+                configuration = notificationDigest,
+                hasNotificationPermission = hasNotificationPermission,
+                onConfigurationChange = viewModel::setNotificationDigest,
+                onRequestNotificationPermission = onRequestNotificationPermission,
+                onDismiss = { showPrivateDigest = false },
+            )
+        }
+
+        if (showSharedExpenses) {
+            SharedExpensesCenterSheet(
+                transactions = transactions,
+                splits = expenseSplits,
+                onOpenSplitEditor = {
+                    splitTransaction = it
+                    showSharedExpenses = false
+                },
+                onUpdateSplit = viewModel::saveExpenseSplit,
+                onDeleteSplit = { viewModel.deleteExpenseSplit(it.id) },
+                onDismiss = { showSharedExpenses = false },
+            )
+        }
+
+        splitTransaction?.let { transaction ->
+            TransactionSplitEditorSheet(
+                transaction = transaction,
+                existingSplits = expenseSplits.filter { it.transactionId == transaction.id },
+                onSave = { upserts, deletedIds ->
+                    if (!splitEditorSaving) {
+                        splitEditorSaving = true
+                        viewModel.replaceExpenseSplits(
+                            transactionId = transaction.id,
+                            splits = upserts,
+                            deletedIds = deletedIds.toSet(),
+                        ) { success ->
+                            splitEditorSaving = false
+                            if (success) splitTransaction = null
+                        }
+                    }
+                },
+                onDismiss = {
+                    if (!splitEditorSaving) {
+                        splitTransaction = null
+                        splitEditorSaving = false
+                    }
+                },
+                isSaving = splitEditorSaving,
+            )
+        }
+
+        if (showSavingsGoals) {
+            SavingsGoalsCenterSheet(
+                goals = savingsGoals,
+                contributions = savingsContributions,
+                accounts = accounts,
+                onAddGoal = {
+                    showSavingsGoals = false
+                    addingSavingsGoal = true
+                },
+                onEditGoal = {
+                    showSavingsGoals = false
+                    editingSavingsGoal = it
+                },
+                onDeleteGoal = { viewModel.deleteSavingsGoal(it.id) },
+                onContribute = { contributingSavingsGoal = it },
+                onSaveContribution = { viewModel.saveSavingsContribution(it) },
+                onDeleteContribution = { viewModel.deleteSavingsContribution(it.id) },
+                onDismiss = { showSavingsGoals = false },
+            )
+        }
+
+        if (addingSavingsGoal || editingSavingsGoal != null) {
+            SavingsGoalEditorSheet(
+                existing = editingSavingsGoal,
+                accounts = accounts,
+                onSave = { goal ->
+                    if (!savingsGoalEditorSaving) {
+                        savingsGoalEditorSaving = true
+                        viewModel.saveSavingsGoal(goal) { success ->
+                            savingsGoalEditorSaving = false
+                            if (success) {
+                                addingSavingsGoal = false
+                                editingSavingsGoal = null
+                            }
+                        }
+                    }
+                },
+                onDismiss = {
+                    if (!savingsGoalEditorSaving) {
+                        addingSavingsGoal = false
+                        editingSavingsGoal = null
+                        savingsGoalEditorSaving = false
+                    }
+                },
+                isSaving = savingsGoalEditorSaving,
+            )
+        }
+
+        contributingSavingsGoal?.let { goal ->
+            SavingsContributionDialog(
+                goal = goal,
+                onSave = { contribution ->
+                    if (!savingsContributionSaving) {
+                        savingsContributionSaving = true
+                        viewModel.saveSavingsContribution(contribution) { success ->
+                            savingsContributionSaving = false
+                            if (success) contributingSavingsGoal = null
+                        }
+                    }
+                },
+                onDismiss = {
+                    if (!savingsContributionSaving) {
+                        contributingSavingsGoal = null
+                        savingsContributionSaving = false
+                    }
+                },
+                isSaving = savingsContributionSaving,
+            )
+        }
+
+        if (showPaymentCommitments) {
+            SubscriptionAutopayCenterSheet(
+                commitments = paymentCommitments,
+                detectedSuggestions = paymentCommitmentSuggestions,
+                accounts = accounts,
+                onAddCommitment = {
+                    showPaymentCommitments = false
+                    addingPaymentCommitment = true
+                },
+                onEditCommitment = {
+                    showPaymentCommitments = false
+                    editingPaymentCommitment = it
+                },
+                onUpdateCommitment = { viewModel.savePaymentCommitment(it) },
+                onDeleteCommitment = { viewModel.deletePaymentCommitment(it.id) },
+                onAcceptSuggestion = {
+                    showPaymentCommitments = false
+                    editingPaymentCommitment = it
+                },
+                onDismiss = { showPaymentCommitments = false },
+            )
+        }
+
+        if (addingPaymentCommitment || editingPaymentCommitment != null) {
+            PaymentCommitmentEditorSheet(
+                existing = editingPaymentCommitment,
+                accounts = accounts,
+                onSave = { commitment ->
+                    if (!paymentCommitmentEditorSaving) {
+                        paymentCommitmentEditorSaving = true
+                        viewModel.savePaymentCommitment(commitment) { success ->
+                            paymentCommitmentEditorSaving = false
+                            if (success) {
+                                addingPaymentCommitment = false
+                                editingPaymentCommitment = null
+                            }
+                        }
+                    }
+                },
+                onDismiss = {
+                    if (!paymentCommitmentEditorSaving) {
+                        addingPaymentCommitment = false
+                        editingPaymentCommitment = null
+                        paymentCommitmentEditorSaving = false
+                    }
+                },
+                isSaving = paymentCommitmentEditorSaving,
+            )
+        }
+
         backupAction?.let { action ->
             BackupPassphraseDialog(
                 action = action,
                 onDismiss = { backupAction = null },
                 onSubmit = { passphrase ->
-                    if (action == BackupAction.CREATE) onCreateBackup(passphrase) else onRestoreBackup(passphrase)
+                    when (action) {
+                        BackupAction.CREATE -> onCreateBackup(passphrase)
+                        BackupAction.RESTORE -> onRestoreBackup(passphrase)
+                        BackupAction.VERIFY -> onVerifyBackup(passphrase)
+                    }
                     backupAction = null
                 },
             )
@@ -1271,6 +1908,8 @@ private fun TransactionDetailSheet(
     onConfirm: () -> Unit,
     onAccountChange: (Long?) -> Unit,
     onTypeChange: (TransactionType) -> Unit,
+    onSplitExpense: () -> Unit,
+    hasSharedExpenseData: Boolean,
     onDelete: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1287,6 +1926,7 @@ private fun TransactionDetailSheet(
         mutableStateOf(transaction.tags.joinToString(", "))
     }
     var showNewCategoryDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember(transaction.id) { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -1378,9 +2018,18 @@ private fun TransactionDetailSheet(
                     FilterChip(
                         selected = type == transaction.type,
                         onClick = { if (type != transaction.type) onTypeChange(type) },
+                        enabled = type == transaction.type || !hasSharedExpenseData,
                         label = { Text(type.name.lowercase().replaceFirstChar(Char::titlecase)) },
                     )
                 }
+            }
+            if (hasSharedExpenseData) {
+                Text(
+                    text = "Remove this transaction's link, split, or reimbursement before changing its type.",
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Text(
                 text = if (transaction.type == TransactionType.EXPENSE && matchingMerchantCount > 1) {
@@ -1522,11 +2171,21 @@ private fun TransactionDetailSheet(
                     ) {
                         Text("Save tags")
                     }
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedButton(
+                        onClick = onSplitExpense,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.CallSplit, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Split expense & track reimbursements")
+                    }
                 }
             }
             Spacer(Modifier.height(18.dp))
             OutlinedButton(
-                onClick = onDelete,
+                onClick = { showDeleteDialog = true },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
@@ -1564,6 +2223,42 @@ private fun TransactionDetailSheet(
                             customCategoryName = created.name,
                         ),
                     )
+                }
+            },
+        )
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            icon = { Icon(Icons.Rounded.DeleteOutline, contentDescription = null) },
+            title = {
+                Text(if (hasSharedExpenseData) "Linked financial data attached" else "Delete this transaction?")
+            },
+            text = {
+                Text(
+                    if (hasSharedExpenseData) {
+                        "This transaction is linked to another transaction, expense split, or reimbursement. Remove that relationship in Trust Center or Shared expenses before deleting it."
+                    } else {
+                        "This removes the transaction from your activity, budgets, analytics, and exports."
+                    },
+                )
+            },
+            confirmButton = {
+                if (hasSharedExpenseData) {
+                    TextButton(onClick = { showDeleteDialog = false }) { Text("Got it") }
+                } else {
+                    TextButton(
+                        onClick = {
+                            showDeleteDialog = false
+                            onDelete()
+                        },
+                    ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            dismissButton = {
+                if (!hasSharedExpenseData) {
+                    TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
                 }
             },
         )

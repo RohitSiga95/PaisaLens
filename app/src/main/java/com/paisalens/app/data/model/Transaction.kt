@@ -94,8 +94,10 @@ data class AccountProfile(
     val institution: String? = null,
     val balanceMinor: Long? = null,
     val availableCreditMinor: Long? = null,
+    val creditLimitMinor: Long? = null,
     val availabilityFetchedAt: Long? = null,
     val availabilitySender: String? = null,
+    val identityKey: String? = null,
 )
 
 data class AccountAvailabilityUpdate(
@@ -105,6 +107,7 @@ data class AccountAvailabilityUpdate(
     val accountHint: String?,
     val balanceMinor: Long? = null,
     val availableCreditMinor: Long? = null,
+    val creditLimitMinor: Long? = null,
     val fetchedAt: Long,
     val sender: String,
 )
@@ -159,6 +162,17 @@ data class PaisaLensBackupSnapshot(
     val merchantRules: List<MerchantCategoryRule>,
     val merchantAliases: List<MerchantAliasRule> = emptyList(),
     val loans: List<LoanAccount> = emptyList(),
+    val balanceHistory: List<AccountBalanceSnapshot> = emptyList(),
+    val bills: List<BillReminder> = emptyList(),
+    val netWorthItems: List<NetWorthItem> = emptyList(),
+    val smartCategoryRules: List<SmartCategoryRule> = emptyList(),
+    val reconciliations: List<MonthlyReconciliation> = emptyList(),
+    val transactionLinks: List<TransactionLink> = emptyList(),
+    val auditEvents: List<AuditEvent> = emptyList(),
+    val expenseSplits: List<ExpenseSplit> = emptyList(),
+    val savingsGoals: List<SavingsGoal> = emptyList(),
+    val savingsContributions: List<SavingsContribution> = emptyList(),
+    val paymentCommitments: List<PaymentCommitment> = emptyList(),
 )
 
 data class CategoryBudget(

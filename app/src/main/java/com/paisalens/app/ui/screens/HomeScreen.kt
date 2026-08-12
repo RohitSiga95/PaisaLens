@@ -21,9 +21,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreditCard
+import androidx.compose.material.icons.rounded.DashboardCustomize
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,12 +35,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,9 +66,18 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.HomeLayoutConfiguration
+import com.paisalens.app.data.model.HomeModule
+import com.paisalens.app.data.model.PaymentCommitment
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.SavingsContribution
+import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.TransactionRecord
+import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.calculateCreditUtilization
+import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
+import com.paisalens.app.data.model.transactionIdsExcludedFromSpending
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
@@ -83,32 +98,66 @@ import kotlin.math.abs
 @Composable
 fun HomeScreen(
     transactions: List<TransactionRecord>,
+    effectiveExpenseTransactions: List<TransactionRecord>,
+    transactionLinks: List<TransactionLink>,
     budgets: List<CategoryBudget>,
     accounts: List<AccountProfile>,
+    homeLayout: HomeLayoutConfiguration,
+    savingsGoals: List<SavingsGoal>,
+    savingsContributions: List<SavingsContribution>,
+    paymentCommitments: List<PaymentCommitment>,
     isScanning: Boolean,
     hasSmsPermission: Boolean,
     onScan: () -> Unit,
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
+    onCustomizeHome: () -> Unit,
+    onOpenSavingsGoals: () -> Unit,
+    onOpenCommitments: () -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
+    onAccountClick: (AccountProfile) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     val now = remember { ZonedDateTime.now() }
+    val currentMonth = remember(now) { YearMonth.from(now) }
+    var selectedMonth by remember { mutableStateOf(currentMonth) }
     var selectedCategory by remember { mutableStateOf<ExpenseCategory?>(null) }
+    var unavailableAccountsExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(homeLayout, currentMonth) {
+        if (!homeLayout.isVisible(HomeModule.SPENDING_BREAKDOWN)) selectedMonth = currentMonth
+    }
     val confirmedTransactions = remember(transactions) {
         transactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
     }
-    val monthly = remember(confirmedTransactions, now.monthValue, now.year) {
-        confirmedTransactions.filter {
-            val date = Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault())
-            date.monthValue == now.monthValue && date.year == now.year
-        }
+    val earliestMonth = remember(effectiveExpenseTransactions, currentMonth) {
+        effectiveExpenseTransactions.minOfOrNull {
+            YearMonth.from(Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault()))
+        } ?: currentMonth
     }
-    val monthlyExpenses = monthly.filter { it.type == TransactionType.EXPENSE }
+    val monthly = remember(confirmedTransactions, selectedMonth) {
+        transactionsForMonth(confirmedTransactions, selectedMonth)
+    }
+    val monthlyExpenses = remember(effectiveExpenseTransactions, selectedMonth) {
+        transactionsForMonth(effectiveExpenseTransactions, selectedMonth)
+    }
+    val excludedFromSpending = remember(transactionLinks) {
+        transactionIdsExcludedFromSpending(transactionLinks)
+    }
+    val linkedOffsetTransactionIds = remember(transactionLinks, confirmedTransactions) {
+        transactionIdsAppliedAsExpenseOffsets(confirmedTransactions, transactionLinks)
+    }
+    val grossExpenseTotal = monthly
+        .filter { it.type == TransactionType.EXPENSE && it.id !in excludedFromSpending }
+        .sumOf { it.amountMinor }
     val expenseTotal = monthlyExpenses.sumOf { it.amountMinor }
     val refunds = monthly.filter { it.type == TransactionType.REFUND }.sumOf { it.amountMinor }
-    val spent = (expenseTotal - refunds).coerceAtLeast(0)
-    val income = monthly.filter { it.type == TransactionType.INCOME }.sumOf { it.amountMinor }
+    val unlinkedRefunds = monthly
+        .filter { it.type == TransactionType.REFUND && it.id !in linkedOffsetTransactionIds }
+        .sumOf { it.amountMinor }
+    val spent = (expenseTotal - unlinkedRefunds).coerceAtLeast(0)
+    val income = monthly
+        .filter { it.type == TransactionType.INCOME && it.id !in linkedOffsetTransactionIds }
+        .sumOf { it.amountMinor }
     val budgetTotal = budgets.sumOf { it.limitMinor }
     val remaining = if (budgetTotal > 0) budgetTotal - spent else income - spent
     val categoryTotals = monthlyExpenses
@@ -116,8 +165,16 @@ fun HomeScreen(
         .mapValues { (_, records) -> records.sumOf { it.amountMinor } }
         .toList()
         .sortedByDescending { it.second }
-    val bankAccounts = accounts.filter { it.type == AccountType.BANK_ACCOUNT }
-    val creditCards = accounts.filter { it.type == AccountType.CREDIT_CARD }
+    val bankAccountGroups = remember(accounts) {
+        consolidateAvailabilityAccounts(accounts, AccountType.BANK_ACCOUNT)
+    }
+    val creditCardGroups = remember(accounts) {
+        consolidateAvailabilityAccounts(accounts, AccountType.CREDIT_CARD)
+    }
+    val availableBankAccounts = bankAccountGroups.filter { it.account.balanceMinor != null }
+    val unavailableBankAccounts = bankAccountGroups.filter { it.account.balanceMinor == null }
+    val availableCreditCards = creditCardGroups.filter { it.account.availableCreditMinor != null }
+    val unavailableCreditCards = creditCardGroups.filter { it.account.availableCreditMinor == null }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -131,67 +188,127 @@ fun HomeScreen(
                 onScan = onScan,
                 onRequestPermission = onRequestPermission,
                 onAdd = onAdd,
+                onCustomizeHome = onCustomizeHome,
             )
         }
-        item {
-            BalanceHero(
-                spent = spent,
-                remaining = remaining,
-                hasBudget = budgetTotal > 0,
-                hasIncome = income > 0,
-            )
+        homeLayout.normalized().orderedVisibleModules.forEach { module ->
+            when (module) {
+                HomeModule.MONTHLY_SPEND -> item(key = module.storageId) {
+                    BalanceHero(
+                        spent = spent,
+                        remaining = remaining,
+                        hasBudget = budgetTotal > 0,
+                        hasIncome = income > 0,
+                        month = selectedMonth,
+                        isCurrentMonth = selectedMonth == currentMonth,
+                    )
+                }
+                HomeModule.SPEND_OVERVIEW -> item(key = module.storageId) {
+                    SpendOverviewCard(
+                        expenseTotal = grossExpenseTotal,
+                        refunds = refunds,
+                        income = income,
+                        remaining = remaining,
+                        hasPlan = budgetTotal > 0 || income > 0,
+                        month = selectedMonth,
+                    )
+                }
+                HomeModule.SPENDING_BREAKDOWN -> item(key = module.storageId) {
+                    CategorySpendCard(
+                        categoryTotals = categoryTotals,
+                        expenseTotal = expenseTotal,
+                        month = selectedMonth,
+                        canGoPrevious = selectedMonth > earliestMonth,
+                        canGoNext = selectedMonth < currentMonth,
+                        onPreviousMonth = { selectedMonth = selectedMonth.minusMonths(1) },
+                        onNextMonth = { selectedMonth = selectedMonth.plusMonths(1) },
+                        onCategoryClick = { selectedCategory = it },
+                    )
+                }
+                HomeModule.BANK_BALANCES -> {
+                    item(key = "${module.storageId}-header") { SectionHeader("Bank balances") }
+                    when {
+                        bankAccountGroups.isEmpty() -> item(key = "${module.storageId}-empty") {
+                            AvailabilityEmptyCard(
+                                title = "No bank accounts detected",
+                                body = "Scan SMS alerts containing account last-four digits, or add an account in Settings.",
+                            )
+                        }
+                        availableBankAccounts.isEmpty() -> item(key = "${module.storageId}-unfetched") {
+                            AvailabilityEmptyCard(
+                                title = "No fetched balances yet",
+                                body = "Accounts waiting for a balance are tucked into the expandable section below.",
+                            )
+                        }
+                        else -> items(availableBankAccounts, key = { "bank-${it.key}" }) { group ->
+                            AccountAvailabilityTile(
+                                account = group.account,
+                                profileCount = group.profileCount,
+                                valueMinor = group.account.balanceMinor,
+                                valueLabel = "Current balance",
+                                icon = Icons.Rounded.AccountBalance,
+                                onRefresh = { onRefreshAccount(group.account) },
+                                onClick = { onAccountClick(group.account) },
+                            )
+                        }
+                    }
+                }
+                HomeModule.CREDIT_AVAILABLE -> {
+                    item(key = "${module.storageId}-header") { SectionHeader("Credit available") }
+                    when {
+                        creditCardGroups.isEmpty() -> item(key = "${module.storageId}-empty") {
+                            AvailabilityEmptyCard(
+                                title = "No credit cards detected",
+                                body = "Cards appear after a card SMS is scanned or when you add one in Settings.",
+                            )
+                        }
+                        availableCreditCards.isEmpty() -> item(key = "${module.storageId}-unfetched") {
+                            AvailabilityEmptyCard(
+                                title = "No available limits fetched yet",
+                                body = "Cards waiting for an available-credit update are tucked into the expandable section below.",
+                            )
+                        }
+                        else -> items(availableCreditCards, key = { "card-${it.key}" }) { group ->
+                            AccountAvailabilityTile(
+                                account = group.account,
+                                profileCount = group.profileCount,
+                                valueMinor = group.account.availableCreditMinor,
+                                valueLabel = "Available credit limit",
+                                icon = Icons.Rounded.CreditCard,
+                                onRefresh = { onRefreshAccount(group.account) },
+                                onClick = { onAccountClick(group.account) },
+                            )
+                        }
+                    }
+                }
+                HomeModule.SAVINGS_GOALS -> item(key = module.storageId) {
+                    SavingsGoalsHomeModule(
+                        goals = savingsGoals,
+                        contributions = savingsContributions,
+                        onOpen = onOpenSavingsGoals,
+                    )
+                }
+                HomeModule.UPCOMING_COMMITMENTS -> item(key = module.storageId) {
+                    UpcomingCommitmentsHomeModule(
+                        commitments = paymentCommitments,
+                        onOpen = onOpenCommitments,
+                    )
+                }
+            }
         }
-        item {
-            SpendOverviewCard(
-                expenseTotal = expenseTotal,
-                refunds = refunds,
-                income = income,
-                remaining = remaining,
-                hasPlan = budgetTotal > 0 || income > 0,
-            )
-        }
-        item {
-            CategorySpendCard(
-                categoryTotals = categoryTotals,
-                expenseTotal = expenseTotal,
-                onCategoryClick = { selectedCategory = it },
-            )
-        }
-        item { SectionHeader("Bank balances") }
-        if (bankAccounts.isEmpty()) {
+        val showBankUnavailable = homeLayout.isVisible(HomeModule.BANK_BALANCES)
+        val showCardUnavailable = homeLayout.isVisible(HomeModule.CREDIT_AVAILABLE)
+        val visibleUnavailableBanks = if (showBankUnavailable) unavailableBankAccounts else emptyList()
+        val visibleUnavailableCards = if (showCardUnavailable) unavailableCreditCards else emptyList()
+        if (visibleUnavailableBanks.isNotEmpty() || visibleUnavailableCards.isNotEmpty()) {
             item {
-                AvailabilityEmptyCard(
-                    title = "No bank accounts detected",
-                    body = "Scan SMS alerts containing account last-four digits, or add an account in Settings.",
-                )
-            }
-        } else {
-            items(bankAccounts, key = { "bank-${it.id}" }) { account ->
-                AccountAvailabilityTile(
-                    account = account,
-                    valueMinor = account.balanceMinor,
-                    valueLabel = "Current balance",
-                    icon = Icons.Rounded.AccountBalance,
-                    onRefresh = { onRefreshAccount(account) },
-                )
-            }
-        }
-        item { SectionHeader("Credit available") }
-        if (creditCards.isEmpty()) {
-            item {
-                AvailabilityEmptyCard(
-                    title = "No credit cards detected",
-                    body = "Cards appear after a card SMS is scanned or when you add one in Settings.",
-                )
-            }
-        } else {
-            items(creditCards, key = { "card-${it.id}" }) { account ->
-                AccountAvailabilityTile(
-                    account = account,
-                    valueMinor = account.availableCreditMinor,
-                    valueLabel = "Available credit limit",
-                    icon = Icons.Rounded.CreditCard,
-                    onRefresh = { onRefreshAccount(account) },
+                UnavailableAccountsPanel(
+                    bankAccounts = visibleUnavailableBanks,
+                    creditCards = visibleUnavailableCards,
+                    expanded = unavailableAccountsExpanded,
+                    onExpandedChange = { unavailableAccountsExpanded = it },
+                    onRefreshAccount = onRefreshAccount,
+                    onAccountClick = onAccountClick,
                 )
             }
         }
@@ -205,7 +322,7 @@ fun HomeScreen(
         }
         CategorySpendingSheet(
             category = category,
-            month = YearMonth.from(now),
+            month = selectedMonth,
             today = now.toLocalDate(),
             expenses = categoryExpenses,
             onDismiss = { selectedCategory = null },
@@ -224,6 +341,7 @@ private fun HomeHeader(
     onScan: () -> Unit,
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
+    onCustomizeHome: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -243,6 +361,9 @@ private fun HomeHeader(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            HomeActionButton(contentDescription = "Customise Home", onClick = onCustomizeHome) {
+                Icon(Icons.Rounded.DashboardCustomize, contentDescription = null)
+            }
             HomeActionButton(
                 contentDescription = if (hasSmsPermission) "Scan SMS" else "Enable SMS access",
                 onClick = if (hasSmsPermission) onScan else onRequestPermission,
@@ -289,9 +410,14 @@ private fun BalanceHero(
     remaining: Long,
     hasBudget: Boolean,
     hasIncome: Boolean,
+    month: YearMonth,
+    isCurrentMonth: Boolean,
 ) {
-    val primary = MaterialTheme.colorScheme.primary
-    val secondary = MaterialTheme.colorScheme.secondary
+    val primary = MaterialTheme.colorScheme.primaryContainer
+    val secondary = MaterialTheme.colorScheme.secondaryContainer
+    val tertiary = MaterialTheme.colorScheme.tertiaryContainer
+    val heroForeground = MaterialTheme.colorScheme.onPrimaryContainer
+    val monthFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
@@ -300,7 +426,7 @@ private fun BalanceHero(
         Box(
             modifier = Modifier.background(
                 Brush.linearGradient(
-                    listOf(primary.copy(alpha = 0.92f), Color(0xFF4656D9), secondary.copy(alpha = 0.82f)),
+                    listOf(primary, tertiary, secondary),
                 ),
             ),
         ) {
@@ -309,21 +435,21 @@ private fun BalanceHero(
                     .align(Alignment.TopEnd)
                     .padding(top = 10.dp, end = 2.dp)
                     .size(126.dp)
-                    .background(Color.White.copy(alpha = 0.07f), CircleShape),
+                    .background(heroForeground.copy(alpha = 0.07f), CircleShape),
             )
             Column(modifier = Modifier.padding(horizontal = 22.dp, vertical = 24.dp)) {
                 Text(
-                    text = "SPENT THIS MONTH",
+                    text = if (isCurrentMonth) "SPENT THIS MONTH" else "SPENT IN ${month.format(monthFormatter).uppercase(Locale.ENGLISH)}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.82f),
+                    color = heroForeground.copy(alpha = 0.82f),
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(5.dp))
-                MoneyText(amountMinor = spent, style = MaterialTheme.typography.displayLarge, color = Color.White)
+                MoneyText(amountMinor = spent, style = MaterialTheme.typography.displayLarge, color = heroForeground)
                 Spacer(Modifier.height(22.dp))
                 Surface(
-                    color = Color.Black.copy(alpha = 0.15f),
-                    contentColor = Color.White,
+                    color = heroForeground.copy(alpha = 0.10f),
+                    contentColor = heroForeground,
                     shape = MaterialTheme.shapes.medium,
                 ) {
                     Row(
@@ -338,7 +464,7 @@ private fun BalanceHero(
                                 else -> "Add income or a budget"
                             },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.85f),
+                            color = heroForeground.copy(alpha = 0.85f),
                         )
                         if (hasBudget || hasIncome) {
                             Text(
@@ -360,15 +486,17 @@ private fun SpendOverviewCard(
     income: Long,
     remaining: Long,
     hasPlan: Boolean,
+    month: YearMonth,
 ) {
+    val monthLabel = remember(month) { month.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH)) }
     Column {
-        SectionHeader("Spend overview")
+        SectionHeader("Spend overview · $monthLabel")
         Spacer(Modifier.height(8.dp))
         PaisaCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(horizontal = 18.dp, vertical = 8.dp)) {
                 OverviewRow("Gross expenses", expenseTotal)
                 OverviewRow("Refunds received", refunds)
-                OverviewRow("Income this month", income)
+                OverviewRow("Income in ${month.month.getDisplayName(java.time.format.TextStyle.FULL, Locale.ENGLISH)}", income)
                 if (hasPlan) OverviewRow("Available after spending", remaining, signed = true)
             }
         }
@@ -395,15 +523,28 @@ private fun OverviewRow(label: String, amountMinor: Long, signed: Boolean = fals
 private fun CategorySpendCard(
     categoryTotals: List<Pair<ExpenseCategory, Long>>,
     expenseTotal: Long,
+    month: YearMonth,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
+    onPreviousMonth: () -> Unit,
+    onNextMonth: () -> Unit,
     onCategoryClick: (ExpenseCategory) -> Unit,
 ) {
     Column {
         SectionHeader("Spending breakdown")
         Spacer(Modifier.height(8.dp))
+        MonthNavigator(
+            month = month,
+            canGoPrevious = canGoPrevious,
+            canGoNext = canGoNext,
+            onPreviousMonth = onPreviousMonth,
+            onNextMonth = onNextMonth,
+        )
+        Spacer(Modifier.height(8.dp))
         PaisaCard(Modifier.fillMaxWidth()) {
             if (categoryTotals.isEmpty()) {
                 Text(
-                    text = "No categorized expenses this month.",
+                    text = "No categorized expenses in ${month.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH))}.",
                     modifier = Modifier.padding(18.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -430,6 +571,42 @@ private fun CategorySpendCard(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MonthNavigator(
+    month: YearMonth,
+    canGoPrevious: Boolean,
+    canGoNext: Boolean,
+    onPreviousMonth: () -> Unit,
+    onNextMonth: () -> Unit,
+) {
+    val monthFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH) }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onPreviousMonth, enabled = canGoPrevious) {
+                Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous month")
+            }
+            Text(
+                text = month.format(monthFormatter),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            )
+            IconButton(onClick = onNextMonth, enabled = canGoNext) {
+                Icon(Icons.Rounded.ChevronRight, contentDescription = "Next month")
             }
         }
     }
@@ -710,57 +887,250 @@ private fun compactAxisValue(value: Double, suffix: String): String {
 @Composable
 private fun AccountAvailabilityTile(
     account: AccountProfile,
+    profileCount: Int,
     valueMinor: Long?,
     valueLabel: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onRefresh: () -> Unit,
+    onClick: () -> Unit,
 ) {
-    PaisaCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    shape = CircleShape,
-                ) {
-                    Icon(icon, contentDescription = null, modifier = Modifier.padding(10.dp).size(22.dp))
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = account.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+    val style = accountTileStyle(account)
+    val utilization = if (account.type == AccountType.CREDIT_CARD) {
+        calculateCreditUtilization(account.id, account.availableCreditMinor, account.creditLimitMinor)
+    } else {
+        null
+    }
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = Color.Transparent,
+        shadowElevation = 3.dp,
+    ) {
+        Box(modifier = Modifier.background(Brush.linearGradient(style.shades))) {
+            Canvas(Modifier.matchParentSize()) {
+                drawCircle(
+                    color = style.foreground.copy(alpha = 0.07f),
+                    radius = size.minDimension * 0.6f,
+                    center = Offset(size.width * 0.96f, size.height * 0.02f),
+                )
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.05f),
+                    radius = size.minDimension * 0.42f,
+                    center = Offset(size.width * 0.08f, size.height * 1.05f),
+                )
+                repeat(6) { index ->
+                    val lineOffset = size.width * (index - 2) / 5f
+                    drawLine(
+                        color = style.foreground.copy(alpha = 0.035f),
+                        start = Offset(lineOffset, size.height),
+                        end = Offset(lineOffset + size.height, 0f),
+                        strokeWidth = 1.dp.toPx(),
                     )
+                }
+            }
+            Column(Modifier.padding(18.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    Surface(
+                        color = style.foreground.copy(alpha = 0.14f),
+                        contentColor = style.foreground,
+                        shape = CircleShape,
+                    ) {
+                        Icon(icon, contentDescription = null, modifier = Modifier.padding(10.dp).size(22.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = account.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = style.foreground,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = buildString {
+                                append(account.accountHint?.let { "•••• $it" } ?: account.type.label)
+                                if (profileCount > 1) append(" · $profileCount profiles combined")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = style.foreground.copy(alpha = 0.76f),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text(valueLabel, style = MaterialTheme.typography.labelLarge, color = style.foreground.copy(alpha = 0.76f))
+                if (valueMinor == null) {
                     Text(
-                        text = account.accountHint?.let { "•••• $it" } ?: account.type.label,
+                        "Not available",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = style.foreground,
+                        fontWeight = FontWeight.Bold,
+                    )
+                } else {
+                    MoneyText(valueMinor, style = MaterialTheme.typography.headlineSmall, color = style.foreground)
+                }
+                utilization?.utilizationBasisPoints?.let { basisPoints ->
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Credit used", style = MaterialTheme.typography.bodySmall, color = style.foreground.copy(alpha = 0.76f))
+                        Text("${"%.1f".format(Locale.US, basisPoints / 100.0)}%", style = MaterialTheme.typography.bodySmall, color = style.foreground, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(5.dp))
+                    LinearProgressIndicator(
+                        progress = { (basisPoints / 10_000f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(7.dp),
+                        color = style.foreground,
+                        trackColor = style.foreground.copy(alpha = 0.20f),
+                        strokeCap = StrokeCap.Round,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = account.availabilityFetchedAt?.let { "Fetched ${formatAvailabilityTime(it)}" }
+                            ?: "Not fetched from SMS yet",
+                        modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = style.foreground.copy(alpha = 0.72f),
+                    )
+                    Surface(
+                        color = style.foreground.copy(alpha = 0.14f),
+                        contentColor = style.foreground,
+                        shape = CircleShape,
+                    ) {
+                        IconButton(onClick = onRefresh, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ${account.name}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class AccountTileStyle(
+    val shades: List<Color>,
+    val foreground: Color,
+)
+
+@Composable
+private fun accountTileStyle(account: AccountProfile): AccountTileStyle {
+    val identity = "${account.institution.orEmpty()} ${account.name}".uppercase(Locale.ENGLISH)
+    return when {
+        "HDFC" in identity -> AccountTileStyle(
+            shades = listOf(Color(0xFF061A3D), Color(0xFF0A2D63), Color(0xFF164E8B)),
+            foreground = Color.White,
+        )
+        "IDFC" in identity -> AccountTileStyle(
+            shades = listOf(Color(0xFF7A0B19), Color(0xFFB5142A), Color(0xFFE04650)),
+            foreground = Color.White,
+        )
+        "SBI" in identity || "STATE BANK" in identity -> AccountTileStyle(
+            shades = listOf(Color(0xFF086CA8), Color(0xFF199BD3), Color(0xFF68CAF2)),
+            foreground = Color.White,
+        )
+        else -> AccountTileStyle(
+            shades = listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary),
+            foreground = MaterialTheme.colorScheme.onPrimary,
+        )
+    }
+}
+
+@Composable
+private fun UnavailableAccountsPanel(
+    bankAccounts: List<AccountAvailabilityGroup>,
+    creditCards: List<AccountAvailabilityGroup>,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onRefreshAccount: (AccountProfile) -> Unit,
+    onAccountClick: (AccountProfile) -> Unit,
+) {
+    val total = bankAccounts.size + creditCards.size
+    PaisaCard(Modifier.fillMaxWidth()) {
+        Column {
+            Surface(
+                onClick = { onExpandedChange(!expanded) },
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        shape = CircleShape,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.padding(9.dp).size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Balances not yet available", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "$total ${if (total == 1) "account needs" else "accounts need"} an SMS update",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (expanded) "Collapse unavailable accounts" else "Expand unavailable accounts",
                     )
                 }
-                IconButton(
-                    onClick = onRefresh,
-                    modifier = Modifier.size(48.dp),
+            }
+            if (expanded) {
+                HorizontalDivider()
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "Refresh ${account.name}")
+                    if (bankAccounts.isNotEmpty()) {
+                        Text(
+                            "BANK ACCOUNTS",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        bankAccounts.forEach { group ->
+                            AccountAvailabilityTile(
+                                account = group.account,
+                                profileCount = group.profileCount,
+                                valueMinor = null,
+                                valueLabel = "Current balance",
+                            icon = Icons.Rounded.AccountBalance,
+                            onRefresh = { onRefreshAccount(group.account) },
+                            onClick = { onAccountClick(group.account) },
+                        )
+                        }
+                    }
+                    if (creditCards.isNotEmpty()) {
+                        Text(
+                            "CREDIT CARDS",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        creditCards.forEach { group ->
+                            AccountAvailabilityTile(
+                                account = group.account,
+                                profileCount = group.profileCount,
+                                valueMinor = null,
+                                valueLabel = "Available credit limit",
+                            icon = Icons.Rounded.CreditCard,
+                            onRefresh = { onRefreshAccount(group.account) },
+                            onClick = { onAccountClick(group.account) },
+                        )
+                        }
+                    }
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            Text(valueLabel, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (valueMinor == null) {
-                Text("Not available", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            } else {
-                MoneyText(valueMinor, style = MaterialTheme.typography.headlineSmall)
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = account.availabilityFetchedAt?.let { "Fetched ${formatAvailabilityTime(it)}" }
-                    ?: "Not fetched from SMS yet",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -779,3 +1149,63 @@ private fun AvailabilityEmptyCard(title: String, body: String) {
 private fun formatAvailabilityTime(timestamp: Long): String = Instant.ofEpochMilli(timestamp)
     .atZone(ZoneId.systemDefault())
     .format(DateTimeFormatter.ofPattern("d MMM, h:mm a", Locale.forLanguageTag("en-IN")))
+
+internal fun transactionsForMonth(
+    transactions: List<TransactionRecord>,
+    month: YearMonth,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+): List<TransactionRecord> = transactions.filter { transaction ->
+    YearMonth.from(Instant.ofEpochMilli(transaction.occurredAt).atZone(zoneId)) == month
+}
+
+internal data class AccountAvailabilityGroup(
+    val key: String,
+    val account: AccountProfile,
+    val profileCount: Int,
+)
+
+internal fun consolidateAvailabilityAccounts(
+    accounts: List<AccountProfile>,
+    type: AccountType,
+): List<AccountAvailabilityGroup> = accounts
+    .filter { it.type == type }
+    .groupBy { account ->
+        accountLastFour(account)?.let { "last4:$it" }
+            ?: "account:${account.id}:${account.name.lowercase(Locale.ROOT)}"
+    }
+    .map { (key, matches) ->
+        val preferred = matches.maxWithOrNull(
+            compareBy<AccountProfile> { if (availabilityValue(it, type) != null) 1 else 0 }
+                .thenBy { it.availabilityFetchedAt ?: Long.MIN_VALUE },
+        ) ?: matches.first()
+        val lastFour = key.removePrefix("last4:").takeIf { key.startsWith("last4:") }
+        AccountAvailabilityGroup(
+            key = key,
+            account = preferred.copy(
+                accountHint = lastFour ?: preferred.accountHint,
+                institution = preferred.institution?.takeIf(String::isNotBlank)
+                    ?: matches.firstNotNullOfOrNull { it.institution?.takeIf(String::isNotBlank) },
+                creditLimitMinor = preferred.creditLimitMinor
+                    ?: matches.filter { it.creditLimitMinor != null }
+                        .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
+                        ?.creditLimitMinor,
+            ),
+            profileCount = matches.size,
+        )
+    }
+    .sortedWith(
+        compareByDescending<AccountAvailabilityGroup> { availabilityValue(it.account, type) != null }
+            .thenByDescending { it.account.availabilityFetchedAt ?: Long.MIN_VALUE }
+            .thenBy { it.account.name.lowercase(Locale.ROOT) },
+    )
+
+private fun accountLastFour(account: AccountProfile): String? = account.accountHint
+    ?.filter(Char::isDigit)
+    ?.takeLast(4)
+    ?.takeIf { it.length == 4 }
+
+private fun availabilityValue(account: AccountProfile, type: AccountType): Long? = when (type) {
+    AccountType.BANK_ACCOUNT -> account.balanceMinor
+    AccountType.CREDIT_CARD -> account.availableCreditMinor
+    else -> account.balanceMinor ?: account.availableCreditMinor
+}

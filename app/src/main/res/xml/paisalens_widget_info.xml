@@ -3,9 +3,9 @@
     android:description="@string/widget_description"
     android:initialLayout="@layout/paisalens_widget"
     android:minWidth="180dp"
-    android:minHeight="110dp"
+    android:minHeight="140dp"
     android:minResizeWidth="180dp"
-    android:minResizeHeight="110dp"
+    android:minResizeHeight="140dp"
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen" />

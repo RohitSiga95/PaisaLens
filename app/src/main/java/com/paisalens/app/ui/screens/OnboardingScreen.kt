@@ -1,14 +1,18 @@
 package com.paisalens.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -31,20 +35,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.paisalens.app.ui.theme.ElectricIndigo
-import com.paisalens.app.ui.theme.Mint
 
 @Composable
 fun OnboardingScreen(
     onAllowSms: () -> Unit,
     onManualOnly: () -> Unit,
 ) {
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(
@@ -59,11 +60,15 @@ fun OnboardingScreen(
             .statusBarsPadding()
             .navigationBarsPadding(),
     ) {
+        val scrollState = rememberScrollState()
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .heightIn(min = maxHeight)
                 .padding(horizontal = 24.dp, vertical = 18.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -78,99 +83,112 @@ fun OnboardingScreen(
                 )
             }
 
-            Spacer(Modifier.weight(0.7f))
-            Box(
+            Column(
                 modifier = Modifier
-                    .size(118.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            listOf(ElectricIndigo.copy(alpha = 0.28f), Mint.copy(alpha = 0.22f)),
-                        ),
-                    ),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Box(
                     modifier = Modifier
-                        .size(82.dp)
+                        .size(118.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surface),
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
+                                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f),
+                                ),
+                            ),
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        Icons.Rounded.Lock,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(38.dp),
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(82.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surface),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Lock,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(38.dp),
+                        )
+                    }
                 }
-            }
-            Spacer(Modifier.height(24.dp))
-            Text(
-                text = "Your money story,\nkept to yourself.",
-                style = MaterialTheme.typography.headlineLarge,
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = "PaisaLens finds bank, card and UPI transactions in SMS alerts and turns them into a private expense tracker.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    text = "Your money story,\nkept to yourself.",
+                    style = MaterialTheme.typography.headlineLarge,
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "PaisaLens finds bank, card and UPI transactions in SMS alerts and turns them into a private expense tracker.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(28.dp))
 
-            Surface(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
-                shape = MaterialTheme.shapes.large,
-                tonalElevation = 1.dp,
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                    shape = MaterialTheme.shapes.large,
+                    tonalElevation = 1.dp,
                 ) {
-                    PrivacyPoint(
-                        icon = WifiOffVector,
-                        title = "No financial-data uploads",
-                        body = "Network is used only when you request a currency reference rate.",
-                    )
-                    PrivacyPoint(
-                        icon = Icons.Rounded.MarkEmailRead,
-                        title = "You stay in control",
-                        body = "SMS is read only after you allow it.",
-                    )
-                    PrivacyPoint(
-                        icon = Icons.Rounded.Key,
-                        title = "Encrypted on this device",
-                        body = "Alert text is protected by Android Keystore.",
-                    )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        PrivacyPoint(
+                            icon = WifiOffVector,
+                            title = "No financial-data uploads",
+                            body = "Network is used only when you request a currency reference rate.",
+                        )
+                        PrivacyPoint(
+                            icon = Icons.Rounded.MarkEmailRead,
+                            title = "You stay in control",
+                            body = "SMS is read only after you allow it.",
+                        )
+                        PrivacyPoint(
+                            icon = Icons.Rounded.Key,
+                            title = "Encrypted on this device",
+                            body = "Alert text is protected by Android Keystore.",
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.weight(1f))
-            Button(
-                onClick = onAllowSms,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = MaterialTheme.shapes.medium,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-            ) {
-                Text("Allow SMS analysis", style = MaterialTheme.typography.labelLarge)
-            }
-            Text(
-                text = "PaisaLens ignores OTPs, reminders and non-transaction messages. Analysis and storage stay on this phone.",
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            TextButton(
-                onClick = onManualOnly,
+            Column(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("Continue without SMS")
+                Button(
+                    onClick = onAllowSms,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                ) {
+                    Text("Allow SMS analysis", style = MaterialTheme.typography.labelLarge)
+                }
+                Text(
+                    text = "PaisaLens ignores OTPs, reminders and non-transaction messages. Analysis and storage stay on this phone.",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                TextButton(
+                    onClick = onManualOnly,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Continue without SMS")
+                }
             }
         }
     }
@@ -184,14 +202,17 @@ private fun LogoMark() {
             .clip(MaterialTheme.shapes.small)
             .background(
                 Brush.linearGradient(
-                    listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary),
+                    listOf(
+                        MaterialTheme.colorScheme.primaryContainer,
+                        MaterialTheme.colorScheme.secondaryContainer,
+                    ),
                 ),
             ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = "₹",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onBackground,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
         )
@@ -224,7 +245,11 @@ private fun PrivacyPoint(
                 modifier = Modifier.size(21.dp),
             )
         }
-        Column(modifier = Modifier.padding(start = 12.dp)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+        ) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(
                 body,

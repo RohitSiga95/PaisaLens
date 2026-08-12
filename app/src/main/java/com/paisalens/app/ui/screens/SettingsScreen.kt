@@ -17,24 +17,30 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Rule
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Category
-import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.CreditScore
 import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.DashboardCustomize
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Flight
 import androidx.compose.material.icons.rounded.HomeWork
+import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MarkEmailRead
 import androidx.compose.material.icons.rounded.Merge
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Payments
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -53,9 +59,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.BuildConfig
+import com.paisalens.app.data.model.AppThemeConfiguration
+import com.paisalens.app.data.model.AppThemeStyle
+import com.paisalens.app.data.model.HomeLayoutConfiguration
+import com.paisalens.app.data.model.NotificationDigestConfiguration
 import com.paisalens.app.ui.components.PaisaCard
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -63,11 +74,15 @@ import java.util.Locale
 
 @Composable
 fun SettingsScreen(
-    darkMode: Boolean,
+    themeConfiguration: AppThemeConfiguration,
+    homeLayout: HomeLayoutConfiguration,
+    notificationDigest: NotificationDigestConfiguration,
     hasSmsPermission: Boolean,
     isScanning: Boolean,
     lastScanAt: Long,
-    onDarkModeChange: (Boolean) -> Unit,
+    onCustomizeTheme: () -> Unit,
+    onCustomizeHome: () -> Unit,
+    onPrivateDigest: () -> Unit,
     onRequestSms: () -> Unit,
     onScan: () -> Unit,
     transactionCount: Int,
@@ -77,6 +92,7 @@ fun SettingsScreen(
     reviewCount: Int,
     loanCount: Int,
     merchantAliasCount: Int,
+    smartRuleCount: Int,
     rateCount: Int,
     appLockEnabled: Boolean,
     widgetAmountsVisible: Boolean,
@@ -86,17 +102,22 @@ fun SettingsScreen(
     onManageAccounts: () -> Unit,
     onManageCategories: () -> Unit,
     onMerchantCleanup: () -> Unit,
+    onSmartCategoryRules: () -> Unit,
     onManageLoans: () -> Unit,
     onTravelMode: () -> Unit,
     onImportStatement: () -> Unit,
+    onAuditCardStatement: () -> Unit,
+    onDataHealth: () -> Unit,
     onAppLockChange: (Boolean) -> Unit,
     onWidgetAmountsChange: (Boolean) -> Unit,
     onCreateBackup: () -> Unit,
     onRestoreBackup: () -> Unit,
+    onVerifyBackup: () -> Unit,
     onReviewTransactions: () -> Unit,
     onClearAll: () -> Unit,
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
+    val locale = LocalConfiguration.current.locales[0]
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -220,6 +241,18 @@ fun SettingsScreen(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsActionRow(
+                    icon = Icons.AutoMirrored.Rounded.Rule,
+                    title = "Smart category rules",
+                    subtitle = if (smartRuleCount == 0) {
+                        "Categorize future expenses by merchant, amount, or account."
+                    } else {
+                        "$smartRuleCount rule${if (smartRuleCount == 1) "" else "s"} running locally"
+                    },
+                    onClick = onSmartCategoryRules,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
                     icon = Icons.Rounded.MarkEmailRead,
                     title = "Review inbox",
                     subtitle = if (reviewCount == 0) "No uncertain transactions waiting." else "$reviewCount transaction${if (reviewCount == 1) "" else "s"} need confirmation",
@@ -250,6 +283,19 @@ fun SettingsScreen(
                     subtitle = if (appLockEnabled) "Disabled while app lock is enabled." else "Amounts are hidden by default for home-screen privacy.",
                     onClick = { if (!appLockEnabled) onWidgetAmountsChange(!widgetAmountsVisible) },
                     trailing = { Switch(checked = widgetAmountsVisible && !appLockEnabled, onCheckedChange = onWidgetAmountsChange, enabled = !appLockEnabled) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.NotificationsActive,
+                    title = "Private notification digest",
+                    subtitle = if (notificationDigest.enabled) {
+                        "${notificationDigest.frequency.label} at ${String.format(locale, "%02d:00", notificationDigest.hour)} · " +
+                            if (notificationDigest.showAmounts) "amounts included privately" else "amounts hidden"
+                    } else {
+                        "Optional on-device summary with lock-screen-safe content."
+                    },
+                    onClick = onPrivateDigest,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsInfoRow(
@@ -283,18 +329,44 @@ fun SettingsScreen(
             }
         }
         item {
+            SettingsSection("Trust & accuracy") {
+                SettingsActionRow(
+                    icon = Icons.Rounded.HealthAndSafety,
+                    title = "Data Health Centre",
+                    subtitle = "Review data quality, backup readiness, and reversible change history.",
+                    onClick = onDataHealth,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.CreditScore,
+                    title = "Audit credit-card statement",
+                    subtitle = "Compare reviewed CSV or XLSX rows with card SMS locally.",
+                    onClick = onAuditCardStatement,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+            }
+        }
+        item {
             SettingsSection("Appearance") {
                 SettingsActionRow(
-                    icon = Icons.Rounded.DarkMode,
-                    title = "Dark mode",
-                    subtitle = "Comfortable contrast for low-light use.",
-                    onClick = { onDarkModeChange(!darkMode) },
-                    trailing = {
-                        Switch(
-                            checked = darkMode,
-                            onCheckedChange = onDarkModeChange,
-                        )
+                    icon = Icons.Rounded.DashboardCustomize,
+                    title = "Customise Home",
+                    subtitle = "${homeLayout.normalized().orderedVisibleModules.size} of ${com.paisalens.app.data.model.HomeModule.entries.size} modules visible · reorder anytime",
+                    onClick = onCustomizeHome,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.Palette,
+                    title = "Theme Studio",
+                    subtitle = if (themeConfiguration.style == AppThemeStyle.AMOLED) {
+                        "AMOLED black · ${themeConfiguration.palette.label}"
+                    } else {
+                        "${themeConfiguration.style.label} · ${themeConfiguration.palette.label} · ${themeConfiguration.mode.label}"
                     },
+                    onClick = onCustomizeTheme,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
             }
         }
@@ -335,6 +407,14 @@ fun SettingsScreen(
                     title = "Restore encrypted backup",
                     subtitle = "Replace this phone's local data from a PaisaLens backup.",
                     onClick = onRestoreBackup,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.VerifiedUser,
+                    title = "Verify encrypted backup",
+                    subtitle = "Check a backup's password, encryption, and record counts without restoring it.",
+                    onClick = onVerifyBackup,
                     trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

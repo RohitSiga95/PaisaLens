@@ -34,13 +34,34 @@ object StatementImporter {
         exchangeRates: List<ExchangeRate> = emptyList(),
     ): StatementImportPreview {
         val bytes = input.readLimitedBytes(MAX_FILE_BYTES)
-        val table = if (fileName.lowercase(Locale.ROOT).endsWith(".xlsx")) {
+        val tableRead = if (fileName.lowercase(Locale.ROOT).endsWith(".xlsx")) {
             readXlsx(bytes)
         } else {
             readDelimited(bytes.toString(Charsets.UTF_8))
         }
-        if (table.size < 2) return StatementImportPreview(emptyList(), 0, listOf("No transaction rows were found"))
-        val headers = table.first().map(::normalizeHeader)
+        val table = tableRead.rows
+        if (table.size < 2) {
+            return StatementImportPreview(
+                emptyList(),
+                tableRead.truncatedRows,
+                (listOf("No transaction rows were found") + tableRead.warnings()).distinct(),
+            )
+        }
+        val headerIndex = (0 until minOf(table.size, StatementTableLimits.MAX_HEADER_SCAN_ROWS)).firstOrNull { candidate ->
+            val candidateHeaders = table[candidate].map(::normalizeHeader)
+            candidateHeaders.any { it in DATE_HEADERS } &&
+                candidateHeaders.any { it in DESCRIPTION_HEADERS } &&
+                candidateHeaders.any { it in DEBIT_HEADERS || it in CREDIT_HEADERS || it in AMOUNT_HEADERS }
+        }
+        if (headerIndex == null) {
+            return StatementImportPreview(
+                emptyList(),
+                (table.size - 1).coerceAtLeast(0) + tableRead.truncatedRows,
+                (listOf("Could not identify required columns: date, description/narration, and amount or debit/credit") +
+                    tableRead.warnings()).distinct(),
+            )
+        }
+        val headers = table[headerIndex].map(::normalizeHeader)
         val dateIndex = headers.indexOfFirst { it in DATE_HEADERS }
         val descriptionIndex = headers.indexOfFirst { it in DESCRIPTION_HEADERS }
         val debitIndex = headers.indexOfFirst { it in DEBIT_HEADERS }
@@ -57,19 +78,21 @@ object StatementImporter {
         if (missing.isNotEmpty()) {
             return StatementImportPreview(
                 emptyList(),
-                table.size - 1,
-                listOf("Could not identify required column${if (missing.size == 1) "" else "s"}: ${missing.joinToString()}"),
+                (table.size - headerIndex - 1).coerceAtLeast(0) + tableRead.truncatedRows,
+                (listOf("Could not identify required column${if (missing.size == 1) "" else "s"}: ${missing.joinToString()}") +
+                    tableRead.warnings()).distinct(),
             )
         }
 
         val base = baseCurrency.normalizedCurrency()
         val ratesByQuote = exchangeRates.filter { it.baseCurrency == base }.associateBy { it.quoteCurrency }
-        var skipped = 0
-        val warnings = linkedSetOf<String>()
+        var skipped = tableRead.truncatedRows
+        val warnings = linkedSetOf<String>().apply { addAll(tableRead.warnings()) }
         val rows = mutableListOf<StatementImportRow>()
-        table.drop(1).forEachIndexed { index, columns ->
+        for (tableIndex in headerIndex + 1 until table.size) {
+            val columns = table[tableIndex]
             fun cell(position: Int): String = if (position in columns.indices) columns[position].trim() else ""
-            val rowNumber = index + 2
+            val rowNumber = tableIndex + 1
             val date = parseDate(cell(dateIndex))
             val merchant = cell(descriptionIndex).replace(Regex("\\s+"), " ").take(96)
             val debit = parseAmount(cell(debitIndex))
@@ -89,7 +112,7 @@ object StatementImporter {
             }
             if (date == null || merchant.isBlank() || rawAmount == null || rawAmount == 0.0) {
                 skipped += 1
-                return@forEachIndexed
+                continue
             }
             val currency = cell(currencyIndex).ifBlank { base }.normalizedCurrency()
             val originalMinor = (abs(rawAmount) * 100).roundToLong()
@@ -97,7 +120,7 @@ object StatementImporter {
             if (rate == null || !rate.isFinite() || rate <= 0) {
                 skipped += 1
                 warnings += "Skipped $currency rows because no cached $currency/$base rate is available; refresh travel rates first."
-                return@forEachIndexed
+                continue
             }
             val amountMinor = (originalMinor * rate).roundToLong()
             val occurredAt = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -124,86 +147,191 @@ object StatementImporter {
             )
             rows += StatementImportRow(rowNumber, transaction)
         }
-        if (skipped > 0) warnings += "$skipped row${if (skipped == 1) " was" else "s were"} skipped because required values were missing or invalid."
+        val invalidRows = skipped - tableRead.truncatedRows
+        if (invalidRows > 0) {
+            warnings += "$invalidRows row${if (invalidRows == 1) " was" else "s were"} skipped because required values were missing or invalid."
+        }
         return StatementImportPreview(rows, skipped, warnings.toList())
     }
 
-    private fun readDelimited(text: String): List<List<String>> {
-        val firstLine = text.lineSequence().firstOrNull().orEmpty()
-        val delimiter = listOf(',', '\t', ';').maxBy { firstLine.count { char -> char == it } }
+    private data class BoundedTable(
+        val rows: List<List<String>>,
+        val truncatedRows: Int = 0,
+        val truncatedColumns: Boolean = false,
+        val truncatedCells: Boolean = false,
+        val truncatedSharedStrings: Boolean = false,
+    ) {
+        fun warnings(): List<String> = buildList {
+            if (truncatedRows > 0) add(StatementTableLimits.ROW_LIMIT_WARNING)
+            if (truncatedColumns) add(StatementTableLimits.COLUMN_LIMIT_WARNING)
+            if (truncatedCells) add(StatementTableLimits.CELL_LIMIT_WARNING)
+            if (truncatedSharedStrings) add("The XLSX shared-text table exceeded its safety limit; affected rows were skipped.")
+        }
+    }
+
+    private fun readDelimited(text: String): BoundedTable {
+        val sampleLines = text.lineSequence().take(StatementTableLimits.MAX_HEADER_SCAN_ROWS).toList()
+        val delimiter = listOf(',', '\t', ';').maxBy { candidate ->
+            sampleLines.maxOfOrNull { line -> line.count { it == candidate } } ?: 0
+        }
         val records = mutableListOf<List<String>>()
         var row = mutableListOf<String>()
         val cell = StringBuilder()
         var quoted = false
+        var cellWasTruncated = false
+        var truncatedRows = 0
+        var truncatedColumns = false
+        var truncatedCells = false
+
+        fun finishCell() {
+            if (row.size < StatementTableLimits.MAX_COLUMNS) {
+                row += cell.toString()
+            } else {
+                truncatedColumns = true
+            }
+            if (cellWasTruncated) truncatedCells = true
+            cell.clear()
+            cellWasTruncated = false
+        }
+
+        fun finishRow() {
+            finishCell()
+            if (row.any { it.isNotBlank() }) {
+                if (records.size < StatementTableLimits.MAX_ROWS) {
+                    records += row
+                } else {
+                    truncatedRows += 1
+                }
+            }
+            row = mutableListOf()
+        }
+
+        fun append(character: Char) {
+            if (cell.length < StatementTableLimits.MAX_CELL_CHARACTERS) {
+                cell.append(character)
+            } else {
+                cellWasTruncated = true
+            }
+        }
+
         var index = 0
         while (index < text.length) {
             val char = text[index]
             when {
                 char == '"' && quoted && index + 1 < text.length && text[index + 1] == '"' -> {
-                    cell.append('"')
+                    append('"')
                     index += 1
                 }
                 char == '"' -> quoted = !quoted
                 char == delimiter && !quoted -> {
-                    row += cell.toString()
-                    cell.clear()
+                    finishCell()
                 }
                 (char == '\n' || char == '\r') && !quoted -> {
                     if (char == '\r' && index + 1 < text.length && text[index + 1] == '\n') index += 1
-                    row += cell.toString()
-                    cell.clear()
-                    if (row.any { it.isNotBlank() }) records += row
-                    row = mutableListOf()
+                    finishRow()
                 }
-                else -> cell.append(char)
+                else -> append(char)
             }
             index += 1
         }
         if (cell.isNotEmpty() || row.isNotEmpty()) {
-            row += cell.toString()
-            if (row.any { it.isNotBlank() }) records += row
+            finishRow()
         }
-        return records
+        return BoundedTable(records, truncatedRows, truncatedColumns, truncatedCells)
     }
 
-    private fun readXlsx(bytes: ByteArray): List<List<String>> {
+    private fun readXlsx(bytes: ByteArray): BoundedTable {
         val entries = mutableMapOf<String, ByteArray>()
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory && entry.name in setOf("xl/sharedStrings.xml", "xl/worksheets/sheet1.xml")) {
-                    entries[entry.name] = zip.readLimitedBytes(MAX_FILE_BYTES)
+                    entries[entry.name] = zip.readLimitedBytes(MAX_XML_ENTRY_BYTES)
                 }
                 zip.closeEntry()
                 entry = zip.nextEntry
             }
         }
-        val sheet = entries["xl/worksheets/sheet1.xml"] ?: return emptyList()
+        val sheet = entries["xl/worksheets/sheet1.xml"] ?: return BoundedTable(emptyList())
+        var truncatedCells = false
+        var truncatedSharedStrings = false
         val shared = entries["xl/sharedStrings.xml"]?.let { xml ->
             parseXml(xml).getElementsByTagName("si").let { nodes ->
-                List(nodes.length) { index ->
+                if (nodes.length > StatementTableLimits.MAX_SHARED_STRINGS) truncatedSharedStrings = true
+                List(minOf(nodes.length, StatementTableLimits.MAX_SHARED_STRINGS)) { index ->
                     val item = nodes.item(index) as Element
                     item.getElementsByTagName("t").let { textNodes ->
-                        (0 until textNodes.length).joinToString("") { textNodes.item(it).textContent }
+                        val value = buildString {
+                            for (textIndex in 0 until textNodes.length) {
+                                val remaining = StatementTableLimits.MAX_CELL_CHARACTERS - length
+                                if (remaining <= 0) {
+                                    truncatedCells = true
+                                    break
+                                }
+                                val text = textNodes.item(textIndex).textContent.orEmpty()
+                                append(text.take(remaining))
+                                if (text.length > remaining) truncatedCells = true
+                            }
+                        }
+                        value
                     }
                 }
             }
         }.orEmpty()
-        val rows = parseXml(sheet).getElementsByTagName("row")
-        return List(rows.length) { rowIndex ->
-            val cells = (rows.item(rowIndex) as Element).getElementsByTagName("c")
+        val rowNodes = parseXml(sheet).getElementsByTagName("row")
+        val rowCount = minOf(rowNodes.length, StatementTableLimits.MAX_ROWS)
+        var truncatedColumns = false
+        val parsedRows = List(rowCount) { rowIndex ->
+            val cells = (rowNodes.item(rowIndex) as Element).getElementsByTagName("c")
             val values = sortedMapOf<Int, String>()
-            for (cellIndex in 0 until cells.length) {
+            if (cells.length > StatementTableLimits.MAX_CELLS_SCANNED_PER_ROW) truncatedColumns = true
+            for (cellIndex in 0 until minOf(cells.length, StatementTableLimits.MAX_CELLS_SCANNED_PER_ROW)) {
                 val cell = cells.item(cellIndex) as Element
-                val column = cell.getAttribute("r").takeWhile(Char::isLetter).fold(0) { value, letter ->
-                    value * 26 + (letter.uppercaseChar() - 'A' + 1)
-                } - 1
+                val reference = cell.getAttribute("r")
+                val column = if (reference.isBlank()) {
+                    cellIndex.takeIf { it < StatementTableLimits.MAX_COLUMNS }
+                } else {
+                    parseColumnIndex(reference)
+                }
+                if (column == null || column !in 0 until StatementTableLimits.MAX_COLUMNS) {
+                    truncatedColumns = true
+                    continue
+                }
                 val raw = cell.getElementsByTagName("v").item(0)?.textContent
                     ?: cell.getElementsByTagName("t").item(0)?.textContent.orEmpty()
-                values[column] = if (cell.getAttribute("t") == "s") shared.getOrNull(raw.toIntOrNull() ?: -1).orEmpty() else raw
+                val value = if (cell.getAttribute("t") == "s") {
+                    val sharedIndex = raw.toIntOrNull() ?: -1
+                    shared.getOrNull(sharedIndex).orEmpty().also {
+                        if (sharedIndex >= shared.size) truncatedSharedStrings = true
+                    }
+                } else {
+                    raw
+                }
+                if (value.length > StatementTableLimits.MAX_CELL_CHARACTERS) truncatedCells = true
+                values[column] = value.take(StatementTableLimits.MAX_CELL_CHARACTERS)
             }
             List((values.keys.maxOrNull() ?: -1) + 1) { values[it].orEmpty() }
         }
+        return BoundedTable(
+            rows = parsedRows,
+            truncatedRows = (rowNodes.length - rowCount).coerceAtLeast(0),
+            truncatedColumns = truncatedColumns,
+            truncatedCells = truncatedCells,
+            truncatedSharedStrings = truncatedSharedStrings,
+        )
+    }
+
+    private fun parseColumnIndex(reference: String): Int? {
+        val letters = reference.takeWhile(Char::isLetter)
+        if (letters.isBlank()) return null
+        var oneBased = 0
+        for (letter in letters) {
+            val digit = letter.uppercaseChar() - 'A' + 1
+            if (digit !in 1..26 || oneBased > StatementTableLimits.MAX_COLUMNS) return null
+            oneBased = oneBased * 26 + digit
+            if (oneBased > StatementTableLimits.MAX_COLUMNS) return null
+        }
+        return oneBased - 1
     }
 
     private fun parseXml(bytes: ByteArray) = DocumentBuilderFactory.newInstance().apply {
@@ -285,4 +413,5 @@ object StatementImporter {
         DateTimeFormatter.ofPattern("M/d/uuuu"),
     )
     private const val MAX_FILE_BYTES = 20 * 1024 * 1024
+    private const val MAX_XML_ENTRY_BYTES = 8 * 1024 * 1024
 }

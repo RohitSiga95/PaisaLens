@@ -13,15 +13,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ReceiptLong
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
+import androidx.compose.material.icons.automirrored.rounded.FactCheck
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.MerchantTransactionGroup
+import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.ReviewStatus
@@ -39,24 +45,34 @@ import com.paisalens.app.ui.components.EmptyState
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.TransactionRow
 
-private enum class TransactionFilter(val label: String) {
+enum class TransactionFilter(val label: String) {
     ALL("All"),
     EXPENSE("Expenses"),
     INCOME("Income"),
     REFUND("Refunds"),
     TRANSFER("Transfers"),
     REVIEW("Needs review"),
+    UNCATEGORIZED("Uncategorized"),
+    UNASSIGNED("Unassigned"),
 }
 
 @Composable
 fun TransactionsScreen(
     transactions: List<TransactionRecord>,
     uncategorizedMerchants: List<MerchantTransactionGroup>,
+    initialFilter: TransactionFilter = TransactionFilter.ALL,
     onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
+    onTrustCenter: () -> Unit,
+    onSharedExpenses: () -> Unit,
+    onCalendar: () -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf(TransactionFilter.ALL) }
+    var selectedFilter by remember { mutableStateOf(initialFilter) }
+
+    LaunchedEffect(initialFilter) {
+        selectedFilter = initialFilter
+    }
 
     val filtered = remember(transactions, query, selectedFilter) {
         transactions.filter { transaction ->
@@ -74,6 +90,10 @@ fun TransactionsScreen(
                 TransactionFilter.REFUND -> transaction.type == TransactionType.REFUND
                 TransactionFilter.TRANSFER -> transaction.type == TransactionType.TRANSFER
                 TransactionFilter.REVIEW -> transaction.reviewStatus == ReviewStatus.NEEDS_REVIEW
+                TransactionFilter.UNCATEGORIZED -> transaction.type == TransactionType.EXPENSE &&
+                    transaction.category == ExpenseCategory.OTHER &&
+                    transaction.customCategoryId == null
+                TransactionFilter.UNASSIGNED -> transaction.accountId == null
             }
             queryMatch && typeMatch
         }
@@ -85,16 +105,29 @@ fun TransactionsScreen(
             .padding(top = 12.dp),
     ) {
         Column(modifier = Modifier.padding(horizontal = 18.dp)) {
-            Text(
-                text = "Activity",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Every transaction, easy to find",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Activity",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "Every transaction, easy to find",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onTrustCenter) {
+                    Icon(Icons.AutoMirrored.Rounded.FactCheck, contentDescription = "Open Trust Center")
+                }
+                IconButton(onClick = onSharedExpenses) {
+                    Icon(Icons.Rounded.Groups, contentDescription = "Open shared expenses")
+                }
+                IconButton(onClick = onCalendar) {
+                    Icon(Icons.Rounded.CalendarMonth, contentDescription = "Open spending calendar")
+                }
+            }
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(
                 value = query,
@@ -115,14 +148,23 @@ fun TransactionsScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(TransactionFilter.entries) { filter ->
-                val reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW }
+                val filterCount = when (filter) {
+                    TransactionFilter.REVIEW -> transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW }
+                    TransactionFilter.UNCATEGORIZED -> transactions.count {
+                        it.type == TransactionType.EXPENSE &&
+                            it.category == ExpenseCategory.OTHER &&
+                            it.customCategoryId == null
+                    }
+                    TransactionFilter.UNASSIGNED -> transactions.count { it.accountId == null }
+                    else -> 0
+                }
                 FilterChip(
                     selected = selectedFilter == filter,
                     onClick = { selectedFilter = filter },
                     label = {
                         Text(
-                            if (filter == TransactionFilter.REVIEW && reviewCount > 0) {
-                                "${filter.label} ($reviewCount)"
+                            if (filterCount > 0) {
+                                "${filter.label} ($filterCount)"
                             } else {
                                 filter.label
                             },
@@ -174,7 +216,7 @@ fun TransactionsScreen(
                     } else {
                         "Try a different search or filter."
                     },
-                    icon = Icons.Rounded.ReceiptLong,
+                    icon = Icons.AutoMirrored.Rounded.ReceiptLong,
                 )
             }
         } else {

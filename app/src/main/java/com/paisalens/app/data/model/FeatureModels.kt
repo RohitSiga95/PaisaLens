@@ -40,7 +40,16 @@ data class LoanAccount(
     val notes: String? = null,
 ) {
     val remainingInstallments: Int get() = (tenureMonths - paidInstallments).coerceAtLeast(0)
-    val nextDueDate: LocalDate get() = LocalDate.ofEpochDay(startDateEpochDay).plusMonths(paidInstallments.toLong())
+    val nextDueDate: LocalDate
+        get() {
+            val anchor = LocalDate.ofEpochDay(startDateEpochDay)
+            val targetMonth = YearMonth.from(anchor).plusMonths(paidInstallments.toLong())
+            return if (anchor.dayOfMonth == YearMonth.from(anchor).lengthOfMonth()) {
+                targetMonth.atEndOfMonth()
+            } else {
+                targetMonth.atDay(anchor.dayOfMonth.coerceAtMost(targetMonth.lengthOfMonth()))
+            }
+        }
     val estimatedRemainingMinor: Long get() = emiMinor * remainingInstallments
     val progress: Float get() = if (tenureMonths <= 0) 0f else paidInstallments.toFloat() / tenureMonths
 }
@@ -149,10 +158,10 @@ fun buildSpendingAnalytics(
     transactions: List<TransactionRecord>,
     today: LocalDate = LocalDate.now(),
     zoneId: ZoneId = ZoneId.systemDefault(),
+    transactionLinks: List<TransactionLink> = emptyList(),
+    expenseSplits: List<ExpenseSplit> = emptyList(),
 ): SpendingAnalytics {
-    val expenses = transactions.filter {
-        it.type == TransactionType.EXPENSE && it.reviewStatus == ReviewStatus.CONFIRMED
-    }
+    val expenses = buildEffectiveExpenseTransactions(transactions, transactionLinks, expenseSplits)
     fun dateOf(record: TransactionRecord) = Instant.ofEpochMilli(record.occurredAt).atZone(zoneId).toLocalDate()
     val currentMonth = YearMonth.from(today)
     val previousMonth = currentMonth.minusMonths(1)
@@ -196,8 +205,9 @@ fun buildCalendarSpend(
     transactions: List<TransactionRecord>,
     month: YearMonth,
     zoneId: ZoneId = ZoneId.systemDefault(),
-): Map<LocalDate, DailySpend> = transactions
-    .filter { it.type == TransactionType.EXPENSE && it.reviewStatus == ReviewStatus.CONFIRMED }
+    transactionLinks: List<TransactionLink> = emptyList(),
+    expenseSplits: List<ExpenseSplit> = emptyList(),
+): Map<LocalDate, DailySpend> = buildEffectiveExpenseTransactions(transactions, transactionLinks, expenseSplits)
     .groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zoneId).toLocalDate() }
     .filterKeys { YearMonth.from(it) == month }
     .mapValues { (date, rows) -> DailySpend(date, rows.sumOf { it.amountMinor }, rows.sortedByDescending { it.occurredAt }) }
@@ -207,10 +217,10 @@ fun buildOnDeviceInsights(
     recurringPayments: List<RecurringPayment>,
     today: LocalDate = LocalDate.now(),
     zoneId: ZoneId = ZoneId.systemDefault(),
+    transactionLinks: List<TransactionLink> = emptyList(),
+    expenseSplits: List<ExpenseSplit> = emptyList(),
 ): List<SpendingInsight> {
-    val expenses = transactions
-        .filter { it.type == TransactionType.EXPENSE && it.reviewStatus == ReviewStatus.CONFIRMED }
-        .sortedBy { it.occurredAt }
+    val expenses = buildEffectiveExpenseTransactions(transactions, transactionLinks, expenseSplits).sortedBy { it.occurredAt }
     if (expenses.isEmpty()) return emptyList()
     val insights = mutableListOf<SpendingInsight>()
 
