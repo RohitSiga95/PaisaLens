@@ -9,6 +9,7 @@ import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountBalanceWriteResult
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.AuditBatchSummary
 import com.paisalens.app.data.model.AuditEvent
 import com.paisalens.app.data.model.AuditUndoResult
@@ -18,6 +19,8 @@ import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.DataHealthSummary
 import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.CreditCardBill
+import com.paisalens.app.data.model.CreditCardBillPaymentResult
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.ExpenseSplit
@@ -27,6 +30,7 @@ import com.paisalens.app.data.model.MerchantAliasRule
 import com.paisalens.app.data.model.MonthlyReconciliation
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.ParsedTransaction
+import com.paisalens.app.data.model.ParsedCreditCardBill
 import com.paisalens.app.data.model.PaymentCommitment
 import com.paisalens.app.data.model.RecurringPayment
 import com.paisalens.app.data.model.ReconciliationMetrics
@@ -35,6 +39,10 @@ import com.paisalens.app.data.model.SpendingInsight
 import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
+import com.paisalens.app.data.model.SmsCoverageCandidate
+import com.paisalens.app.data.model.SmsCoverageMessage
+import com.paisalens.app.data.model.SmsCoverageRule
+import com.paisalens.app.data.model.SmsCoverageStatus
 import com.paisalens.app.data.model.StatementImportPreview
 import com.paisalens.app.data.model.StatementImportResult
 import com.paisalens.app.data.model.TransactionLink
@@ -54,6 +62,7 @@ import com.paisalens.app.data.model.calculateEffectiveSpendMinor
 import com.paisalens.app.data.model.findReconciliationsInvalidatedByLedger
 import com.paisalens.app.data.model.suggestTransactionLinks
 import com.paisalens.app.data.model.suggestPaymentCommitments
+import com.paisalens.app.data.model.matches
 import com.paisalens.app.data.model.validateTransactionLink as validateLinkCandidate
 import com.paisalens.app.data.network.FrankfurterRateService
 import com.paisalens.app.security.SensitiveDataCipher
@@ -79,6 +88,12 @@ class TransactionRepository(
     private val _transactions = MutableStateFlow<List<TransactionRecord>>(emptyList())
     val transactions: StateFlow<List<TransactionRecord>> = _transactions.asStateFlow()
 
+    private val _smsCoverageMessages = MutableStateFlow<List<SmsCoverageMessage>>(emptyList())
+    val smsCoverageMessages: StateFlow<List<SmsCoverageMessage>> = _smsCoverageMessages.asStateFlow()
+
+    private val _smsCoverageRules = MutableStateFlow<List<SmsCoverageRule>>(emptyList())
+    val smsCoverageRules: StateFlow<List<SmsCoverageRule>> = _smsCoverageRules.asStateFlow()
+
     private val _effectiveExpenseTransactions = MutableStateFlow<List<TransactionRecord>>(emptyList())
     val effectiveExpenseTransactions: StateFlow<List<TransactionRecord>> = _effectiveExpenseTransactions.asStateFlow()
 
@@ -88,6 +103,9 @@ class TransactionRepository(
     private val _budgets = MutableStateFlow<List<CategoryBudget>>(emptyList())
     val budgets: StateFlow<List<CategoryBudget>> = _budgets.asStateFlow()
 
+    private val _advancedBudgets = MutableStateFlow<List<AdvancedBudgetPlan>>(emptyList())
+    val advancedBudgets: StateFlow<List<AdvancedBudgetPlan>> = _advancedBudgets.asStateFlow()
+
     private val _accounts = MutableStateFlow<List<AccountProfile>>(emptyList())
     val accounts: StateFlow<List<AccountProfile>> = _accounts.asStateFlow()
 
@@ -96,6 +114,9 @@ class TransactionRepository(
 
     private val _bills = MutableStateFlow<List<BillReminder>>(emptyList())
     val bills: StateFlow<List<BillReminder>> = _bills.asStateFlow()
+
+    private val _creditCardBills = MutableStateFlow<List<CreditCardBill>>(emptyList())
+    val creditCardBills: StateFlow<List<CreditCardBill>> = _creditCardBills.asStateFlow()
 
     private val _netWorthItems = MutableStateFlow<List<NetWorthItem>>(emptyList())
     val netWorthItems: StateFlow<List<NetWorthItem>> = _netWorthItems.asStateFlow()
@@ -164,21 +185,107 @@ class TransactionRepository(
     suspend fun ingestSms(
         items: List<ParsedTransaction>,
         availabilityUpdates: List<AccountAvailabilityUpdate>,
+        coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
+        creditCardBills: List<ParsedCreditCardBill> = emptyList(),
     ): SmsIngestResult = withContext(Dispatchers.IO) {
         val encrypted = items.map { it to cipher.encrypt(it.rawMessage) }
-        val count = database.insertAll(encrypted)
+        val transactionResult = database.insertAll(encrypted)
+        val encryptedCoverage = coverageCandidates.map { it to cipher.encrypt(it.body) }
+        val coverageCount = database.insertSmsCoverage(encryptedCoverage)
         val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
+        val creditCardBillCount = database.upsertCreditCardBills(creditCardBills)
         refresh()
-        SmsIngestResult(count, availabilityCount)
+        SmsIngestResult(
+            insertedTransactions = transactionResult.inserted,
+            updatedAccounts = availabilityCount,
+            mergedDuplicateTransactions = transactionResult.duplicatesMerged,
+            coverageMessagesAdded = coverageCount,
+            updatedCreditCardBills = creditCardBillCount,
+        )
     }
 
     suspend fun insertParsed(items: List<ParsedTransaction>): Int =
         ingestSms(items, emptyList()).insertedTransactions
 
+    suspend fun updateSmsCoverageStatus(id: Long, status: SmsCoverageStatus) = withContext(Dispatchers.IO) {
+        if (status == SmsCoverageStatus.NEEDS_REVIEW) {
+            database.updateSmsCoverageStatus(id, status)
+        } else {
+            // Handled raw candidates have no ledger value. Remove them instead of retaining
+            // decrypted message text in memory or encrypted copies indefinitely on disk.
+            database.deleteSmsCoverageMessage(id)
+        }
+        refresh()
+    }
+
+    suspend fun ignoreSmsCoverageMessage(id: Long) =
+        updateSmsCoverageStatus(id, SmsCoverageStatus.DISMISSED)
+
+    suspend fun resolveSmsCoverageMessage(id: Long) =
+        updateSmsCoverageStatus(id, SmsCoverageStatus.RESOLVED)
+
+    suspend fun reopenSmsCoverageMessage(id: Long) =
+        updateSmsCoverageStatus(id, SmsCoverageStatus.NEEDS_REVIEW)
+
+    suspend fun deleteSmsCoverageMessage(id: Long) = withContext(Dispatchers.IO) {
+        database.deleteSmsCoverageMessage(id)
+        refresh()
+    }
+
+    suspend fun smsCoverageRulesForParsing(): List<SmsCoverageRule> = withContext(Dispatchers.IO) {
+        database.getSmsCoverageRules().filter(SmsCoverageRule::enabled)
+    }
+
+    suspend fun saveSmsCoverageRule(rule: SmsCoverageRule): Long = withContext(Dispatchers.IO) {
+        val id = database.upsertSmsCoverageRule(rule)
+        if (rule.enabled) {
+            val matchingIds = _smsCoverageMessages.value
+                .asSequence()
+                .filter { it.status == SmsCoverageStatus.NEEDS_REVIEW && rule.matches(it.sender, it.body) }
+                .map(SmsCoverageMessage::id)
+                .toList()
+            database.deleteSmsCoverageMessages(matchingIds)
+        }
+        refresh()
+        id
+    }
+
+    suspend fun deleteSmsCoverageRule(id: Long) = withContext(Dispatchers.IO) {
+        database.deleteSmsCoverageRule(id)
+        refresh()
+    }
+
     suspend fun updateAccountAvailability(update: AccountAvailabilityUpdate): Int = withContext(Dispatchers.IO) {
         val count = database.applyAccountAvailability(listOf(update))
         refresh()
         count
+    }
+
+    suspend fun saveAdvancedBudget(plan: AdvancedBudgetPlan): Long = withContext(Dispatchers.IO) {
+        val id = database.upsertAdvancedBudgetPlan(plan)
+        refresh()
+        id
+    }
+
+    suspend fun deleteAdvancedBudget(id: Long) = withContext(Dispatchers.IO) {
+        database.deleteAdvancedBudgetPlan(id)
+        refresh()
+    }
+
+    suspend fun markCreditCardBillPaid(
+        id: Long,
+        confirmed: Boolean,
+        paidAt: Long = System.currentTimeMillis(),
+    ): CreditCardBillPaymentResult = withContext(Dispatchers.IO) {
+        val result = database.markCreditCardBillPaid(id, confirmed, paidAt)
+        if (result == CreditCardBillPaymentResult.MARKED_PAID) refresh()
+        result
+    }
+
+    suspend fun assignCreditCardBillToAccount(id: Long, accountId: Long): Boolean = withContext(Dispatchers.IO) {
+        val assigned = database.assignCreditCardBillToAccount(id, accountId)
+        if (assigned) refresh()
+        assigned
     }
 
     suspend fun recordUserEnteredUpiBalance(
@@ -542,7 +649,11 @@ class TransactionRepository(
 
     suspend fun writeBackup(output: OutputStream, passphrase: CharArray) = withContext(Dispatchers.IO) {
         try {
-            PaisaLensBackupCodec.write(database.snapshot(), passphrase, output)
+            PaisaLensBackupCodec.write(
+                database.snapshot(),
+                passphrase,
+                output,
+            )
         } finally {
             passphrase.fill('\u0000')
         }
@@ -579,6 +690,23 @@ class TransactionRepository(
         val currentTransactions = database.getTransactions()
         val currentAccounts = database.getAccounts()
         val currentLinks = database.getTransactionLinks()
+        _smsCoverageRules.value = database.getSmsCoverageRules()
+        database.deleteHandledSmsCoverageMessages()
+        _smsCoverageMessages.value = database.getEncryptedSmsCoverageMessages().mapNotNull { stored ->
+            runCatching {
+                SmsCoverageMessage(
+                    id = stored.id,
+                    sourceMessageId = stored.sourceMessageId,
+                    sender = stored.sender,
+                    body = cipher.decrypt(stored.bodyCipher),
+                    receivedAt = stored.receivedAt,
+                    reason = stored.reason,
+                    status = stored.status,
+                    createdAt = stored.createdAt,
+                    updatedAt = stored.updatedAt,
+                )
+            }.getOrNull()
+        }
         var currentReconciliations = database.getMonthlyReconciliations()
         val invalidatedReconciliationIds = findReconciliationsInvalidatedByLedger(
             reconciliations = currentReconciliations,
@@ -591,9 +719,11 @@ class TransactionRepository(
         }
         _transactions.value = currentTransactions
         _budgets.value = database.getBudgets()
+        _advancedBudgets.value = database.getAdvancedBudgetPlans()
         _accounts.value = currentAccounts
         _balanceHistory.value = database.getBalanceHistory()
         _bills.value = database.getBills()
+        _creditCardBills.value = database.getCreditCardBills()
         _netWorthItems.value = database.getNetWorthItems()
         _smartCategoryRules.value = database.getSmartCategoryRules()
         _reconciliations.value = currentReconciliations
@@ -658,4 +788,7 @@ private fun anchoredBillOccurrence(anchor: LocalDate, monthsAfterAnchor: Long): 
 data class SmsIngestResult(
     val insertedTransactions: Int,
     val updatedAccounts: Int,
+    val mergedDuplicateTransactions: Int = 0,
+    val coverageMessagesAdded: Int = 0,
+    val updatedCreditCardBills: Int = 0,
 )

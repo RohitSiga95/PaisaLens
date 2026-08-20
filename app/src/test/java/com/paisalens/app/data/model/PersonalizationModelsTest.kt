@@ -8,6 +8,28 @@ import org.junit.Test
 
 class PersonalizationModelsTest {
     @Test
+    fun `legacy layout gains daily snapshot modules once while v3 can hide them`() {
+        val migrated = HomeLayoutConfiguration.fromStorageString("monthly_spend,bank_balances")
+        assertEquals(
+            listOf(
+                HomeModule.FINANCIAL_PULSE,
+                HomeModule.NEEDS_ATTENTION,
+                HomeModule.MONTHLY_SPEND,
+                HomeModule.BANK_BALANCES,
+                HomeModule.MONEY_TIMELINE,
+                HomeModule.BUDGET_PACE,
+                HomeModule.CARD_HEALTH,
+            ),
+            migrated.orderedVisibleModules,
+        )
+
+        val hidden = HomeLayoutConfiguration(
+            listOf(HomeModule.MONTHLY_SPEND, HomeModule.BANK_BALANCES),
+        )
+        assertEquals(hidden, HomeLayoutConfiguration.fromStorageString(hidden.toStorageString()))
+    }
+
+    @Test
     fun `home layout uses complete default order when no stored value exists`() {
         assertEquals(
             HomeModule.defaultOrder,
@@ -22,7 +44,15 @@ class PersonalizationModelsTest {
         )
 
         assertEquals(
-            listOf(HomeModule.BANK_BALANCES, HomeModule.MONTHLY_SPEND),
+            listOf(
+                HomeModule.FINANCIAL_PULSE,
+                HomeModule.NEEDS_ATTENTION,
+                HomeModule.BANK_BALANCES,
+                HomeModule.MONTHLY_SPEND,
+                HomeModule.MONEY_TIMELINE,
+                HomeModule.BUDGET_PACE,
+                HomeModule.CARD_HEALTH,
+            ),
             parsed.orderedVisibleModules,
         )
     }
@@ -46,7 +76,21 @@ class PersonalizationModelsTest {
             moved.orderedVisibleModules,
         )
         assertEquals(listOf(HomeModule.MONTHLY_SPEND), oneLeft.orderedVisibleModules)
-        assertEquals(listOf(HomeModule.MONTHLY_SPEND), protected.orderedVisibleModules)
+        assertEquals(listOf(HomeModule.FINANCIAL_PULSE), protected.orderedVisibleModules)
+    }
+
+    @Test
+    fun `home snapshot style and preset survive storage round trip`() {
+        val configured = HomeLayoutConfiguration.forPreset(
+            preset = HomeDashboardPreset.DEBT_FOCUS,
+            density = HomeDashboardDensity.COMFORTABLE,
+            heroMetric = HomeHeroMetric.AVAILABLE_CASH,
+        )
+
+        val restored = HomeLayoutConfiguration.fromStorageString(configured.toStorageString())
+
+        assertEquals(configured, restored)
+        assertEquals(HomeDashboardPreset.DEBT_FOCUS, restored.matchingPreset())
     }
 
     @Test

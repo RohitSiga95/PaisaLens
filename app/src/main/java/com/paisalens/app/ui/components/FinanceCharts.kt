@@ -31,6 +31,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.CreditUtilizationBand
+import com.paisalens.app.ui.privacy.PrivacyModeRuntime
+import com.paisalens.app.ui.privacy.maskMoneyText
 import java.util.Locale
 
 data class MoneyChartPoint(
@@ -165,6 +167,7 @@ fun CreditUtilizationBar(
 }
 
 private fun compactMoney(amountMinor: Long): String {
+    if (PrivacyModeRuntime.active) return maskMoneyText("", privacyActive = true)
     val sign = if (amountMinor < 0) "−" else ""
     val absolute = kotlin.math.abs(amountMinor)
     return sign + when {

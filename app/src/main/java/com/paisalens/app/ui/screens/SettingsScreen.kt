@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MarkEmailRead
+import androidx.compose.material.icons.rounded.MarkEmailUnread
 import androidx.compose.material.icons.rounded.Merge
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Payments
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -63,8 +65,10 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.BuildConfig
+import com.paisalens.app.data.backup.ScheduledBackupConfiguration
 import com.paisalens.app.data.model.AppThemeConfiguration
 import com.paisalens.app.data.model.AppThemeStyle
+import com.paisalens.app.data.model.ActionableAlertsConfiguration
 import com.paisalens.app.data.model.HomeLayoutConfiguration
 import com.paisalens.app.data.model.NotificationDigestConfiguration
 import com.paisalens.app.ui.components.PaisaCard
@@ -77,12 +81,19 @@ fun SettingsScreen(
     themeConfiguration: AppThemeConfiguration,
     homeLayout: HomeLayoutConfiguration,
     notificationDigest: NotificationDigestConfiguration,
+    actionableAlerts: ActionableAlertsConfiguration,
+    privacyModeActive: Boolean,
+    scheduledBackup: ScheduledBackupConfiguration,
     hasSmsPermission: Boolean,
     isScanning: Boolean,
     lastScanAt: Long,
     onCustomizeTheme: () -> Unit,
     onCustomizeHome: () -> Unit,
     onPrivateDigest: () -> Unit,
+    onActionableAlerts: () -> Unit,
+    onPrivacyMode: () -> Unit,
+    onScheduledBackup: () -> Unit,
+    onSmsCoverage: () -> Unit,
     onRequestSms: () -> Unit,
     onScan: () -> Unit,
     transactionCount: Int,
@@ -90,6 +101,7 @@ fun SettingsScreen(
     customCategoryCount: Int,
     recurringCount: Int,
     reviewCount: Int,
+    smsCoverageCount: Int,
     loanCount: Int,
     merchantAliasCount: Int,
     smartRuleCount: Int,
@@ -202,6 +214,18 @@ fun SettingsScreen(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsActionRow(
+                    icon = Icons.Rounded.MarkEmailUnread,
+                    title = "SMS Coverage Centre",
+                    subtitle = if (smsCoverageCount == 0) {
+                        "Teach PaisaLens new bank formats using private, literal on-device rules."
+                    } else {
+                        "$smsCoverageCount unsupported alert${if (smsCoverageCount == 1) "" else "s"} waiting for review"
+                    },
+                    onClick = onSmsCoverage,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
                     icon = Icons.Rounded.Merge,
                     title = "Merchant cleanup",
                     subtitle = if (merchantAliasCount == 0) "Rename and merge inconsistent merchant names." else "$merchantAliasCount cleanup rule${if (merchantAliasCount == 1) "" else "s"} saved",
@@ -298,6 +322,30 @@ fun SettingsScreen(
                     trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.NotificationsActive,
+                    title = "Private actionable alerts",
+                    subtitle = if (actionableAlerts.enabled) {
+                        "${actionableAlerts.enabledCategories.size} reminder types · checked locally once daily"
+                    } else {
+                        "Optional due-date, budget, credit, cash-flow, and reimbursement reminders."
+                    },
+                    onClick = onActionableAlerts,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = "One-tap privacy mode",
+                    subtitle = if (privacyModeActive) {
+                        "Amounts are hidden across the app."
+                    } else {
+                        "Instantly hide amounts and optionally protect screenshots."
+                    },
+                    onClick = onPrivacyMode,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsInfoRow(
                     icon = Icons.Rounded.WifiOff,
                     title = "Network isolation",
@@ -313,7 +361,7 @@ fun SettingsScreen(
                 SettingsInfoRow(
                     icon = Icons.Rounded.Lock,
                     title = "Cloud backups disabled",
-                    subtitle = "Only password-protected backups you create manually can leave this device.",
+                    subtitle = "Android cloud backup stays disabled. Scheduled copies go only to the folder you explicitly choose.",
                 )
             }
         }
@@ -403,9 +451,21 @@ fun SettingsScreen(
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsActionRow(
+                    icon = Icons.Rounded.Backup,
+                    title = "Scheduled encrypted backups",
+                    subtitle = if (scheduledBackup.enabled) {
+                        "${scheduledBackup.frequency.name.lowercase().replaceFirstChar(Char::titlecase)} · ${scheduledBackup.retentionCount} verified copies retained"
+                    } else {
+                        "Automatically create verified backups in an Android folder you choose."
+                    },
+                    onClick = onScheduledBackup,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
                     icon = Icons.Rounded.Restore,
                     title = "Restore encrypted backup",
-                    subtitle = "Replace this phone's local data from a PaisaLens backup.",
+                    subtitle = "Replace the portable ledger while keeping device-only SMS Coverage candidates.",
                     onClick = onRestoreBackup,
                     trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
@@ -459,7 +519,7 @@ fun SettingsScreen(
             title = { Text("Erase local financial data?") },
             text = {
                 Text(
-                    "This permanently deletes transactions, accounts, categories, merchant rules, loans, cached rates, and budgets. Your original SMS messages and exported files are not changed.",
+                    "This permanently deletes transactions, accounts, categories, merchant rules, loans, cached rates, and budgets. Scheduled backups will be disabled and their saved password removed. Your original SMS messages, exported files, and existing backup files are not changed.",
                 )
             },
             confirmButton = {

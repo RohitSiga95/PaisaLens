@@ -9,6 +9,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -69,12 +71,16 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -95,27 +101,40 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AttentionAction
+import com.paisalens.app.data.model.AttentionItem
+import com.paisalens.app.data.model.BackupReviewState
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.MerchantTransactionGroup
 import com.paisalens.app.data.model.ReconciliationStatus
 import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PlanningReviewInput
 import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.StatementAuditMetadata
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.calculateReconciliationMetrics
+import com.paisalens.app.data.model.buildWeeklyReview
 import com.paisalens.app.data.model.findUncategorizedMerchantGroups
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.suggestReconciliationStatus
 import com.paisalens.app.data.importer.CreditCardStatementAuditor
+import com.paisalens.app.data.backup.takeScheduledBackupDestinationPermission
+import com.paisalens.app.notification.AlertDestination
+import com.paisalens.app.widget.WIDGET_DESTINATION_CARD_BILLS
+import com.paisalens.app.widget.WIDGET_DESTINATION_DUE_BILLS
+import com.paisalens.app.widget.WIDGET_DESTINATION_HOME
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.CustomCategoryIcon
 import com.paisalens.app.ui.components.MoneyText
@@ -128,16 +147,50 @@ import com.paisalens.app.ui.screens.OnboardingScreen
 import com.paisalens.app.ui.screens.SettingsScreen
 import com.paisalens.app.ui.screens.TransactionsScreen
 import com.paisalens.app.ui.screens.TransactionFilter
+import com.paisalens.app.ui.privacy.SecurePrivacyWindowEffect
 import com.paisalens.app.ui.theme.PaisaLensTheme
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
+import java.time.Duration
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlin.math.roundToLong
+
+private data class ReviewDate(
+    val date: LocalDate,
+    val zoneId: ZoneId,
+)
+
+@Composable
+private fun rememberCurrentReviewDate(): ReviewDate {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var current by remember {
+        val now = ZonedDateTime.now()
+        mutableStateOf(ReviewDate(now.toLocalDate(), now.zone))
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val now = ZonedDateTime.now()
+                current = ReviewDate(now.toLocalDate(), now.zone)
+                delay(nextReviewDateRefreshDelayMillis(now))
+            }
+        }
+    }
+    return current
+}
+
+internal fun nextReviewDateRefreshDelayMillis(now: ZonedDateTime): Long {
+    val nextDay = now.toLocalDate().plusDays(1).atStartOfDay(now.zone)
+    return (Duration.between(now, nextDay).toMillis() + 250L).coerceAtLeast(250L)
+}
 
 private enum class AppDestination(
     val label: String,
@@ -156,10 +209,17 @@ private enum class AppDestination(
 @Composable
 fun PaisaLensApp(
     viewModel: PaisaLensViewModel,
+    initialWidgetDestination: String? = null,
+    onWidgetDestinationHandled: () -> Unit = {},
+    initialAlertDestination: AlertDestination? = null,
+    onAlertDestinationHandled: () -> Unit = {},
     hasSmsPermission: Boolean,
     hasNotificationPermission: Boolean,
+    hasActionableAlertPermission: Boolean,
     onRequestSmsPermission: () -> Unit,
-    onRequestNotificationPermission: () -> Unit,
+    onRequestDigestNotificationPermission: () -> Unit,
+    onRequestActionableAlertPermission: () -> Unit,
+    onOpenActionableAlertSettings: () -> Unit,
     onExportData: () -> Unit,
     onCreateBackup: (CharArray) -> Unit,
     onRestoreBackup: (CharArray) -> Unit,
@@ -186,10 +246,14 @@ fun PaisaLensApp(
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
     val effectiveExpenseTransactions by viewModel.effectiveExpenseTransactions.collectAsStateWithLifecycle()
     val budgets by viewModel.budgets.collectAsStateWithLifecycle()
+    val advancedBudgets by viewModel.advancedBudgets.collectAsStateWithLifecycle()
     val categorizedMerchantKeys by viewModel.categorizedMerchantKeys.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
     val balanceHistory by viewModel.balanceHistory.collectAsStateWithLifecycle()
     val bills by viewModel.bills.collectAsStateWithLifecycle()
+    val creditCardBills by viewModel.creditCardBills.collectAsStateWithLifecycle()
+    val smsCoverageMessages by viewModel.smsCoverageMessages.collectAsStateWithLifecycle()
+    val smsCoverageRules by viewModel.smsCoverageRules.collectAsStateWithLifecycle()
     val netWorthItems by viewModel.netWorthItems.collectAsStateWithLifecycle()
     val smartCategoryRules by viewModel.smartCategoryRules.collectAsStateWithLifecycle()
     val reconciliations by viewModel.reconciliations.collectAsStateWithLifecycle()
@@ -214,6 +278,12 @@ fun PaisaLensApp(
     val themeConfiguration by viewModel.themeConfiguration.collectAsStateWithLifecycle()
     val homeLayout by viewModel.homeLayout.collectAsStateWithLifecycle()
     val notificationDigest by viewModel.notificationDigest.collectAsStateWithLifecycle()
+    val actionableAlerts by viewModel.actionableAlerts.collectAsStateWithLifecycle()
+    val privacyModeConfiguration by viewModel.privacyModeConfiguration.collectAsStateWithLifecycle()
+    val privacyModeSessionOverride by viewModel.privacyModeSessionOverride.collectAsStateWithLifecycle()
+    val privacyModeActive by viewModel.privacyModeActive.collectAsStateWithLifecycle()
+    val scheduledBackup by viewModel.scheduledBackup.collectAsStateWithLifecycle()
+    val scheduledBackupStatus by viewModel.scheduledBackupStatus.collectAsStateWithLifecycle()
     val lastScanAt by viewModel.lastScanAt.collectAsStateWithLifecycle()
     val lastBackupCreatedAt by viewModel.lastBackupCreatedAt.collectAsStateWithLifecycle()
     val lastBackupVerifiedAt by viewModel.lastBackupVerifiedAt.collectAsStateWithLifecycle()
@@ -252,9 +322,67 @@ fun PaisaLensApp(
     var showThemeStudio by remember { mutableStateOf(false) }
     var showHomeCustomization by remember { mutableStateOf(false) }
     var showPrivateDigest by remember { mutableStateOf(false) }
+    var showActionableAlerts by remember { mutableStateOf(false) }
+    var showPrivacyMode by remember { mutableStateOf(false) }
+    var showScheduledBackup by remember { mutableStateOf(false) }
+    var selectedScheduledBackupFolderUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var showSmsCoverage by remember { mutableStateOf(false) }
+    var showWeeklyReview by remember { mutableStateOf(false) }
     var showSharedExpenses by remember { mutableStateOf(false) }
     var showSavingsGoals by remember { mutableStateOf(false) }
     var showPaymentCommitments by remember { mutableStateOf(false) }
+    var requestedPlanSection by rememberSaveable { mutableStateOf(PlanSection.BUDGETS) }
+    var requestedInsightSection by rememberSaveable { mutableStateOf(InsightSection.OVERVIEW) }
+    var activityFilter by remember { mutableStateOf(TransactionFilter.ALL) }
+    var planNavigationRequest by remember { mutableIntStateOf(0) }
+    var insightNavigationRequest by remember { mutableIntStateOf(0) }
+    var activityNavigationRequest by remember { mutableIntStateOf(0) }
+    val openPlanSection: (PlanSection) -> Unit = { section ->
+        requestedPlanSection = section
+        planNavigationRequest += 1
+        destination = AppDestination.PLAN
+    }
+    val openInsightSection: (InsightSection) -> Unit = { section ->
+        requestedInsightSection = section
+        insightNavigationRequest += 1
+        destination = AppDestination.INSIGHTS
+    }
+    val openActivityFilter: (TransactionFilter) -> Unit = { filter ->
+        activityFilter = filter
+        activityNavigationRequest += 1
+        destination = AppDestination.ACTIVITY
+    }
+    LaunchedEffect(initialWidgetDestination) {
+        when (initialWidgetDestination) {
+            WIDGET_DESTINATION_HOME -> destination = AppDestination.HOME
+            WIDGET_DESTINATION_DUE_BILLS -> openPlanSection(PlanSection.BILLS)
+            WIDGET_DESTINATION_CARD_BILLS -> openPlanSection(PlanSection.CARD_BILLS)
+            null -> return@LaunchedEffect
+        }
+        onWidgetDestinationHandled()
+    }
+    LaunchedEffect(initialAlertDestination) {
+        when (initialAlertDestination) {
+            AlertDestination.HOME -> destination = AppDestination.HOME
+            AlertDestination.ACTIVITY -> openActivityFilter(TransactionFilter.REVIEW)
+            AlertDestination.BILLS -> openPlanSection(PlanSection.BILLS)
+            AlertDestination.CREDIT_CARD_BILLS -> openPlanSection(PlanSection.CARD_BILLS)
+            AlertDestination.BUDGETS -> openPlanSection(PlanSection.BUDGETS)
+            AlertDestination.AUTOPAY -> openPlanSection(PlanSection.AUTOPAY)
+            AlertDestination.SAVINGS_GOALS -> {
+                destination = AppDestination.HOME
+                showSavingsGoals = true
+            }
+            AlertDestination.BACKUP_SETTINGS -> {
+                destination = AppDestination.SETTINGS
+                showScheduledBackup = true
+            }
+            AlertDestination.CASH_FLOW -> openInsightSection(InsightSection.CASH_FLOW)
+            AlertDestination.SPLIT_EXPENSES -> showSharedExpenses = true
+            null -> return@LaunchedEffect
+        }
+        onAlertDestinationHandled()
+    }
     var splitTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
     var splitEditorSaving by remember { mutableStateOf(false) }
     var editingSavingsGoal by remember { mutableStateOf<SavingsGoal?>(null) }
@@ -268,15 +396,104 @@ fun PaisaLensApp(
     var trustPeriod by remember { mutableStateOf(YearMonth.now()) }
     var trustAccountId by rememberSaveable { mutableStateOf<Long?>(null) }
     var ignoredLinkSuggestions by remember { mutableStateOf(emptySet<String>()) }
-    var activityFilter by remember { mutableStateOf(TransactionFilter.ALL) }
     var showSmartCategoryRules by remember { mutableStateOf(false) }
     var backupAction by remember { mutableStateOf<BackupAction?>(null) }
     val uncategorizedMerchants = remember(transactions, categorizedMerchantKeys) {
         findUncategorizedMerchantGroups(transactions, categorizedMerchantKeys)
     }
     val snackbarHostState = remember { SnackbarHostState() }
+    val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val requestSmsResync: () -> Unit = {
+        when (smsResyncAction(hasSmsPermission, isScanning)) {
+            SmsResyncAction.START_SCAN -> viewModel.scanSms()
+            SmsResyncAction.REQUEST_PERMISSION -> onRequestSmsPermission()
+            SmsResyncAction.IGNORE_WHILE_SCANNING -> Unit
+        }
+    }
     val systemInDarkTheme = isSystemInDarkTheme()
+    val reviewDate = rememberCurrentReviewDate()
+    val weeklyReview = remember(
+        transactions,
+        accounts,
+        bills,
+        creditCardBills,
+        savingsGoals,
+        savingsContributions,
+        paymentCommitments,
+        transactionLinks,
+        expenseSplits,
+        lastBackupCreatedAt,
+        lastBackupVerifiedAt,
+        scheduledBackup,
+        scheduledBackupStatus,
+        reviewDate,
+    ) {
+        buildWeeklyReview(
+            input = PlanningReviewInput(
+                transactions = transactions,
+                accounts = accounts,
+                bills = bills,
+                creditCardBills = creditCardBills,
+                savingsGoals = savingsGoals,
+                savingsContributions = savingsContributions,
+                paymentCommitments = paymentCommitments,
+                transactionLinks = transactionLinks,
+                expenseSplits = expenseSplits,
+                backup = BackupReviewState(
+                    lastSuccessfulAt = maxOf(lastBackupCreatedAt, scheduledBackupStatus.lastSuccessfulAt),
+                    lastVerifiedAt = maxOf(lastBackupVerifiedAt, scheduledBackupStatus.lastVerifiedAt),
+                    lastFailureAt = scheduledBackupStatus.lastFailureAt,
+                    lastFailureMessage = scheduledBackupStatus.lastFailureMessage,
+                    scheduledBackupEnabled = scheduledBackup.enabled,
+                ),
+            ),
+            today = reviewDate.date,
+            zoneId = reviewDate.zoneId,
+        )
+    }
+    val handleAttentionAction: (AttentionItem) -> Unit = { item ->
+        showWeeklyReview = false
+        when (item.action) {
+            AttentionAction.REVIEW_TRANSACTIONS -> {
+                openActivityFilter(TransactionFilter.REVIEW)
+            }
+            AttentionAction.REFRESH_ACCOUNT -> {
+                item.accountId?.let { accountId ->
+                    accounts.firstOrNull { it.id == accountId }?.let(onComposeBalanceSms)
+                }
+            }
+            AttentionAction.OPEN_BILLS -> {
+                openPlanSection(PlanSection.BILLS)
+            }
+            AttentionAction.OPEN_CREDIT_CARD_BILLS -> {
+                openPlanSection(PlanSection.CARD_BILLS)
+            }
+            AttentionAction.OPEN_SAVINGS_GOALS -> showSavingsGoals = true
+            AttentionAction.OPEN_PAYMENT_COMMITMENTS -> showPaymentCommitments = true
+            AttentionAction.OPEN_BACKUP_SETTINGS -> {
+                destination = AppDestination.SETTINGS
+                showScheduledBackup = true
+            }
+        }
+    }
+    val scheduledBackupFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            takeScheduledBackupDestinationPermission(context, uri)
+                .onSuccess {
+                    selectedScheduledBackupFolderUri = uri.toString()
+                }
+                .onFailure {
+                    uiScope.launch {
+                        snackbarHostState.showSnackbar(
+                            it.message ?: "Could not save access to that backup folder",
+                        )
+                    }
+                }
+        }
+    }
 
     BackHandler(enabled = !destination.showInNavigation) {
         destination = if (destination == AppDestination.CALENDAR) AppDestination.ACTIVITY else AppDestination.HOME
@@ -306,6 +523,10 @@ fun PaisaLensApp(
     }
 
     PaisaLensTheme(configuration = themeConfiguration) {
+        SecurePrivacyWindowEffect(
+            active = privacyModeActive,
+            protectScreenCapture = privacyModeConfiguration.protectScreenCapture,
+        )
         if (!onboardingComplete) {
             OnboardingScreen(
                 onAllowSms = {
@@ -362,38 +583,64 @@ fun PaisaLensApp(
                     .padding(innerPadding)
                     .statusBarsPadding(),
             ) {
-                AnimatedContent(
-                    targetState = destination,
-                    transitionSpec = {
-                        val forward = targetState.ordinal > initialState.ordinal
-                        val direction = if (forward) 1 else -1
-                        (fadeIn(tween(180)) + slideInHorizontally(tween(260)) { it / 10 * direction })
-                            .togetherWith(
-                                fadeOut(tween(110)) +
-                                    slideOutHorizontally(tween(180)) { -it / 14 * direction },
-                            )
-                    },
-                    label = "mainNavigation",
-                ) { screen ->
-                    when (screen) {
+                PullToRefreshBox(
+                    isRefreshing = isScanning,
+                    onRefresh = requestSmsResync,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    AnimatedContent(
+                        targetState = destination,
+                        transitionSpec = {
+                            val forward = targetState.ordinal > initialState.ordinal
+                            val direction = if (forward) 1 else -1
+                            (fadeIn(tween(180)) + slideInHorizontally(tween(260)) { it / 10 * direction })
+                                .togetherWith(
+                                    fadeOut(tween(110)) +
+                                        slideOutHorizontally(tween(180)) { -it / 14 * direction },
+                                )
+                        },
+                        label = "mainNavigation",
+                    ) { screen ->
+                        when (screen) {
                         AppDestination.HOME -> HomeScreen(
                             transactions = transactions,
                             effectiveExpenseTransactions = effectiveExpenseTransactions,
                             transactionLinks = transactionLinks,
                             budgets = budgets,
+                            advancedBudgets = advancedBudgets,
+                            customCategories = customCategories,
                             accounts = accounts,
+                            bills = bills,
+                            recurringPayments = recurringPayments,
+                            loans = loans,
+                            creditCardBills = creditCardBills,
                             homeLayout = homeLayout,
                             savingsGoals = savingsGoals,
                             savingsContributions = savingsContributions,
                             paymentCommitments = paymentCommitments,
+                            needsAttention = weeklyReview.attention,
+                            lastScanAt = lastScanAt,
+                            privacyModeActive = privacyModeActive,
                             isScanning = isScanning,
                             hasSmsPermission = hasSmsPermission,
-                            onScan = { viewModel.scanSms(context) },
+                            onScan = requestSmsResync,
+                            onTogglePrivacy = viewModel::toggleSessionPrivacy,
                             onRequestPermission = onRequestSmsPermission,
                             onAdd = { showManualSheet = true },
                             onCustomizeHome = { showHomeCustomization = true },
                             onOpenSavingsGoals = { showSavingsGoals = true },
                             onOpenCommitments = { showPaymentCommitments = true },
+                            onOpenBudgets = {
+                                openPlanSection(PlanSection.BUDGETS)
+                            },
+                            onOpenBills = {
+                                openPlanSection(PlanSection.BILLS)
+                            },
+                            onOpenCreditCardBills = {
+                                openPlanSection(PlanSection.CARD_BILLS)
+                            },
+                            onOpenWeeklyReview = { showWeeklyReview = true },
+                            onAttentionAction = handleAttentionAction,
                             onRefreshAccount = onComposeBalanceSms,
                             onCheckBalanceViaUpi = { account, accountIds ->
                                 val canonicalId = accountIds
@@ -412,94 +659,120 @@ fun PaisaLensApp(
                                 selectedTransaction = transactions.firstOrNull { it.id == homeRecord.id } ?: homeRecord
                             },
                         )
-                        AppDestination.ACTIVITY -> TransactionsScreen(
-                            transactions = transactions,
-                            accounts = accounts,
-                            uncategorizedMerchants = uncategorizedMerchants,
-                            initialFilter = activityFilter,
-                            onCategorizeMerchant = { selectedMerchantGroup = it },
-                            onTrustCenter = { showTrustCenter = true },
-                            onSharedExpenses = { showSharedExpenses = true },
-                            onCalendar = { destination = AppDestination.CALENDAR },
-                            onTransactionClick = { selectedTransaction = it },
-                        )
-                        AppDestination.PLAN -> PlanningScreen(
-                            transactions = transactions,
-                            transactionLinks = transactionLinks,
-                            expenseSplits = expenseSplits,
-                            budgets = budgets,
-                            bills = bills,
-                            recurringPayments = recurringPayments,
-                            loans = loans,
-                            accounts = accounts,
-                            savingsGoals = savingsGoals,
-                            savingsContributions = savingsContributions,
-                            paymentCommitments = paymentCommitments,
-                            paymentCommitmentSuggestions = paymentCommitmentSuggestions,
-                            onSetBudget = viewModel::setBudget,
-                            onSaveBill = viewModel::saveBill,
-                            onMarkBillPaid = viewModel::markBillPaid,
-                            onDeleteBill = viewModel::deleteBill,
-                            onAddSavingsGoal = {
-                                showSavingsGoals = false
-                                addingSavingsGoal = true
-                            },
-                            onEditSavingsGoal = {
-                                showSavingsGoals = false
-                                editingSavingsGoal = it
-                            },
-                            onDeleteSavingsGoal = { viewModel.deleteSavingsGoal(it.id) },
-                            onContributeSavingsGoal = { contributingSavingsGoal = it },
-                            onSaveSavingsContribution = { viewModel.saveSavingsContribution(it) },
-                            onDeleteSavingsContribution = { viewModel.deleteSavingsContribution(it.id) },
-                            onAddPaymentCommitment = {
-                                showPaymentCommitments = false
-                                addingPaymentCommitment = true
-                            },
-                            onEditPaymentCommitment = {
-                                showPaymentCommitments = false
-                                editingPaymentCommitment = it
-                            },
-                            onUpdatePaymentCommitment = { viewModel.savePaymentCommitment(it) },
-                            onDeletePaymentCommitment = { viewModel.deletePaymentCommitment(it.id) },
-                            onAcceptPaymentSuggestion = {
-                                showPaymentCommitments = false
-                                editingPaymentCommitment = it
-                            },
-                        )
-                        AppDestination.INSIGHTS -> InsightsScreen(
-                            transactions = transactions,
-                            transactionLinks = transactionLinks,
-                            expenseSplits = expenseSplits,
-                            accounts = accounts,
-                            balanceHistory = balanceHistory,
-                            bills = bills,
-                            recurringPayments = recurringPayments,
-                            paymentCommitments = paymentCommitments,
-                            loans = loans,
-                            netWorthItems = netWorthItems,
-                            insights = insights,
-                            onTransactionClick = { selectedTransaction = it },
-                            onSaveNetWorthItem = viewModel::saveNetWorthItem,
-                            onDeleteNetWorthItem = viewModel::deleteNetWorthItem,
-                        )
+                        AppDestination.ACTIVITY -> key(activityNavigationRequest) {
+                            TransactionsScreen(
+                                transactions = transactions,
+                                accounts = accounts,
+                                uncategorizedMerchants = uncategorizedMerchants,
+                                customCategories = customCategories,
+                                initialFilter = activityFilter,
+                                onCategorizeMerchant = { selectedMerchantGroup = it },
+                                onTrustCenter = { showTrustCenter = true },
+                                onSharedExpenses = { showSharedExpenses = true },
+                                onCalendar = { destination = AppDestination.CALENDAR },
+                                onTransactionClick = { selectedTransaction = it },
+                            )
+                        }
+                        AppDestination.PLAN -> key(planNavigationRequest) {
+                            PlanningScreen(
+                                initialSection = requestedPlanSection,
+                                transactions = transactions,
+                                transactionLinks = transactionLinks,
+                                expenseSplits = expenseSplits,
+                                budgets = budgets,
+                                advancedBudgets = advancedBudgets,
+                                customCategories = customCategories,
+                                bills = bills,
+                                recurringPayments = recurringPayments,
+                                loans = loans,
+                                accounts = accounts,
+                                savingsGoals = savingsGoals,
+                                savingsContributions = savingsContributions,
+                                paymentCommitments = paymentCommitments,
+                                paymentCommitmentSuggestions = paymentCommitmentSuggestions,
+                                onSetBudget = viewModel::setBudget,
+                                onSaveAdvancedBudget = viewModel::saveAdvancedBudget,
+                                onDeleteAdvancedBudget = viewModel::deleteAdvancedBudget,
+                                onSaveBill = viewModel::saveBill,
+                                onMarkBillPaid = viewModel::markBillPaid,
+                                onDeleteBill = viewModel::deleteBill,
+                                onAddSavingsGoal = {
+                                    showSavingsGoals = false
+                                    addingSavingsGoal = true
+                                },
+                                onEditSavingsGoal = {
+                                    showSavingsGoals = false
+                                    editingSavingsGoal = it
+                                },
+                                onDeleteSavingsGoal = { viewModel.deleteSavingsGoal(it.id) },
+                                onContributeSavingsGoal = { contributingSavingsGoal = it },
+                                onSaveSavingsContribution = { viewModel.saveSavingsContribution(it) },
+                                onDeleteSavingsContribution = { viewModel.deleteSavingsContribution(it.id) },
+                                onAddPaymentCommitment = {
+                                    showPaymentCommitments = false
+                                    addingPaymentCommitment = true
+                                },
+                                onEditPaymentCommitment = {
+                                    showPaymentCommitments = false
+                                    editingPaymentCommitment = it
+                                },
+                                onUpdatePaymentCommitment = { viewModel.savePaymentCommitment(it) },
+                                onDeletePaymentCommitment = { viewModel.deletePaymentCommitment(it.id) },
+                                onAcceptPaymentSuggestion = {
+                                    showPaymentCommitments = false
+                                    editingPaymentCommitment = it
+                                },
+                                creditCardBills = creditCardBills,
+                                onMarkCreditCardBillPaid = viewModel::markCreditCardBillPaid,
+                                onAssignCreditCardBill = viewModel::assignCreditCardBillToAccount,
+                            )
+                        }
+                        AppDestination.INSIGHTS -> key(insightNavigationRequest) {
+                            InsightsScreen(
+                                initialSection = requestedInsightSection,
+                                transactions = transactions,
+                                transactionLinks = transactionLinks,
+                                expenseSplits = expenseSplits,
+                                accounts = accounts,
+                                balanceHistory = balanceHistory,
+                                bills = bills,
+                                recurringPayments = recurringPayments,
+                                paymentCommitments = paymentCommitments,
+                                loans = loans,
+                                netWorthItems = netWorthItems,
+                                insights = insights,
+                                onTransactionClick = { selectedTransaction = it },
+                                onSaveNetWorthItem = viewModel::saveNetWorthItem,
+                                onDeleteNetWorthItem = viewModel::deleteNetWorthItem,
+                            )
+                        }
                         AppDestination.SETTINGS -> SettingsScreen(
                             themeConfiguration = themeConfiguration,
                             homeLayout = homeLayout,
                             notificationDigest = notificationDigest,
+                            actionableAlerts = actionableAlerts,
+                            privacyModeActive = privacyModeActive,
+                            scheduledBackup = scheduledBackup,
                             hasSmsPermission = hasSmsPermission,
                             isScanning = isScanning,
                             lastScanAt = lastScanAt,
                             onCustomizeTheme = { showThemeStudio = true },
                             onCustomizeHome = { showHomeCustomization = true },
                             onPrivateDigest = { showPrivateDigest = true },
+                            onActionableAlerts = { showActionableAlerts = true },
+                            onPrivacyMode = { showPrivacyMode = true },
+                            onScheduledBackup = { showScheduledBackup = true },
+                            onSmsCoverage = { showSmsCoverage = true },
                             onRequestSms = onRequestSmsPermission,
-                            onScan = { viewModel.scanSms(context) },
+                            onScan = requestSmsResync,
                             transactionCount = transactions.size,
                             accountCount = accounts.size,
                             customCategoryCount = customCategories.size,
                             recurringCount = recurringPayments.size,
                             reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW },
+                            smsCoverageCount = smsCoverageMessages.count {
+                                it.status == com.paisalens.app.data.model.SmsCoverageStatus.NEEDS_REVIEW
+                            },
                             loanCount = loans.size,
                             merchantAliasCount = merchantAliases.size,
                             smartRuleCount = smartCategoryRules.size,
@@ -535,6 +808,7 @@ fun PaisaLensApp(
                                 selectedTransaction = transactions.firstOrNull { it.id == calendarRecord.id } ?: calendarRecord
                             },
                         )
+                        }
                     }
                 }
             }
@@ -918,16 +1192,14 @@ fun PaisaLensApp(
                 isVerifyingBackup = isVerifyingBackup,
                 undoInProgressBatchId = undoInProgressBatchId,
                 onRequestSmsPermission = onRequestSmsPermission,
-                onScanSms = { viewModel.scanSms(context) },
+                onScanSms = requestSmsResync,
                 onReviewTransactions = {
                     showDataHealth = false
-                    activityFilter = TransactionFilter.REVIEW
-                    destination = AppDestination.ACTIVITY
+                    openActivityFilter(TransactionFilter.REVIEW)
                 },
                 onReviewCategories = {
                     showDataHealth = false
-                    activityFilter = TransactionFilter.UNCATEGORIZED
-                    destination = AppDestination.ACTIVITY
+                    openActivityFilter(TransactionFilter.UNCATEGORIZED)
                 },
                 onRefreshBalancesOnHome = {
                     showDataHealth = false
@@ -935,8 +1207,7 @@ fun PaisaLensApp(
                 },
                 onReviewUnassignedTransactions = {
                     showDataHealth = false
-                    activityFilter = TransactionFilter.UNASSIGNED
-                    destination = AppDestination.ACTIVITY
+                    openActivityFilter(TransactionFilter.UNASSIGNED)
                 },
                 onOpenTrustCenter = {
                     showDataHealth = false
@@ -1031,13 +1302,71 @@ fun PaisaLensApp(
             )
         }
 
+        if (showWeeklyReview) {
+            WeeklyReviewSheet(
+                review = weeklyReview,
+                onAction = handleAttentionAction,
+                onDismiss = { showWeeklyReview = false },
+            )
+        }
+
         if (showPrivateDigest) {
             PrivateDigestSettingsSheet(
                 configuration = notificationDigest,
                 hasNotificationPermission = hasNotificationPermission,
                 onConfigurationChange = viewModel::setNotificationDigest,
-                onRequestNotificationPermission = onRequestNotificationPermission,
+                onRequestNotificationPermission = onRequestDigestNotificationPermission,
                 onDismiss = { showPrivateDigest = false },
+            )
+        }
+
+        if (showActionableAlerts) {
+            ActionableAlertsSettingsSheet(
+                configuration = actionableAlerts,
+                hasNotificationPermission = hasActionableAlertPermission,
+                onConfigurationChange = viewModel::setActionableAlerts,
+                onRequestNotificationPermission = onRequestActionableAlertPermission,
+                onOpenSystemNotificationSettings = onOpenActionableAlertSettings,
+                onDismiss = { showActionableAlerts = false },
+            )
+        }
+
+        if (showPrivacyMode) {
+            PrivacyModeSettingsSheet(
+                configuration = privacyModeConfiguration,
+                active = privacyModeActive,
+                sessionOverride = privacyModeSessionOverride,
+                onConfigurationChange = viewModel::setPrivacyModeConfiguration,
+                onSetSessionPrivacy = { viewModel.setSessionPrivacy(it) },
+                onClearSessionOverride = { viewModel.clearSessionPrivacyOverride() },
+                onDismiss = { showPrivacyMode = false },
+            )
+        }
+
+        if (showScheduledBackup) {
+            ScheduledBackupSettingsSheet(
+                configuration = scheduledBackup,
+                status = scheduledBackupStatus,
+                hasStoredPassphrase = viewModel.hasScheduledBackupSecret(),
+                selectedDestinationUri = selectedScheduledBackupFolderUri ?: scheduledBackup.destinationUri,
+                onChooseFolder = { scheduledBackupFolderLauncher.launch(null) },
+                onSave = viewModel::setScheduledBackup,
+                onForgetPassphrase = viewModel::clearScheduledBackupSecret,
+                onDismiss = {
+                    selectedScheduledBackupFolderUri = null
+                    showScheduledBackup = false
+                },
+            )
+        }
+
+        if (showSmsCoverage) {
+            SmsCoverageCenterSheet(
+                messages = smsCoverageMessages,
+                rules = smsCoverageRules,
+                onSaveRule = viewModel::saveSmsCoverageRule,
+                onDeleteRule = viewModel::deleteSmsCoverageRule,
+                onDeleteMessage = viewModel::deleteSmsCoverageMessage,
+                onDismiss = { showSmsCoverage = false },
             )
         }
 

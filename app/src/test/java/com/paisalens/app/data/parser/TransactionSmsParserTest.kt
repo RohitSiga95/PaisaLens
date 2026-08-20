@@ -4,6 +4,7 @@ import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.SmsCoverageRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -187,5 +188,55 @@ class TransactionSmsParserTest {
         requireNotNull(result)
         assertEquals(TransactionType.TRANSFER, result.type)
         assertEquals(ExpenseCategory.TRANSFER, result.category)
+    }
+
+    @Test
+    fun literalCoverageRuleParsesPreviouslyUnsupportedAlertForReview() {
+        val result = parser.parse(
+            sender = "VM-MYBANK",
+            body = "Alert for INR 250.00 at GREEN MART using card ending 1234.",
+            timestamp = 1_700_000_000_000,
+            messageId = "sms-rule-1",
+            coverageRules = listOf(
+                SmsCoverageRule(
+                    id = 7,
+                    name = "MyBank purchase",
+                    senderKey = "MYBANK",
+                    requiredPhrases = listOf("green mart", "using card"),
+                    merchantName = "Green Mart",
+                    category = ExpenseCategory.GROCERIES,
+                    type = TransactionType.EXPENSE,
+                    source = TransactionSource.CARD,
+                ),
+            ),
+        )
+
+        requireNotNull(result)
+        assertEquals(25_000L, result.amountMinor)
+        assertEquals("Green Mart", result.merchant)
+        assertEquals("1234", result.accountHint)
+        assertEquals(ExpenseCategory.GROCERIES, result.category)
+        assertEquals(TransactionSource.CARD, result.source)
+        assertEquals(ReviewStatus.NEEDS_REVIEW, result.reviewStatus)
+        assertTrue(result.reviewReason.orEmpty().contains("MyBank purchase"))
+    }
+
+    @Test
+    fun coverageRuleNeverOverridesAuthenticationMessage() {
+        val result = parser.parse(
+            sender = "VM-MYBANK",
+            body = "OTP is 123456 for INR 250 at GREEN MART. Do not share.",
+            timestamp = 1_700_000_000_000,
+            coverageRules = listOf(
+                SmsCoverageRule(
+                    name = "Unsafe broad rule",
+                    senderKey = "MYBANK",
+                    requiredPhrases = listOf("green mart"),
+                    merchantName = "Green Mart",
+                ),
+            ),
+        )
+
+        assertNull(result)
     }
 }

@@ -25,6 +25,9 @@ data class ExpenseSplit(
     val status: ExpenseSplitStatus = ExpenseSplitStatus.OPEN,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val entryMode: ExpenseSplitEntryMode = ExpenseSplitEntryMode.AMOUNT,
+    /** Original percentage in basis points (10,000 = 100%) when [entryMode] is percentage. */
+    val shareBasisPoints: Int? = null,
 )
 
 enum class ExpenseSplitValidationIssue {
@@ -39,6 +42,7 @@ enum class ExpenseSplitValidationIssue {
     LINKED_TRANSACTION_NOT_INCOMING,
     LINKED_TRANSACTION_REUSED,
     LINKED_TRANSACTION_EXCEEDS_REIMBURSEMENT,
+    INVALID_PERCENTAGE_CONFIGURATION,
 }
 
 data class ExpenseSplitValidation(
@@ -56,6 +60,112 @@ data class ExpenseSplitSummary(
     val participantCount: Int,
     val settledParticipantCount: Int,
 )
+
+/** How participant shares are configured. Exact minor-unit shares are retained for ledger calculations. */
+enum class ExpenseSplitEntryMode {
+    AMOUNT,
+    PERCENTAGE,
+}
+
+data class ExpenseSplitCategoryStat(
+    val category: ExpenseCategory,
+    val customCategoryId: Long? = null,
+    val categoryLabel: String,
+    val transactionCount: Int,
+    val allocatedMinor: Long,
+    val reimbursedMinor: Long,
+    val outstandingMinor: Long,
+)
+
+/** Converts basis-point percentages (10,000 = 100%) into deterministic exact shares. */
+fun expenseSplitSharesFromPercentages(
+    totalMinor: Long,
+    percentagesBasisPoints: List<Int>,
+): List<Long> {
+    require(totalMinor >= 0) { "Expense total cannot be negative." }
+    require(percentagesBasisPoints.all { it in 1..10_000 }) { "Each percentage must be above 0% and at most 100%." }
+    val totalBasisPoints = percentagesBasisPoints.sum()
+    require(totalBasisPoints <= 10_000) { "Participant percentages cannot exceed 100%." }
+    var remainingMinor = totalMinor
+    return percentagesBasisPoints.mapIndexed { index, basisPoints ->
+        val share = if (index == percentagesBasisPoints.lastIndex && totalBasisPoints == 10_000) {
+            remainingMinor
+        } else {
+            ((totalMinor * basisPoints.toLong() + 5_000L) / 10_000L).coerceAtMost(remainingMinor)
+        }
+        remainingMinor -= share
+        share
+    }
+}
+
+fun expenseSplitShareBasisPoints(shareMinor: Long, totalMinor: Long): Int = when {
+    shareMinor <= 0 || totalMinor <= 0 -> 0
+    else -> ((shareMinor * 10_000L + totalMinor / 2L) / totalMinor)
+        .coerceIn(0L, 10_000L)
+        .toInt()
+}
+
+/**
+ * Converts exact shares back to a stable percentage configuration without allowing independent
+ * rounding to push the total above 100%. Largest remainders receive the spare basis points.
+ */
+fun expenseSplitBasisPointsFromShares(
+    sharesMinor: List<Long>,
+    totalMinor: Long,
+): List<Int> {
+    require(totalMinor > 0) { "Expense total must be positive." }
+    require(sharesMinor.all { it > 0 }) { "Every participant share must be positive." }
+    val allocatedMinor = sharesMinor.sum()
+    require(allocatedMinor <= totalMinor) { "Participant shares cannot exceed the expense." }
+    if (sharesMinor.isEmpty()) return emptyList()
+
+    val scaled = sharesMinor.map { it * 10_000L }
+    val result = scaled.map { (it / totalMinor).toInt() }.toMutableList()
+    val roundedTotal = ((allocatedMinor * 10_000L + totalMinor / 2L) / totalMinor)
+        .coerceIn(sharesMinor.size.toLong(), 10_000L)
+        .toInt()
+    var spare = roundedTotal - result.sum()
+    val remainderOrder = scaled.indices.sortedWith(
+        compareByDescending<Int> { scaled[it] % totalMinor }.thenBy { it },
+    )
+    var cursor = 0
+    while (spare > 0) {
+        result[remainderOrder[cursor % remainderOrder.size]] += 1
+        cursor += 1
+        spare -= 1
+    }
+    return result
+}
+
+fun buildExpenseSplitCategoryStats(
+    transactions: List<TransactionRecord>,
+    splits: List<ExpenseSplit>,
+): List<ExpenseSplitCategoryStat> {
+    val transactionsById = transactions.associateBy(TransactionRecord::id)
+    return splits
+        .groupBy { split ->
+            val transaction = transactionsById[split.transactionId]
+            Triple(
+                transaction?.category ?: ExpenseCategory.OTHER,
+                transaction?.customCategoryId,
+                transaction?.categoryLabel() ?: ExpenseCategory.OTHER.label,
+            )
+        }
+        .map { (key, rows) ->
+            val allocated = rows.sumOf(ExpenseSplit::shareMinor)
+            val reimbursed = rows.sumOf(ExpenseSplit::reimbursedMinor)
+            ExpenseSplitCategoryStat(
+                category = key.first,
+                customCategoryId = key.second,
+                categoryLabel = key.third,
+                transactionCount = rows.map(ExpenseSplit::transactionId).distinct().size,
+                allocatedMinor = allocated,
+                reimbursedMinor = reimbursed,
+                outstandingMinor = (allocated - reimbursed).coerceAtLeast(0),
+            )
+        }
+        .sortedWith(compareByDescending<ExpenseSplitCategoryStat> { it.outstandingMinor }.thenBy { it.categoryLabel })
+}
 
 fun expenseSplitStatus(shareMinor: Long, reimbursedMinor: Long): ExpenseSplitStatus = when {
     shareMinor > 0 && reimbursedMinor >= shareMinor -> ExpenseSplitStatus.REIMBURSED
@@ -88,6 +198,19 @@ fun validateExpenseSplits(
         if (split.reimbursedMinor > split.shareMinor) {
             return ExpenseSplitValidation(false, ExpenseSplitValidationIssue.REIMBURSEMENT_EXCEEDS_SHARE)
         }
+        if (
+            split.entryMode == ExpenseSplitEntryMode.PERCENTAGE &&
+            split.shareBasisPoints !in 1..10_000
+        ) {
+            return ExpenseSplitValidation(false, ExpenseSplitValidationIssue.INVALID_PERCENTAGE_CONFIGURATION)
+        }
+    }
+    if (
+        splits.any { it.entryMode == ExpenseSplitEntryMode.PERCENTAGE } &&
+        splits.filter { it.entryMode == ExpenseSplitEntryMode.PERCENTAGE }
+            .sumOf { it.shareBasisPoints ?: 0 } > 10_000
+    ) {
+        return ExpenseSplitValidation(false, ExpenseSplitValidationIssue.INVALID_PERCENTAGE_CONFIGURATION)
     }
     if (splits.sumOf(ExpenseSplit::shareMinor) > transaction.amountMinor) {
         return ExpenseSplitValidation(false, ExpenseSplitValidationIssue.ALLOCATION_EXCEEDS_EXPENSE)

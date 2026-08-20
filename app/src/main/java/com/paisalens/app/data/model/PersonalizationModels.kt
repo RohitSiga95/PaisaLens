@@ -8,6 +8,11 @@ enum class HomeModule(
     val storageId: String,
     val label: String,
 ) {
+    FINANCIAL_PULSE("financial_pulse", "Financial pulse"),
+    NEEDS_ATTENTION("needs_attention", "Needs your attention"),
+    MONEY_TIMELINE("money_timeline", "Next 14 days"),
+    BUDGET_PACE("budget_pace", "Budget pace"),
+    CARD_HEALTH("card_health", "Card health"),
     MONTHLY_SPEND("monthly_spend", "Monthly spend"),
     SPEND_OVERVIEW("spend_overview", "Spend overview"),
     SPENDING_BREAKDOWN("spending_breakdown", "Spending breakdown"),
@@ -19,14 +24,18 @@ enum class HomeModule(
 
     companion object {
         val defaultOrder: List<HomeModule> = listOf(
-            MONTHLY_SPEND,
-            SPEND_OVERVIEW,
+            FINANCIAL_PULSE,
+            NEEDS_ATTENTION,
+            MONEY_TIMELINE,
+            BUDGET_PACE,
+            CARD_HEALTH,
             SPENDING_BREAKDOWN,
             BANK_BALANCES,
-            CREDIT_AVAILABLE,
             SAVINGS_GOALS,
-            UPCOMING_COMMITMENTS,
         )
+
+        /** Includes legacy and specialist modules which are hidden by the daily-first default. */
+        val customizationOrder: List<HomeModule> = defaultOrder + entries.filterNot(defaultOrder::contains)
 
         fun fromStorageId(value: String?): HomeModule? {
             val normalized = value?.trim()?.lowercase(Locale.ROOT) ?: return null
@@ -35,12 +44,52 @@ enum class HomeModule(
     }
 }
 
+enum class HomeDashboardDensity(
+    val storageId: String,
+    val label: String,
+) {
+    COMPACT("compact", "Compact"),
+    COMFORTABLE("comfortable", "Comfortable"),
+    ;
+
+    companion object {
+        fun fromStorageId(value: String?): HomeDashboardDensity =
+            entries.firstOrNull { it.storageId == value?.trim()?.lowercase(Locale.ROOT) } ?: COMPACT
+    }
+}
+
+enum class HomeHeroMetric(
+    val storageId: String,
+    val label: String,
+) {
+    SAFE_TO_SPEND("safe_to_spend", "Safe to spend"),
+    AVAILABLE_CASH("available_cash", "Available cash"),
+    MONTHLY_SPEND("monthly_spend", "Monthly spending"),
+    ;
+
+    companion object {
+        fun fromStorageId(value: String?): HomeHeroMetric =
+            entries.firstOrNull { it.storageId == value?.trim()?.lowercase(Locale.ROOT) } ?: SAFE_TO_SPEND
+    }
+}
+
+enum class HomeDashboardPreset(
+    val label: String,
+) {
+    EVERYDAY("Everyday"),
+    BUDGET_FOCUS("Budget focus"),
+    DEBT_FOCUS("Debt focus"),
+    MINIMAL("Minimal"),
+}
+
 /**
  * The ordered list is also the visibility list: omitted modules are hidden.
  * At least one module is retained so a damaged preference can never produce a blank Home screen.
  */
 data class HomeLayoutConfiguration(
     val orderedVisibleModules: List<HomeModule> = HomeModule.defaultOrder,
+    val density: HomeDashboardDensity = HomeDashboardDensity.COMPACT,
+    val heroMetric: HomeHeroMetric = HomeHeroMetric.SAFE_TO_SPEND,
 ) {
     fun normalized(): HomeLayoutConfiguration {
         val safeModules = orderedVisibleModules.distinct()
@@ -59,7 +108,7 @@ data class HomeLayoutConfiguration(
             current - module
         }
         return copy(
-            orderedVisibleModules = updated.ifEmpty { listOf(HomeModule.MONTHLY_SPEND) },
+            orderedVisibleModules = updated.ifEmpty { listOf(HomeModule.FINANCIAL_PULSE) },
         )
     }
 
@@ -73,19 +122,96 @@ data class HomeLayoutConfiguration(
         return copy(orderedVisibleModules = reordered)
     }
 
-    fun toStorageString(): String = normalized().orderedVisibleModules.joinToString(",") { it.storageId }
+    fun toStorageString(): String = normalized().let { safe ->
+        STORAGE_VERSION_PREFIX + listOf(
+            safe.density.storageId,
+            safe.heroMetric.storageId,
+            safe.orderedVisibleModules.joinToString(",") { it.storageId },
+        ).joinToString(STORAGE_SECTION_SEPARATOR)
+    }
+
+    fun matchingPreset(): HomeDashboardPreset? = HomeDashboardPreset.entries.firstOrNull { preset ->
+        orderedVisibleModules == modulesForPreset(preset)
+    }
 
     companion object {
         fun fromStorageString(value: String?): HomeLayoutConfiguration {
             if (value.isNullOrBlank()) return HomeLayoutConfiguration()
-            val parsed = value
+            if (value.startsWith(STORAGE_VERSION_PREFIX)) {
+                val sections = value.removePrefix(STORAGE_VERSION_PREFIX).split(STORAGE_SECTION_SEPARATOR, limit = 3)
+                val parsed = sections.getOrNull(2)
+                    ?.split(',')
+                    ?.mapNotNull(HomeModule::fromStorageId)
+                    ?.distinct()
+                    .orEmpty()
+                return HomeLayoutConfiguration(
+                    orderedVisibleModules = parsed.ifEmpty { HomeModule.defaultOrder },
+                    density = HomeDashboardDensity.fromStorageId(sections.getOrNull(0)),
+                    heroMetric = HomeHeroMetric.fromStorageId(sections.getOrNull(1)),
+                )
+            }
+
+            val isV2Format = value.startsWith(PREVIOUS_STORAGE_VERSION_PREFIX)
+            val rawValue = if (isV2Format) value.removePrefix(PREVIOUS_STORAGE_VERSION_PREFIX) else value
+            val parsed = rawValue
                 .split(',')
                 .mapNotNull(HomeModule::fromStorageId)
                 .distinct()
+                .let { modules ->
+                    if (modules.isEmpty()) return@let modules
+                    val withAttention = if (!isV2Format && HomeModule.NEEDS_ATTENTION !in modules) {
+                        listOf(HomeModule.NEEDS_ATTENTION) + modules
+                    } else modules
+                    // The v3 snapshot modules are inserted once. A v3 layout can hide them intentionally.
+                    (listOf(HomeModule.FINANCIAL_PULSE) + withAttention + listOf(
+                        HomeModule.MONEY_TIMELINE,
+                        HomeModule.BUDGET_PACE,
+                        HomeModule.CARD_HEALTH,
+                    ).filterNot(withAttention::contains)).distinct()
+                }
             return HomeLayoutConfiguration(
                 orderedVisibleModules = parsed.ifEmpty { HomeModule.defaultOrder },
             )
         }
+
+        fun forPreset(
+            preset: HomeDashboardPreset,
+            density: HomeDashboardDensity = HomeDashboardDensity.COMPACT,
+            heroMetric: HomeHeroMetric = HomeHeroMetric.SAFE_TO_SPEND,
+        ): HomeLayoutConfiguration = HomeLayoutConfiguration(
+            orderedVisibleModules = modulesForPreset(preset),
+            density = density,
+            heroMetric = heroMetric,
+        )
+
+        private fun modulesForPreset(preset: HomeDashboardPreset): List<HomeModule> = when (preset) {
+            HomeDashboardPreset.EVERYDAY -> HomeModule.defaultOrder
+            HomeDashboardPreset.BUDGET_FOCUS -> listOf(
+                HomeModule.FINANCIAL_PULSE,
+                HomeModule.NEEDS_ATTENTION,
+                HomeModule.BUDGET_PACE,
+                HomeModule.MONEY_TIMELINE,
+                HomeModule.SPENDING_BREAKDOWN,
+                HomeModule.SAVINGS_GOALS,
+            )
+            HomeDashboardPreset.DEBT_FOCUS -> listOf(
+                HomeModule.FINANCIAL_PULSE,
+                HomeModule.NEEDS_ATTENTION,
+                HomeModule.CARD_HEALTH,
+                HomeModule.MONEY_TIMELINE,
+                HomeModule.CREDIT_AVAILABLE,
+                HomeModule.BANK_BALANCES,
+            )
+            HomeDashboardPreset.MINIMAL -> listOf(
+                HomeModule.FINANCIAL_PULSE,
+                HomeModule.NEEDS_ATTENTION,
+                HomeModule.MONEY_TIMELINE,
+            )
+        }
+
+        private const val STORAGE_VERSION_PREFIX = "v3:"
+        private const val PREVIOUS_STORAGE_VERSION_PREFIX = "v2:"
+        private const val STORAGE_SECTION_SEPARATOR = "|"
     }
 }
 
@@ -123,3 +249,98 @@ data class NotificationDigestConfiguration(
         }.getOrDefault(DayOfWeek.MONDAY)
     }
 }
+
+/** Independent alert categories let users keep only reminders that are useful to them. */
+enum class ActionableAlertCategory(
+    val storageId: String,
+    val label: String,
+    val description: String,
+) {
+    CARD_BILL_DUE(
+        "card_bill_due",
+        "Credit-card bills",
+        "Current statement dues that are approaching or overdue.",
+    ),
+    BILL_DUE(
+        "bill_due",
+        "Bills and AutoPay",
+        "Upcoming bills, subscriptions, and scheduled payments.",
+    ),
+    BUDGET_THRESHOLD(
+        "budget_threshold",
+        "Budget pace",
+        "Budgets that reach the warning level you choose.",
+    ),
+    CREDIT_UTILIZATION(
+        "credit_utilization",
+        "Credit utilisation",
+        "Cards that reach a high utilisation level.",
+    ),
+    LOW_CASH_FLOW(
+        "low_cash_flow",
+        "Low forecast balance",
+        "A projected balance that falls below your safety floor.",
+    ),
+    OVERDUE_REIMBURSEMENT(
+        "overdue_reimbursement",
+        "Expected reimbursements",
+        "Split expenses that have remained unsettled for two weeks.",
+    ),
+    NEEDS_ATTENTION(
+        "needs_attention",
+        "Review reminders",
+        "Important local items that still need confirmation.",
+    ),
+    ;
+
+    companion object {
+        fun fromStorageId(value: String?): ActionableAlertCategory? {
+            val normalized = value?.trim()?.lowercase(Locale.ROOT) ?: return null
+            return entries.firstOrNull { it.storageId == normalized }
+        }
+    }
+}
+
+/**
+ * Opt-in, local-only money alerts. Lock-screen text and monetary values remain private by default.
+ * Thresholds use basis points so preference storage never relies on floating-point values.
+ */
+data class ActionableAlertsConfiguration(
+    val enabled: Boolean = false,
+    val enabledCategories: Set<ActionableAlertCategory> = ActionableAlertCategory.entries.toSet(),
+    val evaluationHour: Int = DEFAULT_EVALUATION_HOUR,
+    val dueWindowDays: Int = DEFAULT_DUE_WINDOW_DAYS,
+    val budgetThresholdBasisPoints: Int = DEFAULT_BUDGET_THRESHOLD_BASIS_POINTS,
+    val utilizationThresholdBasisPoints: Int = DEFAULT_UTILIZATION_THRESHOLD_BASIS_POINTS,
+    val lowBalanceThresholdMinor: Long = 0L,
+    val showAmounts: Boolean = false,
+    val genericLockScreenText: Boolean = true,
+    val minimumRepeatHours: Int = DEFAULT_MINIMUM_REPEAT_HOURS,
+) {
+    fun normalized(): ActionableAlertsConfiguration = copy(
+        enabledCategories = enabledCategories.intersect(ActionableAlertCategory.entries.toSet()),
+        evaluationHour = evaluationHour.coerceIn(0, 23),
+        dueWindowDays = dueWindowDays.coerceIn(0, 30),
+        budgetThresholdBasisPoints = budgetThresholdBasisPoints.coerceIn(5_000, 10_000),
+        utilizationThresholdBasisPoints = utilizationThresholdBasisPoints.coerceIn(3_000, 10_000),
+        lowBalanceThresholdMinor = lowBalanceThresholdMinor.coerceAtLeast(0L),
+        minimumRepeatHours = minimumRepeatHours.coerceIn(6, 168),
+    )
+
+    fun isEnabled(category: ActionableAlertCategory): Boolean =
+        enabled && category in enabledCategories
+
+    companion object {
+        const val DEFAULT_EVALUATION_HOUR = 9
+        const val DEFAULT_DUE_WINDOW_DAYS = 3
+        const val DEFAULT_BUDGET_THRESHOLD_BASIS_POINTS = 9_000
+        const val DEFAULT_UTILIZATION_THRESHOLD_BASIS_POINTS = 7_500
+        const val DEFAULT_MINIMUM_REPEAT_HOURS = 24
+    }
+}
+
+/** The persisted default is separate from the temporary eye-button override for this app session. */
+data class PrivacyModeConfiguration(
+    val defaultEnabled: Boolean = false,
+    val protectScreenCapture: Boolean = true,
+)

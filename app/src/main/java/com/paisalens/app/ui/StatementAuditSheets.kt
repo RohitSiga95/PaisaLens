@@ -86,6 +86,8 @@ import com.paisalens.app.data.model.StatementLineKind
 import com.paisalens.app.data.model.StatementSourceSupport
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.formatMoney
+import com.paisalens.app.ui.privacy.PrivacyModeRuntime
+import com.paisalens.app.ui.privacy.maskMoneyText
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.NumberFormat
@@ -1298,14 +1300,17 @@ private fun auditDateTime(epochMillis: Long): String = SimpleDateFormat(
     Locale.getDefault(),
 ).format(Date(epochMillis))
 
-private fun formatAuditMoney(amountMinor: Long, currencyCode: String): String = runCatching {
-    val format = NumberFormat.getCurrencyInstance(Locale.getDefault())
-    format.currency = Currency.getInstance(currencyCode.uppercase(Locale.ROOT))
-    format.format(amountMinor / 100.0)
-}.getOrElse {
-    if (currencyCode.equals("INR", ignoreCase = true)) formatMoney(amountMinor)
-    else "${currencyCode.uppercase(Locale.ROOT)} ${"%.2f".format(Locale.ROOT, amountMinor / 100.0)}"
-}
+private fun formatAuditMoney(amountMinor: Long, currencyCode: String): String = maskMoneyText(
+    formattedAmount = runCatching {
+        val format = NumberFormat.getCurrencyInstance(Locale.getDefault())
+        format.currency = Currency.getInstance(currencyCode.uppercase(Locale.ROOT))
+        format.format(amountMinor / 100.0)
+    }.getOrElse {
+        if (currencyCode.equals("INR", ignoreCase = true)) formatMoney(amountMinor)
+        else "${currencyCode.uppercase(Locale.ROOT)} ${"%.2f".format(Locale.ROOT, amountMinor / 100.0)}"
+    },
+    privacyActive = PrivacyModeRuntime.active,
+)
 
 private fun formatSignedAuditMoney(amountMinor: Long, currency: String): String = when {
     amountMinor > 0 -> "+${formatAuditMoney(amountMinor, currency)}"

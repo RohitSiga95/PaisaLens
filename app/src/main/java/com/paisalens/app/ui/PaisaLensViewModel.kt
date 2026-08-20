@@ -2,7 +2,6 @@ package com.paisalens.app.ui
 
 import android.Manifest
 import android.content.ContentResolver
-import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -11,14 +10,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.paisalens.app.PaisaLensApplication
+import com.paisalens.app.data.backup.ScheduledBackupConfiguration
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.ActionableAlertsConfiguration
+import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.AppThemeConfiguration
 import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.BackupVerificationMetadata
 import com.paisalens.app.data.model.AuditUndoResult
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.CreditCardBillPaymentResult
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.HomeLayoutConfiguration
@@ -27,11 +30,14 @@ import com.paisalens.app.data.model.MonthlyReconciliation
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.NotificationDigestConfiguration
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PrivacyModeConfiguration
 import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.StatementImportPreview
 import com.paisalens.app.data.model.SmartCategoryRule
+import com.paisalens.app.data.model.SmsCoverageRule
+import com.paisalens.app.data.model.SmsCoverageStatus
 import com.paisalens.app.data.model.StatementAuditMetadata
 import com.paisalens.app.data.model.StatementAuditReport
 import com.paisalens.app.data.model.StatementAuditRow
@@ -46,12 +52,15 @@ import com.paisalens.app.data.importer.CreditCardStatementAuditor
 import com.paisalens.app.data.ocr.ReceiptOcrProcessor
 import com.paisalens.app.data.parser.ReceiptTextParser
 import com.paisalens.app.sms.SmsInboxScanner
+import com.paisalens.app.notification.ActionableAlertDeliveryStore
+import com.paisalens.app.ui.screens.ActivitySavedViewStore
 import com.paisalens.app.widget.PaisaLensWidgetProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -61,10 +70,14 @@ class PaisaLensViewModel(
     val transactions = app.repository.transactions
     val effectiveExpenseTransactions = app.repository.effectiveExpenseTransactions
     val budgets = app.repository.budgets
+    val advancedBudgets = app.repository.advancedBudgets
     val categorizedMerchantKeys = app.repository.categorizedMerchantKeys
     val accounts = app.repository.accounts
     val balanceHistory = app.repository.balanceHistory
     val bills = app.repository.bills
+    val creditCardBills = app.repository.creditCardBills
+    val smsCoverageMessages = app.repository.smsCoverageMessages
+    val smsCoverageRules = app.repository.smsCoverageRules
     val netWorthItems = app.repository.netWorthItems
     val smartCategoryRules = app.repository.smartCategoryRules
     val reconciliations = app.repository.reconciliations
@@ -87,6 +100,12 @@ class PaisaLensViewModel(
     val themeConfiguration = app.preferences.themeConfiguration
     val homeLayout = app.preferences.homeLayout
     val notificationDigest = app.preferences.notificationDigest
+    val actionableAlerts = app.preferences.actionableAlerts
+    val privacyModeConfiguration = app.preferences.privacyModeConfiguration
+    val privacyModeSessionOverride = app.preferences.privacyModeSessionOverride
+    val privacyModeActive = app.preferences.privacyModeActive
+    val scheduledBackup = app.preferences.scheduledBackup
+    val scheduledBackupStatus = app.preferences.scheduledBackupStatus
 
     private val receiptOcrProcessor = ReceiptOcrProcessor()
     private val receiptTextParser = ReceiptTextParser(app.parser::categorize)
@@ -184,6 +203,115 @@ class PaisaLensViewModel(
 
     fun setNotificationDigestEnabled(enabled: Boolean) {
         app.preferences.setNotificationDigestEnabled(enabled)
+    }
+
+    fun setActionableAlerts(configuration: ActionableAlertsConfiguration) {
+        app.preferences.setActionableAlerts(configuration)
+    }
+
+    fun setActionableAlertsEnabled(enabled: Boolean) {
+        app.preferences.setActionableAlertsEnabled(enabled)
+    }
+
+    fun setPrivacyModeConfiguration(configuration: PrivacyModeConfiguration) {
+        app.preferences.setPrivacyModeConfiguration(configuration)
+        PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 250L)
+    }
+
+    fun toggleSessionPrivacy(): Boolean = app.preferences.toggleSessionPrivacy().also {
+        PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 100L)
+    }
+
+    fun setSessionPrivacy(enabled: Boolean): Boolean = app.preferences.setSessionPrivacy(enabled).also {
+        PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 100L)
+    }
+
+    fun clearSessionPrivacyOverride(): Boolean = app.preferences.clearSessionPrivacyOverride().also {
+        PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 100L)
+    }
+
+    fun setScheduledBackup(
+        configuration: ScheduledBackupConfiguration,
+        passphrase: CharArray? = null,
+    ): Result<Unit> =
+        runCatching { app.preferences.setScheduledBackup(configuration, passphrase) }
+            .onFailure {
+                _events.tryEmit(it.message ?: "Could not update the backup schedule")
+            }
+
+    fun clearScheduledBackupSecret() {
+        app.preferences.clearScheduledBackupSecret()
+        _events.tryEmit("Scheduled backup password removed")
+    }
+
+    fun hasScheduledBackupSecret(): Boolean = app.preferences.hasScheduledBackupSecret()
+
+    fun saveSmsCoverageRule(rule: SmsCoverageRule) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveSmsCoverageRule(rule) }
+                .onSuccess { _events.emit("Local SMS rule saved · scan again to import matches") }
+                .onFailure { _events.emit(it.message ?: "Could not save that SMS rule") }
+        }
+    }
+
+    fun deleteSmsCoverageRule(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteSmsCoverageRule(id)
+            _events.emit("Local SMS rule removed")
+        }
+    }
+
+    fun updateSmsCoverageStatus(id: Long, status: SmsCoverageStatus) {
+        viewModelScope.launch { app.repository.updateSmsCoverageStatus(id, status) }
+    }
+
+    fun deleteSmsCoverageMessage(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteSmsCoverageMessage(id)
+            _events.emit("Unsupported SMS candidate deleted")
+        }
+    }
+
+    fun saveAdvancedBudget(plan: AdvancedBudgetPlan) {
+        viewModelScope.launch {
+            runCatching { app.repository.saveAdvancedBudget(plan) }
+                .onSuccess { _events.emit("Budget plan saved") }
+                .onFailure { _events.emit(it.message ?: "Could not save that budget plan") }
+        }
+    }
+
+    fun deleteAdvancedBudget(id: Long) {
+        viewModelScope.launch {
+            app.repository.deleteAdvancedBudget(id)
+            _events.emit("Budget plan removed")
+        }
+    }
+
+    fun markCreditCardBillPaid(id: Long) {
+        viewModelScope.launch {
+            runCatching { app.repository.markCreditCardBillPaid(id, confirmed = true) }
+                .onSuccess { result ->
+                    _events.emit(
+                        when (result) {
+                            CreditCardBillPaymentResult.MARKED_PAID -> "Credit-card bill marked paid"
+                            CreditCardBillPaymentResult.ALREADY_PAID -> "That bill is already marked paid"
+                            CreditCardBillPaymentResult.NOT_FOUND -> "That bill could not be found"
+                            CreditCardBillPaymentResult.CONFIRMATION_REQUIRED -> "Confirm before marking the bill paid"
+                        },
+                    )
+                }
+                .onFailure { _events.emit(it.message ?: "Could not update that card bill") }
+        }
+    }
+
+    fun assignCreditCardBillToAccount(id: Long, accountId: Long) {
+        viewModelScope.launch {
+            runCatching { app.repository.assignCreditCardBillToAccount(id, accountId) }
+                .onSuccess { assigned ->
+                    _events.emit(if (assigned) "Card bill assigned" else "That card bill could not be found")
+                }
+                .onFailure { _events.emit(it.message ?: "Could not assign that card bill") }
+        }
     }
 
     fun saveExpenseSplit(split: ExpenseSplit) {
@@ -317,42 +445,61 @@ class PaisaLensViewModel(
         val clean = currency.normalizedCurrency()
         app.preferences.baseCurrency = clean
         _baseCurrency.value = clean
+        PaisaLensWidgetProvider.scheduleUpdateAll(app)
     }
 
-    fun scanSms(context: Context) {
+    fun scanSms() {
         if (
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) !=
+            ContextCompat.checkSelfPermission(app, Manifest.permission.READ_SMS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
             _events.tryEmit("Enable SMS access to scan transaction alerts")
             return
         }
-        if (_isScanning.value) return
+        if (!_isScanning.compareAndSet(expect = false, update = true)) return
 
         viewModelScope.launch {
-            _isScanning.value = true
-            runCatching {
-                val scan = SmsInboxScanner(context, app.parser, app.availabilityParser).scan()
-                app.repository.ingestSms(scan.transactions, scan.availabilityUpdates)
-            }.onSuccess { result ->
-                val now = System.currentTimeMillis()
-                app.preferences.lastScanAt = now
-                _lastScanAt.value = now
-                _events.emit(
-                    when {
-                        result.insertedTransactions > 0 -> {
-                            "${result.insertedTransactions} new transaction" +
-                                (if (result.insertedTransactions == 1) "" else "s") + " added" +
-                                (if (result.updatedAccounts > 0) " · balances updated" else "")
-                        }
-                        result.updatedAccounts > 0 -> "Account balances updated"
-                        else -> "You're up to date"
-                    },
-                )
-            }.onFailure {
-                _events.emit("Could not scan SMS. Check permission and try again")
+            try {
+                runCatching {
+                    val scan = withContext(Dispatchers.IO) {
+                        SmsInboxScanner(
+                            app,
+                            app.parser,
+                            app.availabilityParser,
+                            app.creditCardBillParser,
+                        ).scan(coverageRules = app.repository.smsCoverageRulesForParsing())
+                    }
+                    app.repository.ingestSms(
+                        items = scan.transactions,
+                        availabilityUpdates = scan.availabilityUpdates,
+                        coverageCandidates = scan.coverageCandidates,
+                        creditCardBills = scan.creditCardBills,
+                    )
+                }.onSuccess { result ->
+                    val now = System.currentTimeMillis()
+                    app.preferences.lastScanAt = now
+                    _lastScanAt.value = now
+                    _events.emit(
+                        when {
+                            result.insertedTransactions > 0 || result.mergedDuplicateTransactions > 0 ||
+                                result.coverageMessagesAdded > 0 || result.updatedCreditCardBills > 0 -> buildList {
+                                if (result.insertedTransactions > 0) add("${result.insertedTransactions} new transaction${if (result.insertedTransactions == 1) "" else "s"}")
+                                if (result.mergedDuplicateTransactions > 0) add("${result.mergedDuplicateTransactions} duplicate SMS merged")
+                                if (result.coverageMessagesAdded > 0) add("${result.coverageMessagesAdded} unsupported alert${if (result.coverageMessagesAdded == 1) "" else "s"} to review")
+                                if (result.updatedCreditCardBills > 0) add("card bills updated")
+                                if (result.updatedAccounts > 0) add("balances updated")
+                            }.joinToString(" · ")
+                            result.updatedAccounts > 0 -> "Account balances updated"
+                            else -> "You're up to date"
+                        },
+                    )
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    _events.emit("Could not scan SMS. Check permission and try again")
+                }
+            } finally {
+                _isScanning.value = false
             }
-            _isScanning.value = false
         }
     }
 
@@ -607,8 +754,9 @@ class PaisaLensViewModel(
 
     fun deleteCustomCategory(id: Long) {
         viewModelScope.launch {
-            app.repository.deleteCustomCategory(id)
-            _events.emit("Custom category removed")
+            runCatching { app.repository.deleteCustomCategory(id) }
+                .onSuccess { _events.emit("Custom category removed") }
+                .onFailure { _events.emit(it.message ?: "Could not remove that category") }
         }
     }
 
@@ -973,6 +1121,12 @@ class PaisaLensViewModel(
 
     fun clearAll() {
         viewModelScope.launch {
+            // Stop automated writes before erasing the ledger so an empty snapshot can never
+            // rotate away the user's last useful external backup.
+            app.preferences.setScheduledBackup(
+                app.preferences.scheduledBackup.value.copy(enabled = false),
+            )
+            runCatching { app.preferences.clearScheduledBackupSecret() }
             app.repository.clearAll()
             app.preferences.lastScanAt = 0L
             _lastScanAt.value = 0L
@@ -990,6 +1144,11 @@ class PaisaLensViewModel(
             app.preferences.travelModeEnabled = false
             app.preferences.baseCurrency = "INR"
             app.preferences.setNotificationDigestEnabled(false)
+            app.preferences.setActionableAlerts(ActionableAlertsConfiguration())
+            ActionableAlertDeliveryStore(app).clear()
+            app.preferences.setPrivacyModeConfiguration(PrivacyModeConfiguration())
+            app.preferences.clearSessionPrivacyOverride()
+            ActivitySavedViewStore.clear(app)
             _appLockEnabled.value = false
             _widgetAmountsVisible.value = false
             _travelModeEnabled.value = false

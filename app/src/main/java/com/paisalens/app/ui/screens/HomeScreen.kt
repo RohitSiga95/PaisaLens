@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,9 +21,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
@@ -30,8 +35,10 @@ import androidx.compose.material.icons.rounded.CreditCard
 import androidx.compose.material.icons.rounded.DashboardCustomize
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.PriorityHigh
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -64,38 +72,101 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AdvancedBudgetPlan
+import com.paisalens.app.data.model.BillReminder
+import com.paisalens.app.data.model.BudgetHealth
 import com.paisalens.app.data.model.CategoryBudget
-import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.CreditCardBill
+import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.HomeBalanceFreshness
+import com.paisalens.app.data.model.HomeBudgetPace
+import com.paisalens.app.data.model.HomeCardHealth
+import com.paisalens.app.data.model.HomeCardHealthItem
+import com.paisalens.app.data.model.HomeDashboardDensity
+import com.paisalens.app.data.model.HomeFinancialPulse
+import com.paisalens.app.data.model.HomeHeroMetric
 import com.paisalens.app.data.model.HomeLayoutConfiguration
+import com.paisalens.app.data.model.HomeMoneyTimeline
 import com.paisalens.app.data.model.HomeModule
+import com.paisalens.app.data.model.HomeTimelineItem
+import com.paisalens.app.data.model.HomeTimelineSource
+import com.paisalens.app.data.model.LoanAccount
+import com.paisalens.app.data.model.AttentionItem
+import com.paisalens.app.data.model.AttentionPriority
+import com.paisalens.app.data.model.NeedsAttentionSummary
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.RecurringPayment
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
+import com.paisalens.app.data.model.SpendingCategoryKey
+import com.paisalens.app.data.model.SpendingCategoryTotal
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.USER_ENTERED_UPI_BALANCE_SOURCE
 import com.paisalens.app.data.model.calculateCreditUtilization
+import com.paisalens.app.data.model.buildSpendingCategoryTotals
+import com.paisalens.app.data.model.buildHomeDashboardSnapshot
+import com.paisalens.app.data.model.homeDashboardAccountKey
 import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
 import com.paisalens.app.data.model.transactionIdsExcludedFromSpending
 import com.paisalens.app.ui.components.CategoryIcon
+import com.paisalens.app.ui.components.CustomCategoryIcon
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.SectionHeader
 import com.paisalens.app.ui.components.SpendingDonut
+import com.paisalens.app.ui.components.SpendingDonutSlice
 import com.paisalens.app.ui.components.TransactionRow
+import com.paisalens.app.ui.components.categoryColor
+import com.paisalens.app.ui.components.customCategoryColor
+import com.paisalens.app.ui.components.formatCompactMoney
 import com.paisalens.app.ui.components.formatMoney
+import com.paisalens.app.ui.privacy.PrivacyModeToggleButton
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
+import kotlinx.coroutines.delay
 import kotlin.math.abs
+
+@Composable
+private fun rememberHomeNow(): ZonedDateTime {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var now by remember { mutableStateOf(ZonedDateTime.now()) }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val current = ZonedDateTime.now()
+                now = current
+                delay(nextHomeClockRefreshDelayMillis(current))
+            }
+        }
+    }
+    return now
+}
+
+/** Refresh just after the next wall-clock minute, including midnight and month rollover. */
+internal fun nextHomeClockRefreshDelayMillis(now: ZonedDateTime): Long {
+    val nextMinute = now.withSecond(0).withNano(0).plusMinutes(1)
+    return (Duration.between(now, nextMinute).toMillis() + HOME_CLOCK_SCHEDULING_CUSHION_MILLIS)
+        .coerceIn(HOME_CLOCK_MIN_DELAY_MILLIS, HOME_CLOCK_MAX_DELAY_MILLIS)
+}
+
+private const val HOME_CLOCK_SCHEDULING_CUSHION_MILLIS = 100L
+private const val HOME_CLOCK_MIN_DELAY_MILLIS = 250L
+private const val HOME_CLOCK_MAX_DELAY_MILLIS = 60_100L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,11 +175,20 @@ fun HomeScreen(
     effectiveExpenseTransactions: List<TransactionRecord>,
     transactionLinks: List<TransactionLink>,
     budgets: List<CategoryBudget>,
+    advancedBudgets: List<AdvancedBudgetPlan>,
+    bills: List<BillReminder>,
+    recurringPayments: List<RecurringPayment>,
+    loans: List<LoanAccount>,
+    creditCardBills: List<CreditCardBill>,
+    customCategories: List<CustomCategory>,
     accounts: List<AccountProfile>,
     homeLayout: HomeLayoutConfiguration,
     savingsGoals: List<SavingsGoal>,
     savingsContributions: List<SavingsContribution>,
     paymentCommitments: List<PaymentCommitment>,
+    needsAttention: NeedsAttentionSummary,
+    lastScanAt: Long,
+    privacyModeActive: Boolean,
     isScanning: Boolean,
     hasSmsPermission: Boolean,
     onScan: () -> Unit,
@@ -117,18 +197,29 @@ fun HomeScreen(
     onCustomizeHome: () -> Unit,
     onOpenSavingsGoals: () -> Unit,
     onOpenCommitments: () -> Unit,
+    onOpenBudgets: () -> Unit,
+    onOpenBills: () -> Unit,
+    onOpenCreditCardBills: () -> Unit,
+    onOpenWeeklyReview: () -> Unit,
+    onTogglePrivacy: () -> Unit,
+    onAttentionAction: (AttentionItem) -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
     onCheckBalanceViaUpi: (AccountProfile, Set<Long>) -> Unit,
     onAccountClick: (AccountProfile) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
-    val now = remember { ZonedDateTime.now() }
+    val now = rememberHomeNow()
     val currentMonth = remember(now) { YearMonth.from(now) }
     var selectedMonth by remember { mutableStateOf(currentMonth) }
-    var selectedCategory by remember { mutableStateOf<ExpenseCategory?>(null) }
+    var lastObservedCurrentMonth by remember { mutableStateOf(currentMonth) }
+    var selectedCategory by remember { mutableStateOf<SpendingCategoryKey?>(null) }
     var unavailableAccountsExpanded by remember { mutableStateOf(false) }
     LaunchedEffect(homeLayout, currentMonth) {
+        if (currentMonth != lastObservedCurrentMonth && selectedMonth == lastObservedCurrentMonth) {
+            selectedMonth = currentMonth
+        }
         if (!homeLayout.isVisible(HomeModule.SPENDING_BREAKDOWN)) selectedMonth = currentMonth
+        lastObservedCurrentMonth = currentMonth
     }
     val confirmedTransactions = remember(transactions) {
         transactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
@@ -164,11 +255,10 @@ fun HomeScreen(
         .sumOf { it.amountMinor }
     val budgetTotal = budgets.sumOf { it.limitMinor }
     val remaining = if (budgetTotal > 0) budgetTotal - spent else income - spent
-    val categoryTotals = monthlyExpenses
-        .groupBy { it.category }
-        .mapValues { (_, records) -> records.sumOf { it.amountMinor } }
-        .toList()
-        .sortedByDescending { it.second }
+    val categoryTotals = remember(monthlyExpenses, customCategories) {
+        buildSpendingCategoryTotals(monthlyExpenses, customCategories)
+    }
+    val customCategoriesById = remember(customCategories) { customCategories.associateBy(CustomCategory::id) }
     val bankAccountGroups = remember(accounts) {
         consolidateAvailabilityAccounts(accounts, AccountType.BANK_ACCOUNT)
     }
@@ -179,11 +269,47 @@ fun HomeScreen(
     val unavailableBankAccounts = bankAccountGroups.filter { it.account.balanceMinor == null }
     val availableCreditCards = creditCardGroups.filter { it.account.availableCreditMinor != null }
     val unavailableCreditCards = creditCardGroups.filter { it.account.availableCreditMinor == null }
+    val dashboardSnapshot = remember(
+        transactions,
+        effectiveExpenseTransactions,
+        transactionLinks,
+        accounts,
+        budgets,
+        advancedBudgets,
+        bills,
+        recurringPayments,
+        loans,
+        creditCardBills,
+        paymentCommitments,
+        savingsGoals,
+        savingsContributions,
+        now,
+    ) {
+        buildHomeDashboardSnapshot(
+            transactions = transactions,
+            effectiveExpenseTransactions = effectiveExpenseTransactions,
+            transactionLinks = transactionLinks,
+            accounts = accounts,
+            legacyBudgets = budgets,
+            advancedBudgets = advancedBudgets,
+            manualBills = bills,
+            recurringPayments = recurringPayments,
+            loans = loans,
+            creditCardBills = creditCardBills,
+            paymentCommitments = paymentCommitments,
+            savingsGoals = savingsGoals,
+            savingsContributions = savingsContributions,
+            now = now,
+        )
+    }
+    val normalizedHomeLayout = homeLayout.normalized()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(
+            if (normalizedHomeLayout.density == HomeDashboardDensity.COMPACT) 14.dp else 18.dp,
+        ),
     ) {
         item {
             HomeHeader(
@@ -193,10 +319,50 @@ fun HomeScreen(
                 onRequestPermission = onRequestPermission,
                 onAdd = onAdd,
                 onCustomizeHome = onCustomizeHome,
+                lastScanAt = lastScanAt,
+                now = now,
+                privacyModeActive = privacyModeActive,
+                onTogglePrivacy = onTogglePrivacy,
             )
         }
-        homeLayout.normalized().orderedVisibleModules.forEach { module ->
+        normalizedHomeLayout.orderedVisibleModules.forEach { module ->
             when (module) {
+                HomeModule.FINANCIAL_PULSE -> item(key = module.storageId) {
+                    FinancialPulseHomeModule(
+                        pulse = dashboardSnapshot.pulse,
+                        metric = normalizedHomeLayout.heroMetric,
+                        density = normalizedHomeLayout.density,
+                    )
+                }
+                HomeModule.NEEDS_ATTENTION -> item(key = module.storageId) {
+                    NeedsAttentionHomeModule(
+                        summary = needsAttention,
+                        onOpenWeeklyReview = onOpenWeeklyReview,
+                        onAction = onAttentionAction,
+                    )
+                }
+                HomeModule.MONEY_TIMELINE -> item(key = module.storageId) {
+                    MoneyTimelineHomeModule(
+                        timeline = dashboardSnapshot.timeline,
+                        density = normalizedHomeLayout.density,
+                        onOpenBills = onOpenBills,
+                        onOpenCommitments = onOpenCommitments,
+                        onOpenCreditCardBills = onOpenCreditCardBills,
+                    )
+                }
+                HomeModule.BUDGET_PACE -> item(key = module.storageId) {
+                    BudgetPaceHomeModule(
+                        pace = dashboardSnapshot.budgetPace,
+                        onOpenBudgets = onOpenBudgets,
+                    )
+                }
+                HomeModule.CARD_HEALTH -> item(key = module.storageId) {
+                    CardHealthHomeModule(
+                        health = dashboardSnapshot.cardHealth,
+                        density = normalizedHomeLayout.density,
+                        onOpenCreditCardBills = onOpenCreditCardBills,
+                    )
+                }
                 HomeModule.MONTHLY_SPEND -> item(key = module.storageId) {
                     BalanceHero(
                         spent = spent,
@@ -220,6 +386,7 @@ fun HomeScreen(
                 HomeModule.SPENDING_BREAKDOWN -> item(key = module.storageId) {
                     CategorySpendCard(
                         categoryTotals = categoryTotals,
+                        customCategoriesById = customCategoriesById,
                         expenseTotal = expenseTotal,
                         month = selectedMonth,
                         canGoPrevious = selectedMonth > earliestMonth,
@@ -324,11 +491,12 @@ fun HomeScreen(
     selectedCategory?.let { category ->
         val categoryExpenses = remember(monthlyExpenses, category) {
             monthlyExpenses
-                .filter { it.category == category }
+                .filter(category::matches)
                 .sortedByDescending { it.occurredAt }
         }
         CategorySpendingSheet(
             category = category,
+            customCategory = category.customCategoryId?.let(customCategoriesById::get),
             month = selectedMonth,
             today = now.toLocalDate(),
             expenses = categoryExpenses,
@@ -342,6 +510,107 @@ fun HomeScreen(
 }
 
 @Composable
+private fun NeedsAttentionHomeModule(
+    summary: NeedsAttentionSummary,
+    onOpenWeeklyReview: () -> Unit,
+    onAction: (AttentionItem) -> Unit,
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SectionHeader("Needs your attention", modifier = Modifier.weight(1f))
+            TextButton(onClick = onOpenWeeklyReview) {
+                Text("Weekly review")
+                Spacer(Modifier.width(4.dp))
+                Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(Modifier.fillMaxWidth()) {
+            if (summary.isClear) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(13.dp),
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ) {
+                        Icon(
+                            Icons.Rounded.TaskAlt,
+                            contentDescription = null,
+                            modifier = Modifier.padding(10.dp).size(24.dp),
+                        )
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("All caught up", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "No transactions, balances, bills, goals, or backups need action right now.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    summary.items.take(3).forEach { item ->
+                        Surface(
+                            onClick = { onAction(item) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
+                            color = Color.Transparent,
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(
+                                    imageVector = if (item.priority == AttentionPriority.URGENT) {
+                                        Icons.Rounded.PriorityHigh
+                                    } else {
+                                        Icons.Rounded.TaskAlt
+                                    },
+                                    contentDescription = null,
+                                    tint = if (item.priority == AttentionPriority.URGENT) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        item.detail,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                item.amountMinor?.let { MoneyText(it, style = MaterialTheme.typography.labelLarge) }
+                                Icon(Icons.Rounded.ChevronRight, contentDescription = "Open ${item.title}")
+                            }
+                        }
+                    }
+                    if (summary.items.size > 3) {
+                        TextButton(
+                            onClick = onOpenWeeklyReview,
+                            modifier = Modifier.align(Alignment.End).heightIn(min = 48.dp),
+                        ) {
+                            Text("View all ${summary.totalActionCount} actions")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HomeHeader(
     isScanning: Boolean,
     hasSmsPermission: Boolean,
@@ -349,42 +618,110 @@ private fun HomeHeader(
     onRequestPermission: () -> Unit,
     onAdd: () -> Unit,
     onCustomizeHome: () -> Unit,
+    lastScanAt: Long,
+    now: ZonedDateTime,
+    privacyModeActive: Boolean,
+    onTogglePrivacy: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "PaisaLens",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Your private money overview",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            HomeActionButton(contentDescription = "Customise Home", onClick = onCustomizeHome) {
-                Icon(Icons.Rounded.DashboardCustomize, contentDescription = null)
-            }
-            HomeActionButton(
-                contentDescription = if (hasSmsPermission) "Scan SMS" else "Enable SMS access",
-                onClick = if (hasSmsPermission) onScan else onRequestPermission,
-                enabled = !isScanning,
-            ) {
-                if (isScanning) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Rounded.Sync, contentDescription = null)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val stackActions = this.maxWidth < 350.dp
+            if (stackActions) {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "PaisaLens",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    HomeHeaderActions(
+                        modifier = Modifier.align(Alignment.End),
+                        isScanning = isScanning,
+                        hasSmsPermission = hasSmsPermission,
+                        onScan = onScan,
+                        onRequestPermission = onRequestPermission,
+                        onAdd = onAdd,
+                        onCustomizeHome = onCustomizeHome,
+                        privacyModeActive = privacyModeActive,
+                        onTogglePrivacy = onTogglePrivacy,
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "PaisaLens",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    HomeHeaderActions(
+                        isScanning = isScanning,
+                        hasSmsPermission = hasSmsPermission,
+                        onScan = onScan,
+                        onRequestPermission = onRequestPermission,
+                        onAdd = onAdd,
+                        onCustomizeHome = onCustomizeHome,
+                        privacyModeActive = privacyModeActive,
+                        onTogglePrivacy = onTogglePrivacy,
+                    )
                 }
             }
-            HomeActionButton(contentDescription = "Add transaction", onClick = onAdd) {
-                Icon(Icons.Rounded.Add, contentDescription = null)
+        }
+        Text(
+            text = "Your private money overview · ${formatLastHomeSync(lastScanAt, now)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun HomeHeaderActions(
+    isScanning: Boolean,
+    hasSmsPermission: Boolean,
+    onScan: () -> Unit,
+    onRequestPermission: () -> Unit,
+    onAdd: () -> Unit,
+    onCustomizeHome: () -> Unit,
+    privacyModeActive: Boolean,
+    onTogglePrivacy: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        HomeActionButton(contentDescription = "Customise Home", onClick = onCustomizeHome) {
+            Icon(Icons.Rounded.DashboardCustomize, contentDescription = null)
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            shape = CircleShape,
+        ) {
+            PrivacyModeToggleButton(
+                active = privacyModeActive,
+                onToggle = onTogglePrivacy,
+            )
+        }
+        HomeActionButton(
+            contentDescription = when {
+                isScanning -> "Resyncing SMS"
+                hasSmsPermission -> "Resync SMS"
+                else -> "Enable SMS access"
+            },
+            onClick = if (hasSmsPermission) onScan else onRequestPermission,
+            enabled = !isScanning,
+        ) {
+            if (isScanning) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Rounded.Sync, contentDescription = null)
             }
+        }
+        HomeActionButton(contentDescription = "Add transaction", onClick = onAdd) {
+            Icon(Icons.Rounded.Add, contentDescription = null)
         }
     }
 }
@@ -408,6 +745,591 @@ private fun HomeActionButton(
         ) {
             content()
         }
+    }
+}
+
+@Composable
+private fun FinancialPulseHomeModule(
+    pulse: HomeFinancialPulse,
+    metric: HomeHeroMetric,
+    density: HomeDashboardDensity,
+) {
+    val primary = MaterialTheme.colorScheme.primaryContainer
+    val secondary = MaterialTheme.colorScheme.secondaryContainer
+    val tertiary = MaterialTheme.colorScheme.tertiaryContainer
+    val foreground = MaterialTheme.colorScheme.onPrimaryContainer
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("en-IN")) }
+    val (heroLabel, heroAmount) = when (metric) {
+        HomeHeroMetric.SAFE_TO_SPEND -> "SAFE TO SPEND" to pulse.safeToSpendMinor
+        HomeHeroMetric.AVAILABLE_CASH -> "AVAILABLE CASH" to pulse.availableCashMinor
+        HomeHeroMetric.MONTHLY_SPEND -> "SPENT THIS MONTH" to pulse.monthlySpendMinor
+    }
+    val heroDescription = buildString {
+        append(heroLabel.lowercase(Locale.ENGLISH).replaceFirstChar(Char::titlecase))
+        append(" ${heroAmount?.let(::formatMoney) ?: "not available"}. ")
+        append("Balances ${balanceFreshnessLabel(pulse.balanceFreshness).lowercase(Locale.ENGLISH)}. ")
+        append("${formatMoney(pulse.upcomingObligationsMinor)} scheduled through ${pulse.throughDate.format(dateFormatter)}.")
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = heroDescription },
+        shape = MaterialTheme.shapes.extraLarge,
+        color = Color.Transparent,
+    ) {
+        Box(
+            modifier = Modifier.background(
+                Brush.linearGradient(listOf(primary, tertiary, secondary)),
+            ),
+        ) {
+            Canvas(Modifier.matchParentSize()) {
+                drawCircle(
+                    color = foreground.copy(alpha = 0.07f),
+                    radius = size.minDimension * 0.44f,
+                    center = Offset(size.width * 0.96f, size.height * 0.02f),
+                )
+            }
+            Column(
+                modifier = Modifier.padding(
+                    horizontal = 20.dp,
+                    vertical = if (density == HomeDashboardDensity.COMPACT) 18.dp else 22.dp,
+                ),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            heroLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = foreground.copy(alpha = 0.82f),
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            if (metric == HomeHeroMetric.SAFE_TO_SPEND) {
+                                "Through ${pulse.throughDate.format(dateFormatter)} · on-device estimate"
+                            } else {
+                                "Current snapshot · on-device"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = foreground.copy(alpha = 0.74f),
+                        )
+                    }
+                    Surface(
+                        color = foreground.copy(alpha = 0.12f),
+                        contentColor = foreground,
+                        shape = CircleShape,
+                    ) {
+                        Text(
+                            balanceFreshnessLabel(pulse.balanceFreshness),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (heroAmount == null) {
+                    Text(
+                        "Update a balance",
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = foreground,
+                        fontWeight = FontWeight.Bold,
+                    )
+                } else {
+                    MoneyText(
+                        amountMinor = heroAmount,
+                        style = MaterialTheme.typography.displayMedium,
+                        color = foreground,
+                    )
+                }
+                Spacer(Modifier.height(if (density == HomeDashboardDensity.COMPACT) 14.dp else 18.dp))
+                PulseMetricRow(
+                    firstLabel = "Available cash",
+                    firstAmount = pulse.availableCashMinor,
+                    secondLabel = "Scheduled",
+                    secondAmount = pulse.upcomingObligationsMinor,
+                    foreground = foreground,
+                )
+                Spacer(Modifier.height(8.dp))
+                PulseMetricRow(
+                    firstLabel = "Goal reserve",
+                    firstAmount = pulse.goalReserveMinor,
+                    secondLabel = "Safety buffer",
+                    secondAmount = pulse.safetyBufferMinor,
+                    foreground = foreground,
+                )
+                Spacer(Modifier.height(12.dp))
+                pulse.assumptions.take(if (density == HomeDashboardDensity.COMPACT) 2 else 3).forEach { assumption ->
+                    Text(
+                        text = "• $assumption",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = foreground.copy(alpha = 0.78f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PulseMetricRow(
+    firstLabel: String,
+    firstAmount: Long?,
+    secondLabel: String,
+    secondAmount: Long?,
+    foreground: Color,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        PulseMetric(firstLabel, firstAmount, foreground, Modifier.weight(1f))
+        PulseMetric(secondLabel, secondAmount, foreground, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun PulseMetric(
+    label: String,
+    amountMinor: Long?,
+    foreground: Color,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = foreground.copy(alpha = 0.10f),
+        contentColor = foreground,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = foreground.copy(alpha = 0.74f))
+            Text(
+                amountMinor?.let(::formatMoney) ?: "Not available",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MoneyTimelineHomeModule(
+    timeline: HomeMoneyTimeline,
+    density: HomeDashboardDensity,
+    onOpenBills: () -> Unit,
+    onOpenCommitments: () -> Unit,
+    onOpenCreditCardBills: () -> Unit,
+) {
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("EEE, d MMM", Locale.forLanguageTag("en-IN")) }
+    Column {
+        SectionHeader("Next 14 days")
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(Modifier.fillMaxWidth()) {
+            if (timeline.items.isEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.CalendarMonth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(Modifier.weight(1f)) {
+                        Text("No scheduled money movement", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Add bills, card statements, EMIs, subscriptions, or AutoPay mandates to build this timeline.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                val shown = timeline.items.take(if (density == HomeDashboardDensity.COMPACT) 4 else 6)
+                shown.forEachIndexed { index, item ->
+                    TimelineItemRow(
+                        item = item,
+                        dateLabel = if (item.date.isBefore(timeline.startDate)) {
+                            "Overdue · ${item.date.format(dateFormatter)}"
+                        } else {
+                            item.date.format(dateFormatter)
+                        },
+                        onClick = when (item.source) {
+                            HomeTimelineSource.BILL, HomeTimelineSource.LOAN_EMI -> onOpenBills
+                            HomeTimelineSource.RECURRING_PAYMENT,
+                            HomeTimelineSource.PAYMENT_COMMITMENT,
+                            -> onOpenCommitments
+                            HomeTimelineSource.CREDIT_CARD_BILL -> onOpenCreditCardBills
+                            HomeTimelineSource.EXPECTED_INCOME -> null
+                        },
+                    )
+                    if (index != shown.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text(
+                            "${formatMoney(timeline.outgoingMinor)} out",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${formatMoney(timeline.incomingMinor)} expected in",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (timeline.items.size > shown.size) {
+                        Text(
+                            "+${timeline.items.size - shown.size} more",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineItemRow(
+    item: HomeTimelineItem,
+    dateLabel: String,
+    onClick: (() -> Unit)?,
+) {
+    val content: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                color = if (item.isIncoming) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = if (item.isIncoming) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                shape = CircleShape,
+            ) {
+                Icon(
+                    imageVector = when (item.source) {
+                        HomeTimelineSource.EXPECTED_INCOME -> Icons.Rounded.ArrowDownward
+                        HomeTimelineSource.CREDIT_CARD_BILL -> Icons.Rounded.CreditCard
+                        HomeTimelineSource.BILL -> Icons.AutoMirrored.Rounded.ReceiptLong
+                        HomeTimelineSource.LOAN_EMI -> Icons.Rounded.AccountBalance
+                        HomeTimelineSource.RECURRING_PAYMENT,
+                        HomeTimelineSource.PAYMENT_COMMITMENT,
+                        -> Icons.Rounded.ArrowUpward
+                    },
+                    contentDescription = null,
+                    modifier = Modifier.padding(9.dp).size(20.dp),
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    buildString {
+                        append(dateLabel)
+                        if (item.isEstimate) append(" · Expected from past deposits")
+                        item.accountName?.takeIf(String::isNotBlank)?.let { append(" · $it") }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = (if (item.isIncoming) "+" else "−") + formatMoney(item.amountMinor),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            if (onClick != null) Icon(Icons.Rounded.ChevronRight, contentDescription = "Open ${item.title}")
+        }
+    }
+    if (onClick != null) {
+        Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), color = Color.Transparent) { content() }
+    } else {
+        content()
+    }
+}
+
+@Composable
+private fun BudgetPaceHomeModule(
+    pace: HomeBudgetPace?,
+    onOpenBudgets: () -> Unit,
+) {
+    Column {
+        SectionHeader("Budget pace", action = "Manage", onAction = onOpenBudgets)
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(Modifier.fillMaxWidth()) {
+            if (pace == null) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("No active budget", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Create a calendar-month or payday budget to compare time elapsed with spending pace.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (pace.actualVsPlannedMinor > 0) "Spending is ahead of pace" else "Spending is on pace",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                "${pace.planCount} ${if (pace.planCount == 1) "budget" else "budgets"} · " +
+                                    if (pace.usesAdvancedPlans) "Budgeting 2.0" else "Monthly budgets",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Surface(
+                            color = budgetHealthContainerColor(pace.health),
+                            contentColor = budgetHealthContentColor(pace.health),
+                            shape = CircleShape,
+                        ) {
+                            Text(
+                                budgetHealthLabel(pace.health),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                    LinearProgressIndicator(
+                        progress = { (pace.spentBasisPoints / 10_000f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .semantics {
+                                contentDescription = "Budget ${basisPointsLabel(pace.spentBasisPoints)} spent; " +
+                                    "${basisPointsLabel(pace.periodElapsedBasisPoints)} of the period elapsed"
+                            },
+                        color = if (pace.health == BudgetHealth.EXCEEDED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        strokeCap = StrokeCap.Round,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            "${basisPointsLabel(pace.periodElapsedBasisPoints)} time elapsed",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "${basisPointsLabel(pace.spentBasisPoints)} spent",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        BudgetMetric("Remaining", pace.remainingMinor, Modifier.weight(1f))
+                        BudgetMetric(
+                            if (pace.actualVsPlannedMinor > 0) "Ahead by" else "Under pace",
+                            abs(pace.actualVsPlannedMinor),
+                            Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BudgetMetric(label: String, amountMinor: Long, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.padding(12.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                formatMoney(amountMinor),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CardHealthHomeModule(
+    health: HomeCardHealth,
+    density: HomeDashboardDensity,
+    onOpenCreditCardBills: () -> Unit,
+) {
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("en-IN")) }
+    Column {
+        SectionHeader("Card health", action = "Details", onAction = onOpenCreditCardBills)
+        Spacer(Modifier.height(8.dp))
+        PaisaCard(Modifier.fillMaxWidth()) {
+            if (health.cards.isEmpty()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("No credit cards detected", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Card balances and statement dues will appear here after an SMS is scanned or a card is added.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CardSummaryMetric("Total due", health.totalDueMinor, Modifier.weight(1f))
+                        CardSummaryMetric("Credit available", health.totalAvailableCreditMinor, Modifier.weight(1f))
+                    }
+                    if (health.highUtilizationCount > 0) {
+                        Text(
+                            "${health.highUtilizationCount} ${if (health.highUtilizationCount == 1) "card has" else "cards have"} high utilisation",
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    health.cards.take(if (density == HomeDashboardDensity.COMPACT) 3 else 4).forEach { card ->
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        CardHealthRow(card, dateFormatter, onOpenCreditCardBills)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CardSummaryMetric(label: String, amountMinor: Long?, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.padding(12.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                amountMinor?.let(::formatMoney) ?: "Not available",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CardHealthRow(
+    card: HomeCardHealthItem,
+    dateFormatter: DateTimeFormatter,
+    onClick: () -> Unit,
+) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth(), color = Color.Transparent) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 13.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(card.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        buildString {
+                            card.accountHint?.let { append("•••• ${it.takeLast(4)}") }
+                            card.dueDate?.let {
+                                if (isNotEmpty()) append(" · ")
+                                append("Due ${it.format(dateFormatter)}")
+                            }
+                        }.ifBlank { "No current statement due" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                card.totalDueMinor?.let {
+                    Text(formatMoney(it), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(4.dp))
+                Icon(Icons.Rounded.ChevronRight, contentDescription = "Open ${card.name} card health")
+            }
+            card.utilizationBasisPoints?.let { utilization ->
+                Spacer(Modifier.height(9.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Utilisation", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(basisPointsLabel(utilization), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { (utilization / 10_000f).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(6.dp),
+                    color = when (card.utilizationBand) {
+                        com.paisalens.app.data.model.CreditUtilizationBand.CRITICAL,
+                        com.paisalens.app.data.model.CreditUtilizationBand.HIGH,
+                        -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                    strokeCap = StrokeCap.Round,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun budgetHealthContainerColor(health: BudgetHealth): Color = when (health) {
+    BudgetHealth.EXCEEDED -> MaterialTheme.colorScheme.errorContainer
+    BudgetHealth.WARNING -> MaterialTheme.colorScheme.tertiaryContainer
+    else -> MaterialTheme.colorScheme.secondaryContainer
+}
+
+@Composable
+private fun budgetHealthContentColor(health: BudgetHealth): Color = when (health) {
+    BudgetHealth.EXCEEDED -> MaterialTheme.colorScheme.onErrorContainer
+    BudgetHealth.WARNING -> MaterialTheme.colorScheme.onTertiaryContainer
+    else -> MaterialTheme.colorScheme.onSecondaryContainer
+}
+
+private fun budgetHealthLabel(health: BudgetHealth): String = when (health) {
+    BudgetHealth.EXCEEDED -> "Exceeded"
+    BudgetHealth.WARNING -> "Watch pace"
+    BudgetHealth.ON_TRACK -> "On track"
+    BudgetHealth.NOT_STARTED -> "Not started"
+    BudgetHealth.ENDED -> "Ended"
+}
+
+private fun basisPointsLabel(basisPoints: Int): String = String.format(
+    Locale.US,
+    if (basisPoints % 100 == 0) "%.0f%%" else "%.1f%%",
+    basisPoints / 100.0,
+)
+
+private fun balanceFreshnessLabel(freshness: HomeBalanceFreshness): String = when (freshness) {
+    HomeBalanceFreshness.FRESH -> "Balances fresh"
+    HomeBalanceFreshness.AGING -> "Balances aging"
+    HomeBalanceFreshness.STALE -> "Balances stale"
+    HomeBalanceFreshness.PARTIAL -> "Partial balances"
+    HomeBalanceFreshness.UNAVAILABLE -> "No balances"
+}
+
+private fun formatLastHomeSync(lastScanAt: Long, now: ZonedDateTime): String {
+    if (lastScanAt <= 0) return "SMS not synced yet"
+    val scanTime = Instant.ofEpochMilli(lastScanAt).atZone(now.zone)
+    val minutes = ChronoUnit.MINUTES.between(scanTime, now).coerceAtLeast(0)
+    return when {
+        minutes < 2 -> "SMS synced just now"
+        minutes < 60 -> "SMS synced ${minutes}m ago"
+        minutes < 24 * 60 -> "SMS synced ${minutes / 60}h ago"
+        else -> "SMS synced ${scanTime.format(DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("en-IN")))}"
     }
 }
 
@@ -528,14 +1450,15 @@ private fun OverviewRow(label: String, amountMinor: Long, signed: Boolean = fals
 
 @Composable
 private fun CategorySpendCard(
-    categoryTotals: List<Pair<ExpenseCategory, Long>>,
+    categoryTotals: List<SpendingCategoryTotal>,
+    customCategoriesById: Map<Long, CustomCategory>,
     expenseTotal: Long,
     month: YearMonth,
     canGoPrevious: Boolean,
     canGoNext: Boolean,
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit,
-    onCategoryClick: (ExpenseCategory) -> Unit,
+    onCategoryClick: (SpendingCategoryKey) -> Unit,
 ) {
     Column {
         SectionHeader("Spending breakdown")
@@ -560,7 +1483,19 @@ private fun CategorySpendCard(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    SpendingDonut(values = categoryTotals.take(5), totalMinor = expenseTotal)
+                    SpendingDonut(
+                        values = categoryTotals.take(5).map { total ->
+                            val custom = total.key.customCategoryId?.let(customCategoriesById::get)
+                            SpendingDonutSlice(
+                                label = total.key.label,
+                                valueMinor = total.amountMinor,
+                                color = custom?.let { customCategoryColor(it.colorHex) }
+                                    ?: categoryColor(total.key.builtIn),
+                            )
+                        },
+                        totalMinor = expenseTotal,
+                        periodLabel = month.format(DateTimeFormatter.ofPattern("MMM yyyy", Locale.ENGLISH)),
+                    )
                     Spacer(Modifier.height(14.dp))
                     Text(
                         text = "Tap a category to see its daily trend and expenses",
@@ -569,12 +1504,13 @@ private fun CategorySpendCard(
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(6.dp))
-                    categoryTotals.forEach { (category, amount) ->
+                    categoryTotals.forEach { total ->
                         CategoryLegend(
-                            category = category,
-                            amountMinor = amount,
+                            category = total.key,
+                            customCategory = total.key.customCategoryId?.let(customCategoriesById::get),
+                            amountMinor = total.amountMinor,
                             totalMinor = expenseTotal,
-                            onClick = { onCategoryClick(category) },
+                            onClick = { onCategoryClick(total.key) },
                         )
                     }
                 }
@@ -621,7 +1557,8 @@ private fun MonthNavigator(
 
 @Composable
 private fun CategoryLegend(
-    category: ExpenseCategory,
+    category: SpendingCategoryKey,
+    customCategory: CustomCategory?,
     amountMinor: Long,
     totalMinor: Long,
     onClick: () -> Unit,
@@ -636,7 +1573,11 @@ private fun CategoryLegend(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CategoryIcon(category, modifier = Modifier.size(40.dp), iconSize = 19)
+            if (customCategory != null) {
+                CustomCategoryIcon(customCategory, modifier = Modifier.size(40.dp), iconSize = 19)
+            } else {
+                CategoryIcon(category.builtIn, modifier = Modifier.size(40.dp), iconSize = 19)
+            }
             Spacer(Modifier.width(11.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(category.label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
@@ -665,7 +1606,8 @@ private data class CategoryDailySpend(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CategorySpendingSheet(
-    category: ExpenseCategory,
+    category: SpendingCategoryKey,
+    customCategory: CustomCategory?,
     month: YearMonth,
     today: LocalDate,
     expenses: List<TransactionRecord>,
@@ -690,7 +1632,11 @@ private fun CategorySpendingSheet(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CategoryIcon(category = category, modifier = Modifier.size(48.dp), iconSize = 22)
+                    if (customCategory != null) {
+                        CustomCategoryIcon(customCategory, modifier = Modifier.size(48.dp), iconSize = 22)
+                    } else {
+                        CategoryIcon(category = category.builtIn, modifier = Modifier.size(48.dp), iconSize = 22)
+                    }
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(category.label, style = MaterialTheme.typography.headlineMedium)
@@ -818,7 +1764,7 @@ private fun CategoryDailySpendingChart(
                 ) {
                     Text(formatAxisMoney(maxValue), style = MaterialTheme.typography.labelSmall)
                     Text(formatAxisMoney(maxValue / 2), style = MaterialTheme.typography.labelSmall)
-                    Text("₹0", style = MaterialTheme.typography.labelSmall)
+                    Text(formatAxisMoney(0), style = MaterialTheme.typography.labelSmall)
                 }
                 Spacer(Modifier.width(8.dp))
                 Canvas(
@@ -880,16 +1826,7 @@ private fun CategoryDailySpendingChart(
     }
 }
 
-private fun formatAxisMoney(amountMinor: Long): String = when {
-    amountMinor >= 10_000_000 -> compactAxisValue(amountMinor / 10_000_000.0, "L")
-    amountMinor >= 100_000 -> compactAxisValue(amountMinor / 100_000.0, "K")
-    else -> "₹${amountMinor / 100}"
-}
-
-private fun compactAxisValue(value: Double, suffix: String): String {
-    val formatted = String.format(Locale.US, "%.1f", value).removeSuffix(".0")
-    return "₹$formatted$suffix"
-}
+private fun formatAxisMoney(amountMinor: Long): String = formatCompactMoney(amountMinor)
 
 @Composable
 private fun AccountAvailabilityTile(
@@ -1216,16 +2153,13 @@ internal fun consolidateAvailabilityAccounts(
     type: AccountType,
 ): List<AccountAvailabilityGroup> = accounts
     .filter { it.type == type }
-    .groupBy { account ->
-        accountLastFour(account)?.let { "last4:$it" }
-            ?: "account:${account.id}:${account.name.lowercase(Locale.ROOT)}"
-    }
+    .groupBy(::homeDashboardAccountKey)
     .map { (key, matches) ->
         val preferred = matches.maxWithOrNull(
             compareBy<AccountProfile> { if (availabilityValue(it, type) != null) 1 else 0 }
                 .thenBy { it.availabilityFetchedAt ?: Long.MIN_VALUE },
         ) ?: matches.first()
-        val lastFour = key.removePrefix("last4:").takeIf { key.startsWith("last4:") }
+        val lastFour = matches.firstNotNullOfOrNull(::accountLastFour)
         AccountAvailabilityGroup(
             key = key,
             account = preferred.copy(

@@ -71,6 +71,8 @@ data class TransactionRecord(
     val exchangeRate: Double? = null,
     /** Canonical bank/card tag derived locally from the linked account or SMS sender. */
     val institutionName: String? = null,
+    /** Number of distinct SMS alerts conservatively merged into this ledger entry. */
+    val duplicateCount: Int = 1,
 )
 
 data class ParsedTransaction(
@@ -175,6 +177,12 @@ data class PaisaLensBackupSnapshot(
     val savingsGoals: List<SavingsGoal> = emptyList(),
     val savingsContributions: List<SavingsContribution> = emptyList(),
     val paymentCommitments: List<PaymentCommitment> = emptyList(),
+    val transactionSmsSources: List<TransactionSmsSource> = emptyList(),
+    /** Runtime-only: portable backups intentionally exclude unresolved SMS text. */
+    val smsCoverageMessages: List<SmsCoverageMessage> = emptyList(),
+    val smsCoverageRules: List<SmsCoverageRule> = emptyList(),
+    val advancedBudgets: List<AdvancedBudgetPlan> = emptyList(),
+    val creditCardBills: List<CreditCardBill> = emptyList(),
 )
 
 data class CategoryBudget(

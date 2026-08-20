@@ -3,15 +3,22 @@ package com.paisalens.app.data.backup
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.AuditAction
 import com.paisalens.app.data.model.AuditEntityType
 import com.paisalens.app.data.model.AuditEvent
 import com.paisalens.app.data.model.BackupVerificationMetadata
 import com.paisalens.app.data.model.BillReminder
+import com.paisalens.app.data.model.BudgetCadence
+import com.paisalens.app.data.model.BudgetPeriodAnchor
+import com.paisalens.app.data.model.BudgetRolloverMode
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.CreditCardBill
+import com.paisalens.app.data.model.CreditCardBillStatus
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExpenseSplit
+import com.paisalens.app.data.model.ExpenseSplitEntryMode
 import com.paisalens.app.data.model.ExpenseSplitStatus
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.NetWorthItem
@@ -29,6 +36,8 @@ import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.ReconciliationStatus
 import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.SmartRuleMatchType
+import com.paisalens.app.data.model.SmsCoverageMessage
+import com.paisalens.app.data.model.SmsCoverageRule
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.SavingsGoalKind
@@ -39,6 +48,7 @@ import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionLinkType
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.TransactionSmsSource
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -239,6 +249,7 @@ object PaisaLensBackupCodec {
                     data.writeNullable(transaction.originalCurrency)
                     data.writeNullableDouble(transaction.exchangeRate)
                 }
+                if (formatVersion >= 7) data.writeInt(transaction.duplicateCount.coerceAtLeast(1))
             }
             if (formatVersion >= 2) {
                 data.writeInt(snapshot.loans.size)
@@ -370,6 +381,10 @@ object PaisaLensBackupCodec {
                     data.writeUTF(split.status.name)
                     data.writeLong(split.createdAt)
                     data.writeLong(split.updatedAt)
+                    if (formatVersion >= 7) {
+                        data.writeUTF(split.entryMode.name)
+                        data.writeNullableInt(split.shareBasisPoints)
+                    }
                 }
                 data.writeInt(snapshot.savingsGoals.size)
                 snapshot.savingsGoals.forEach { goal ->
@@ -415,6 +430,71 @@ object PaisaLensBackupCodec {
                     data.writeNullable(commitment.notes)
                     data.writeLong(commitment.createdAt)
                     data.writeLong(commitment.updatedAt)
+                }
+            }
+            if (formatVersion >= 7) {
+                data.writeInt(snapshot.transactionSmsSources.size)
+                snapshot.transactionSmsSources.forEach { source ->
+                    data.writeUTF(source.sourceMessageId)
+                    data.writeLong(source.transactionId)
+                    data.writeLong(source.receivedAt)
+                }
+                // Coverage Centre messages deliberately remain device-local. In particular,
+                // unresolved raw SMS text must never enter even an encrypted export/backup.
+                // Keep a zero-sized slot in v7 so the remainder of the format stays stable.
+                data.writeInt(0)
+                data.writeInt(snapshot.smsCoverageRules.size)
+                snapshot.smsCoverageRules.forEach { rule ->
+                    data.writeLong(rule.id)
+                    data.writeUTF(rule.name)
+                    data.writeUTF(rule.senderKey)
+                    data.writeInt(rule.requiredPhrases.size)
+                    rule.requiredPhrases.forEach(data::writeUTF)
+                    data.writeUTF(rule.merchantName)
+                    data.writeUTF(rule.category.name)
+                    data.writeUTF(rule.type.name)
+                    data.writeUTF(rule.source.name)
+                    data.writeBoolean(rule.enabled)
+                    data.writeLong(rule.createdAt)
+                    data.writeLong(rule.updatedAt)
+                }
+                data.writeInt(snapshot.advancedBudgets.size)
+                snapshot.advancedBudgets.forEach { plan ->
+                    data.writeLong(plan.id)
+                    data.writeUTF(plan.name)
+                    data.writeNullable(plan.category?.name)
+                    data.writeNullableLong(plan.customCategoryId)
+                    data.writeLong(plan.allocationMinor)
+                    data.writeUTF(plan.cadence.name)
+                    data.writeUTF(plan.periodAnchor.name)
+                    data.writeInt(plan.paydayDay)
+                    data.writeInt(plan.annualStartMonth)
+                    data.writeNullableLong(plan.irregularStartEpochDay)
+                    data.writeNullableLong(plan.irregularEndEpochDay)
+                    data.writeUTF(plan.rolloverMode.name)
+                    data.writeInt(plan.warningThresholdBasisPoints)
+                    data.writeLong(plan.startingRolloverMinor)
+                    data.writeLong(plan.effectiveFromEpochDay)
+                    data.writeBoolean(plan.enabled)
+                    data.writeLong(plan.createdAt)
+                    data.writeLong(plan.updatedAt)
+                }
+                data.writeInt(snapshot.creditCardBills.size)
+                snapshot.creditCardBills.forEach { bill ->
+                    data.writeLong(bill.id)
+                    data.writeUTF(bill.billKey)
+                    data.writeUTF(bill.sourceMessageId)
+                    data.writeNullableLong(bill.accountId)
+                    data.writeUTF(bill.cardIdentityKey)
+                    data.writeNullable(bill.accountHint)
+                    data.writeUTF(bill.institutionName)
+                    data.writeLong(bill.totalDueMinor)
+                    data.writeNullableLong(bill.minimumDueMinor)
+                    data.writeLong(bill.dueDateEpochDay)
+                    data.writeLong(bill.detectedAt)
+                    data.writeUTF(bill.sender)
+                    data.writeUTF(bill.status.name)
+                    data.writeNullableLong(bill.paidAt)
                 }
             }
         }
@@ -493,6 +573,7 @@ object PaisaLensBackupCodec {
                     originalAmountMinor = if (formatVersion >= 2) data.readNullableLong() else null,
                     originalCurrency = if (formatVersion >= 2) data.readNullable() else null,
                     exchangeRate = if (formatVersion >= 2) data.readNullableDouble() else null,
+                    duplicateCount = if (formatVersion >= 7) data.readInt().coerceAtLeast(1) else 1,
                 )
             }
             val loans = if (formatVersion >= 2) {
@@ -647,6 +728,12 @@ object PaisaLensBackupCodec {
                         status = data.readEnum(ExpenseSplitStatus.OPEN),
                         createdAt = data.readLong(),
                         updatedAt = data.readLong(),
+                        entryMode = if (formatVersion >= 7) {
+                            data.readEnum(ExpenseSplitEntryMode.AMOUNT)
+                        } else {
+                            ExpenseSplitEntryMode.AMOUNT
+                        },
+                        shareBasisPoints = if (formatVersion >= 7) data.readNullableInt() else null,
                     )
                 }
             } else {
@@ -712,6 +799,94 @@ object PaisaLensBackupCodec {
             } else {
                 emptyList()
             }
+            val transactionSmsSources = if (formatVersion >= 7) {
+                List(data.readSafeCount()) {
+                    TransactionSmsSource(
+                        sourceMessageId = data.readUTF(),
+                        transactionId = data.readLong(),
+                        receivedAt = data.readLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val smsCoverageMessages: List<SmsCoverageMessage> = if (formatVersion >= 7) {
+                require(data.readSafeCount() == 0) {
+                    "Backup contains private unresolved SMS text"
+                }
+                emptyList()
+            } else {
+                emptyList()
+            }
+            val smsCoverageRules = if (formatVersion >= 7) {
+                List(data.readSafeCount()) {
+                    SmsCoverageRule(
+                        id = data.readLong(),
+                        name = data.readUTF(),
+                        senderKey = data.readUTF(),
+                        requiredPhrases = List(data.readSafeCount(max = 6)) { data.readUTF() },
+                        merchantName = data.readUTF(),
+                        category = data.readEnum(ExpenseCategory.OTHER),
+                        type = data.readEnum(TransactionType.EXPENSE),
+                        source = data.readEnum(TransactionSource.BANK),
+                        enabled = data.readBoolean(),
+                        createdAt = data.readLong(),
+                        updatedAt = data.readLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val advancedBudgets = if (formatVersion >= 7) {
+                List(data.readSafeCount()) {
+                    AdvancedBudgetPlan(
+                        id = data.readLong(),
+                        name = data.readUTF(),
+                        category = data.readNullable()?.let { value ->
+                            enumValues<ExpenseCategory>().firstOrNull { it.name == value } ?: ExpenseCategory.OTHER
+                        },
+                        customCategoryId = data.readNullableLong(),
+                        allocationMinor = data.readLong(),
+                        cadence = data.readEnum(BudgetCadence.MONTHLY),
+                        periodAnchor = data.readEnum(BudgetPeriodAnchor.CALENDAR_MONTH),
+                        paydayDay = data.readInt(),
+                        annualStartMonth = data.readInt(),
+                        irregularStartEpochDay = data.readNullableLong(),
+                        irregularEndEpochDay = data.readNullableLong(),
+                        rolloverMode = data.readEnum(BudgetRolloverMode.NONE),
+                        warningThresholdBasisPoints = data.readInt(),
+                        startingRolloverMinor = data.readLong(),
+                        effectiveFromEpochDay = data.readLong(),
+                        enabled = data.readBoolean(),
+                        createdAt = data.readLong(),
+                        updatedAt = data.readLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val creditCardBills = if (formatVersion >= 7) {
+                List(data.readSafeCount()) {
+                    CreditCardBill(
+                        id = data.readLong(),
+                        billKey = data.readUTF(),
+                        sourceMessageId = data.readUTF(),
+                        accountId = data.readNullableLong(),
+                        cardIdentityKey = data.readUTF(),
+                        accountHint = data.readNullable(),
+                        institutionName = data.readUTF(),
+                        totalDueMinor = data.readLong(),
+                        minimumDueMinor = data.readNullableLong(),
+                        dueDateEpochDay = data.readLong(),
+                        detectedAt = data.readLong(),
+                        sender = data.readUTF(),
+                        status = data.readEnum(CreditCardBillStatus.DUE),
+                        paidAt = data.readNullableLong(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
             require(data.available() == 0) { "Backup contains unexpected trailing data" }
             return PaisaLensBackupSnapshot(
                 createdAt = createdAt,
@@ -733,6 +908,11 @@ object PaisaLensBackupCodec {
                 savingsGoals = savingsGoals,
                 savingsContributions = savingsContributions,
                 paymentCommitments = paymentCommitments,
+                transactionSmsSources = transactionSmsSources,
+                smsCoverageMessages = smsCoverageMessages,
+                smsCoverageRules = smsCoverageRules,
+                advancedBudgets = advancedBudgets,
+                creditCardBills = creditCardBills,
             )
         }
     }
@@ -769,6 +949,13 @@ object PaisaLensBackupCodec {
                 data.writeInt(metadata.savingsContributionCount)
                 data.writeInt(metadata.paymentCommitmentCount)
             }
+            if (formatVersion >= 7) {
+                data.writeInt(metadata.transactionSmsSourceCount)
+                data.writeInt(metadata.smsCoverageMessageCount)
+                data.writeInt(metadata.smsCoverageRuleCount)
+                data.writeInt(metadata.advancedBudgetCount)
+                data.writeInt(metadata.creditCardBillCount)
+            }
             data.writeUTF(metadata.contentSha256)
         }
         return bytes.toByteArray()
@@ -804,6 +991,11 @@ object PaisaLensBackupCodec {
             savingsGoalCount = if (expectedFormatVersion >= 6) data.readSafeCount() else 0,
             savingsContributionCount = if (expectedFormatVersion >= 6) data.readSafeCount() else 0,
             paymentCommitmentCount = if (expectedFormatVersion >= 6) data.readSafeCount() else 0,
+            transactionSmsSourceCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
+            smsCoverageMessageCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
+            smsCoverageRuleCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
+            advancedBudgetCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
+            creditCardBillCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
             contentSha256 = data.readUTF(),
         )
         require(data.available() == 0) { "Backup contains unexpected verification data" }
@@ -853,6 +1045,21 @@ object PaisaLensBackupCodec {
         require(metadata.paymentCommitmentCount == snapshot.paymentCommitments.size) {
             "Backup payment-commitment count verification failed"
         }
+        require(metadata.transactionSmsSourceCount == snapshot.transactionSmsSources.size) {
+            "Backup transaction-SMS-source count verification failed"
+        }
+        require(metadata.smsCoverageMessageCount == snapshot.smsCoverageMessages.size) {
+            "Backup SMS-coverage-message count verification failed"
+        }
+        require(metadata.smsCoverageRuleCount == snapshot.smsCoverageRules.size) {
+            "Backup SMS-coverage-rule count verification failed"
+        }
+        require(metadata.advancedBudgetCount == snapshot.advancedBudgets.size) {
+            "Backup advanced-budget count verification failed"
+        }
+        require(metadata.creditCardBillCount == snapshot.creditCardBills.size) {
+            "Backup credit-card-bill count verification failed"
+        }
     }
 
     private fun buildMetadata(
@@ -880,6 +1087,12 @@ object PaisaLensBackupCodec {
         savingsGoalCount = if (formatVersion >= 6) snapshot.savingsGoals.size else 0,
         savingsContributionCount = if (formatVersion >= 6) snapshot.savingsContributions.size else 0,
         paymentCommitmentCount = if (formatVersion >= 6) snapshot.paymentCommitments.size else 0,
+        transactionSmsSourceCount = if (formatVersion >= 7) snapshot.transactionSmsSources.size else 0,
+        // Raw unresolved SMS text is intentionally outside the backup privacy contract.
+        smsCoverageMessageCount = 0,
+        smsCoverageRuleCount = if (formatVersion >= 7) snapshot.smsCoverageRules.size else 0,
+        advancedBudgetCount = if (formatVersion >= 7) snapshot.advancedBudgets.size else 0,
+        creditCardBillCount = if (formatVersion >= 7) snapshot.creditCardBills.size else 0,
         contentSha256 = sha256(snapshotPayload),
     )
 
@@ -918,6 +1131,11 @@ object PaisaLensBackupCodec {
         if (value != null) writeLong(value)
     }
 
+    private fun DataOutputStream.writeNullableInt(value: Int?) {
+        writeBoolean(value != null)
+        if (value != null) writeInt(value)
+    }
+
     private fun DataOutputStream.writeNullableDouble(value: Double?) {
         writeBoolean(value != null)
         if (value != null) writeDouble(value)
@@ -926,6 +1144,8 @@ object PaisaLensBackupCodec {
     private fun DataInputStream.readNullable(): String? = if (readBoolean()) readUTF() else null
 
     private fun DataInputStream.readNullableLong(): Long? = if (readBoolean()) readLong() else null
+
+    private fun DataInputStream.readNullableInt(): Int? = if (readBoolean()) readInt() else null
 
     private fun DataInputStream.readNullableDouble(): Double? = if (readBoolean()) readDouble() else null
 
@@ -963,7 +1183,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 6
+    private const val FORMAT_VERSION = 7
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

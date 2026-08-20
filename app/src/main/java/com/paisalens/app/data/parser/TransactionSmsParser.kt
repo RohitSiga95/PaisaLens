@@ -3,8 +3,11 @@ package com.paisalens.app.data.parser
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.model.ReviewStatus
+import com.paisalens.app.data.model.SmsCoverageRule
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.matches
+import com.paisalens.app.data.model.isAuthenticationSms
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.security.MessageDigest
@@ -15,47 +18,86 @@ class TransactionSmsParser {
         body: String,
         timestamp: Long,
         messageId: String? = null,
+        coverageRules: List<SmsCoverageRule> = emptyList(),
     ): ParsedTransaction? {
         val normalized = body.lowercase().replace('\n', ' ')
-        if (shouldIgnore(normalized)) return null
+        if (!shouldIgnore(normalized)) {
+            val amountMinor = extractAmountMinor(body)
+            val type = detectType(normalized)
+            if (amountMinor != null && amountMinor > 0 && type != null) {
+                val source = detectSource(normalized, sender)
+                val merchantMatch = extractMerchant(body, sender, type)
+                val merchant = merchantMatch.name
+                val category = when (type) {
+                    TransactionType.INCOME -> ExpenseCategory.INCOME
+                    TransactionType.TRANSFER -> ExpenseCategory.TRANSFER
+                    else -> categorize("$merchant $normalized")
+                }
 
-        val amountMinor = extractAmountMinor(body) ?: return null
-        if (amountMinor <= 0) return null
+                val reviewReasons = buildList {
+                    if (merchantMatch.usedSenderFallback) add("Merchant name could not be identified confidently")
+                    if (category == ExpenseCategory.OTHER && type == TransactionType.EXPENSE) {
+                        add("Choose a category for this expense")
+                    }
+                }
 
-        val type = detectType(normalized) ?: return null
-        val source = detectSource(normalized, sender)
-        val merchantMatch = extractMerchant(body, sender, type)
-        val merchant = merchantMatch.name
-        val category = when (type) {
-            TransactionType.INCOME -> ExpenseCategory.INCOME
-            TransactionType.TRANSFER -> ExpenseCategory.TRANSFER
-            else -> categorize("$merchant $normalized")
-        }
-
-        val reviewReasons = buildList {
-            if (merchantMatch.usedSenderFallback) add("Merchant name could not be identified confidently")
-            if (category == ExpenseCategory.OTHER && type == TransactionType.EXPENSE) {
-                add("Choose a category for this expense")
+                return ParsedTransaction(
+                    sourceMessageId = messageId ?: stableId(sender, body, timestamp),
+                    amountMinor = amountMinor,
+                    merchant = merchant,
+                    accountHint = extractAccountHint(body),
+                    category = category,
+                    type = type,
+                    occurredAt = timestamp,
+                    source = source,
+                    sender = sender.ifBlank { "Transaction alert" },
+                    rawMessage = body,
+                    reviewStatus = if (reviewReasons.isEmpty()) {
+                        ReviewStatus.CONFIRMED
+                    } else {
+                        ReviewStatus.NEEDS_REVIEW
+                    },
+                    reviewReason = reviewReasons.joinToString(" · ").takeIf(String::isNotBlank),
+                )
             }
         }
+        return parseUsingCoverageRule(sender, body, timestamp, messageId, coverageRules)
+    }
 
+    private fun parseUsingCoverageRule(
+        sender: String,
+        body: String,
+        timestamp: Long,
+        messageId: String?,
+        rules: List<SmsCoverageRule>,
+    ): ParsedTransaction? {
+        val normalized = body.lowercase().replace('\n', ' ')
+        if (isAuthenticationSms(normalized)) return null
+        val rule = rules
+            .asSequence()
+            .filter(SmsCoverageRule::enabled)
+            .sortedWith(compareByDescending<SmsCoverageRule> { it.requiredPhrases.size }.thenBy { it.id })
+            .firstOrNull { it.matches(sender, body) }
+            ?: return null
+        val amountMinor = extractAmountMinor(body)?.takeIf { it > 0 } ?: return null
+        val category = when (rule.type) {
+            TransactionType.INCOME -> ExpenseCategory.INCOME
+            TransactionType.TRANSFER -> ExpenseCategory.TRANSFER
+            TransactionType.EXPENSE, TransactionType.REFUND -> rule.category
+        }
         return ParsedTransaction(
             sourceMessageId = messageId ?: stableId(sender, body, timestamp),
             amountMinor = amountMinor,
-            merchant = merchant,
+            merchant = rule.merchantName,
             accountHint = extractAccountHint(body),
             category = category,
-            type = type,
+            type = rule.type,
             occurredAt = timestamp,
-            source = source,
+            source = rule.source,
             sender = sender.ifBlank { "Transaction alert" },
             rawMessage = body,
-            reviewStatus = if (reviewReasons.isEmpty()) {
-                ReviewStatus.CONFIRMED
-            } else {
-                ReviewStatus.NEEDS_REVIEW
-            },
-            reviewReason = reviewReasons.joinToString(" · ").takeIf(String::isNotBlank),
+            reviewStatus = ReviewStatus.NEEDS_REVIEW,
+            reviewReason = "Matched local SMS rule: ${rule.name}",
         )
     }
 

@@ -31,7 +31,10 @@ import com.paisalens.app.ui.theme.PaisaLensTheme
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.StatementAuditMetadata
 import com.paisalens.app.notification.PrivateDigestNotifier
+import com.paisalens.app.notification.ActionableAlertNotifier
+import com.paisalens.app.notification.AlertDestination
 import com.paisalens.app.sms.BankSmsSupport
+import com.paisalens.app.widget.WIDGET_DESTINATION_EXTRA
 import java.io.File
 import java.time.LocalDate
 
@@ -42,6 +45,8 @@ class MainActivity : FragmentActivity() {
 
     private var hasSmsPermission by mutableStateOf(false)
     private var hasNotificationPermission by mutableStateOf(false)
+    private var hasActionableAlertPermission by mutableStateOf(false)
+    private var pendingNotificationPurpose: NotificationPermissionPurpose? = null
     private var pendingBackupPassphrase: CharArray? = null
     private var pendingRestorePassphrase: CharArray? = null
     private var pendingVerifyPassphrase: CharArray? = null
@@ -50,6 +55,8 @@ class MainActivity : FragmentActivity() {
     private var pendingReceiptUri: Uri? = null
     private var availableUpiApps by mutableStateOf<List<UpiAppChoice>>(emptyList())
     private var isUnlocked by mutableStateOf(true)
+    private var widgetDestination by mutableStateOf<String?>(null)
+    private var alertDestination by mutableStateOf<AlertDestination?>(null)
     private var authPromptVisible = false
     private var authenticationPurpose = AuthenticationPurpose.UNLOCK
 
@@ -57,16 +64,23 @@ class MainActivity : FragmentActivity() {
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
         hasSmsPermission = grants[Manifest.permission.READ_SMS] == true
-        if (hasSmsPermission) viewModel.scanSms(this)
+        if (hasSmsPermission) {
+            viewModel.scanSms()
+        } else {
+            Toast.makeText(
+                this,
+                "SMS access is needed to resync bank and card alerts",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { _ ->
-        hasNotificationPermission = PrivateDigestNotifier.canPost(this)
-        if (hasNotificationPermission) {
-            viewModel.setNotificationDigestEnabled(true)
-        } else {
+        updateNotificationPermissionState()
+        if (!completePendingNotificationPermission()) {
+            pendingNotificationPurpose = null
             Toast.makeText(this, "Notifications remain off. You can enable them later in Android Settings.", Toast.LENGTH_LONG).show()
         }
     }
@@ -149,9 +163,15 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingNotificationPurpose = savedInstanceState
+            ?.getString(STATE_PENDING_NOTIFICATION_PURPOSE)
+            ?.let { stored -> NotificationPermissionPurpose.entries.firstOrNull { it.name == stored } }
         enableEdgeToEdge()
         updatePermissionState()
         refreshAvailableUpiApps()
+        widgetDestination = intent?.getStringExtra(WIDGET_DESTINATION_EXTRA)
+        alertDestination = intent?.takeIf { it.hasExtra(ActionableAlertNotifier.EXTRA_DESTINATION) }
+            ?.let(ActionableAlertNotifier::requestedDestination)
         isUnlocked = !(application as PaisaLensApplication).preferences.appLockEnabled
 
         setContent {
@@ -164,8 +184,19 @@ class MainActivity : FragmentActivity() {
             if (isUnlocked) {
                 PaisaLensApp(
                     viewModel = viewModel,
+                    initialWidgetDestination = widgetDestination,
+                    onWidgetDestinationHandled = {
+                        widgetDestination = null
+                        intent?.removeExtra(WIDGET_DESTINATION_EXTRA)
+                    },
+                    initialAlertDestination = alertDestination,
+                    onAlertDestinationHandled = {
+                        alertDestination = null
+                        intent?.removeExtra(ActionableAlertNotifier.EXTRA_DESTINATION)
+                    },
                     hasSmsPermission = hasSmsPermission,
                     hasNotificationPermission = hasNotificationPermission,
+                    hasActionableAlertPermission = hasActionableAlertPermission,
                     onRequestSmsPermission = {
                         smsPermissionLauncher.launch(
                             arrayOf(
@@ -174,18 +205,14 @@ class MainActivity : FragmentActivity() {
                             ),
                         )
                     },
-                    onRequestNotificationPermission = {
-                        val runtimeGranted = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
-                            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-                        if (PrivateDigestNotifier.canPost(this)) {
-                            hasNotificationPermission = true
-                            viewModel.setNotificationDigestEnabled(true)
-                        } else if (runtimeGranted) {
-                            startActivity(PrivateDigestNotifier.settingsIntent(this))
-                            Toast.makeText(this, "Allow PaisaLens notifications in Android Settings, then enable the digest again.", Toast.LENGTH_LONG).show()
-                        } else {
-                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
+                    onRequestDigestNotificationPermission = {
+                        requestNotificationPermission(NotificationPermissionPurpose.DIGEST)
+                    },
+                    onRequestActionableAlertPermission = {
+                        requestNotificationPermission(NotificationPermissionPurpose.ACTIONABLE_ALERTS)
+                    },
+                    onOpenActionableAlertSettings = {
+                        startActivity(ActionableAlertNotifier.settingsIntent(this))
                     },
                     onExportData = {
                         workbookExportLauncher.launch("PaisaLens-${LocalDate.now()}.xlsx")
@@ -256,9 +283,25 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        widgetDestination = intent.getStringExtra(WIDGET_DESTINATION_EXTRA)
+        alertDestination = intent.takeIf { it.hasExtra(ActionableAlertNotifier.EXTRA_DESTINATION) }
+            ?.let(ActionableAlertNotifier::requestedDestination)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingNotificationPurpose?.let {
+            outState.putString(STATE_PENDING_NOTIFICATION_PURPOSE, it.name)
+        }
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onResume() {
         super.onResume()
         updatePermissionState()
+        completePendingNotificationPermission()
         refreshAvailableUpiApps()
         if (!isUnlocked && (application as PaisaLensApplication).preferences.appLockEnabled) {
             window.decorView.post { authenticate(AuthenticationPurpose.UNLOCK) }
@@ -277,7 +320,54 @@ class MainActivity : FragmentActivity() {
             this,
             Manifest.permission.READ_SMS,
         ) == PackageManager.PERMISSION_GRANTED
+        updateNotificationPermissionState()
+    }
+
+    private fun updateNotificationPermissionState() {
         hasNotificationPermission = PrivateDigestNotifier.canPost(this)
+        hasActionableAlertPermission = ActionableAlertNotifier.canPost(this)
+    }
+
+    private fun requestNotificationPermission(purpose: NotificationPermissionPurpose) {
+        pendingNotificationPurpose = purpose
+        updateNotificationPermissionState()
+        if (completePendingNotificationPermission()) return
+
+        val runtimeGranted = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        if (runtimeGranted) {
+            val settingsIntent = when (purpose) {
+                NotificationPermissionPurpose.DIGEST -> PrivateDigestNotifier.settingsIntent(this)
+                NotificationPermissionPurpose.ACTIONABLE_ALERTS -> ActionableAlertNotifier.settingsIntent(this)
+            }
+            startActivity(settingsIntent)
+            Toast.makeText(
+                this,
+                "Allow PaisaLens notifications in Android Settings, then return to finish enabling them.",
+                Toast.LENGTH_LONG,
+            ).show()
+        } else {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    /** Enables only the feature that initiated the permission request. */
+    private fun completePendingNotificationPermission(): Boolean {
+        val purpose = pendingNotificationPurpose ?: return false
+        val allowed = when (purpose) {
+            NotificationPermissionPurpose.DIGEST -> hasNotificationPermission
+            NotificationPermissionPurpose.ACTIONABLE_ALERTS -> hasActionableAlertPermission
+        }
+        if (!allowed) return false
+        when (purpose) {
+            NotificationPermissionPurpose.DIGEST -> viewModel.setNotificationDigestEnabled(true)
+            NotificationPermissionPurpose.ACTIONABLE_ALERTS -> viewModel.setActionableAlertsEnabled(true)
+        }
+        pendingNotificationPurpose = null
+        return true
     }
 
     @Suppress("DEPRECATION")
@@ -413,7 +503,14 @@ class MainActivity : FragmentActivity() {
         ENABLE_LOCK,
     }
 
+    private enum class NotificationPermissionPurpose {
+        DIGEST,
+        ACTIONABLE_ALERTS,
+    }
+
     private companion object {
+        const val STATE_PENDING_NOTIFICATION_PURPOSE = "pending_notification_purpose"
+
         val SUPPORTED_UPI_APPS = listOf(
             UpiAppChoice("in.org.npci.upiapp", "BHIM"),
             UpiAppChoice("com.google.android.apps.nbu.paisa.user", "Google Pay"),

@@ -33,12 +33,11 @@ class TransactionsScreenFilterTest {
     }
 
     @Test
-    fun realAccountCoversTaggedOptionWithSameTypeAndLastFour() {
+    fun realAccountCoversTaggedOptionWithSameInstitutionTypeAndLastFour() {
         val options = activityAccountFilterOptions(
             accounts = listOf(account(1, "Salary", AccountType.BANK_ACCOUNT, "HDFC", "0801")),
             transactions = listOf(
                 transaction(1, null, "A", TransactionSource.BANK, null, "0801", "HDFC Bank"),
-                transaction(2, null, "B", TransactionSource.BANK, null, "0801", "IDFC FIRST Bank"),
             ),
         )
 
@@ -46,7 +45,66 @@ class TransactionsScreenFilterTest {
         assertEquals(setOf(1L), options.single().accountIds)
         assertEquals("0801", options.single().lastFour)
         assertTrue(options.single().institutionNames.contains("HDFC Bank"))
-        assertTrue(options.single().institutionNames.contains("IDFC FIRST Bank"))
+    }
+
+    @Test
+    fun sameLastFourAcrossInstitutionsRemainsIndependentForProfilesAndTaggedSms() {
+        val rows = listOf(
+            transaction(1, null, "HDFC purchase", TransactionSource.BANK, null, "0801", "HDFC Bank"),
+            transaction(2, null, "IDFC purchase", TransactionSource.BANK, null, "0801", "IDFC FIRST Bank"),
+        )
+        val options = activityAccountFilterOptions(
+            accounts = listOf(
+                account(1, "Salary", AccountType.BANK_ACCOUNT, "HDFC", "0801"),
+                account(2, "Savings", AccountType.BANK_ACCOUNT, "IDFC", "0801"),
+            ),
+            transactions = rows,
+        )
+
+        assertEquals(2, options.size)
+        val hdfc = options.single { it.institutionName == "HDFC Bank" }
+        val idfc = options.single { it.institutionName == "IDFC FIRST Bank" }
+        assertFalse(hdfc.key == idfc.key)
+        assertEquals(setOf(1L), hdfc.accountIds)
+        assertEquals(setOf(2L), idfc.accountIds)
+        assertEquals(
+            listOf(1L),
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(hdfc.key), options,
+            ).map(TransactionRecord::id),
+        )
+        assertEquals(
+            listOf(2L),
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(idfc.key), options,
+            ).map(TransactionRecord::id),
+        )
+    }
+
+    @Test
+    fun virtualAccountsWithSameLastFourAndDifferentInstitutionsRemainIndependent() {
+        val rows = listOf(
+            transaction(1, null, "HDFC purchase", TransactionSource.BANK, null, "0801", "HDFC Bank"),
+            transaction(2, null, "IDFC purchase", TransactionSource.BANK, null, "0801", "IDFC FIRST Bank"),
+        )
+        val options = activityAccountFilterOptions(emptyList(), rows)
+
+        assertEquals(2, options.size)
+        val hdfc = options.single { it.institutionName == "HDFC Bank" }
+        val idfc = options.single { it.institutionName == "IDFC FIRST Bank" }
+        assertFalse(hdfc.key == idfc.key)
+        assertEquals(
+            listOf(1L),
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(hdfc.key), options,
+            ).map(TransactionRecord::id),
+        )
+        assertEquals(
+            listOf(2L),
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(idfc.key), options,
+            ).map(TransactionRecord::id),
+        )
     }
 
     @Test
@@ -67,11 +125,11 @@ class TransactionsScreenFilterTest {
     }
 
     @Test
-    fun groupsDuplicateProfilesByTypeAndLastFour() {
+    fun groupsDuplicateProfilesByCanonicalInstitutionTypeAndLastFour() {
         val options = activityAccountFilterOptions(
             listOf(
                 account(1, "Salary", AccountType.BANK_ACCOUNT, "HDFC", "XX0801"),
-                account(2, "Old sender alias", AccountType.BANK_ACCOUNT, "IDFC FIRST Bank", "0801"),
+                account(2, "Old sender alias", AccountType.BANK_ACCOUNT, "HDFC Bank", "0801"),
                 account(3, "Rewards card", AccountType.CREDIT_CARD, "HDFC", "0801"),
                 account(4, "Joint", AccountType.BANK_ACCOUNT, "HDFC", "8004"),
                 account(5, "Cash", AccountType.CASH, null, null),

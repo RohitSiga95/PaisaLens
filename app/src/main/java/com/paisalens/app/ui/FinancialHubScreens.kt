@@ -42,11 +42,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -58,7 +60,10 @@ import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.BillReminder
+import com.paisalens.app.data.model.AdvancedBudgetPlan
+import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.CategoryBudget
+import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.DueItem
 import com.paisalens.app.data.model.DueItemSource
 import com.paisalens.app.data.model.DueStatus
@@ -84,12 +89,13 @@ import com.paisalens.app.data.model.buildEffectiveExpenseTransactions
 import com.paisalens.app.data.model.buildNetWorthSummary
 import com.paisalens.app.data.model.simulateWhatIfMonthly
 import com.paisalens.app.data.model.normalizedMerchantKey
+import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
 import com.paisalens.app.ui.components.MoneyChartPoint
 import com.paisalens.app.ui.components.MoneyLineChart
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.formatMoney
-import com.paisalens.app.ui.screens.BudgetsScreen
+import com.paisalens.app.ui.screens.AdvancedBudgetingScreen
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -98,15 +104,16 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 
-private enum class PlanSection(val label: String) {
+enum class PlanSection(val label: String) {
     BUDGETS("Budgets"),
     BILLS("Bills & dues"),
+    CARD_BILLS("Card bills"),
     GOALS("Goals"),
     AUTOPAY("AutoPay"),
     WHAT_IF("What-if"),
 }
 
-private enum class InsightSection(val label: String) {
+enum class InsightSection(val label: String) {
     OVERVIEW("Overview"),
     CASH_FLOW("Cash flow"),
     NET_WORTH("Net worth"),
@@ -114,10 +121,13 @@ private enum class InsightSection(val label: String) {
 
 @Composable
 fun PlanningScreen(
+    initialSection: PlanSection = PlanSection.BUDGETS,
     transactions: List<TransactionRecord>,
     transactionLinks: List<TransactionLink>,
     expenseSplits: List<ExpenseSplit>,
     budgets: List<CategoryBudget>,
+    advancedBudgets: List<AdvancedBudgetPlan>,
+    customCategories: List<CustomCategory>,
     bills: List<BillReminder>,
     recurringPayments: List<RecurringPayment>,
     loans: List<LoanAccount>,
@@ -127,6 +137,8 @@ fun PlanningScreen(
     paymentCommitments: List<PaymentCommitment>,
     paymentCommitmentSuggestions: List<PaymentCommitment>,
     onSetBudget: (ExpenseCategory, Long) -> Unit,
+    onSaveAdvancedBudget: (AdvancedBudgetPlan) -> Unit,
+    onDeleteAdvancedBudget: (Long) -> Unit,
     onSaveBill: (BillReminder) -> Unit,
     onMarkBillPaid: (Long) -> Unit,
     onDeleteBill: (Long) -> Unit,
@@ -141,24 +153,39 @@ fun PlanningScreen(
     onUpdatePaymentCommitment: (PaymentCommitment) -> Unit,
     onDeletePaymentCommitment: (PaymentCommitment) -> Unit,
     onAcceptPaymentSuggestion: (PaymentCommitment) -> Unit,
+    creditCardBills: List<CreditCardBill> = emptyList(),
+    onMarkCreditCardBillPaid: (Long) -> Unit = {},
+    onAssignCreditCardBill: (billId: Long, accountId: Long) -> Unit = { _, _ -> },
 ) {
-    var section by remember { mutableStateOf(PlanSection.BUDGETS) }
+    var sectionName by rememberSaveable { mutableStateOf(initialSection.name) }
+    val section = PlanSection.entries.firstOrNull { it.name == sectionName } ?: PlanSection.BUDGETS
+    LaunchedEffect(initialSection) { sectionName = initialSection.name }
     var editingBill by remember { mutableStateOf<BillReminder?>(null) }
     var addingBill by remember { mutableStateOf(false) }
     val effectiveExpenseTransactions = remember(transactions, transactionLinks, expenseSplits) {
         buildEffectiveExpenseTransactions(transactions, transactionLinks, expenseSplits)
     }
+    val budgetTransactions = remember(transactions, transactionLinks, effectiveExpenseTransactions) {
+        val appliedOffsets = transactionIdsAppliedAsExpenseOffsets(transactions, transactionLinks)
+        effectiveExpenseTransactions + transactions.filter {
+            it.type == TransactionType.REFUND &&
+                it.reviewStatus == ReviewStatus.CONFIRMED &&
+                it.id !in appliedOffsets
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         HubHeader("Plan", "Budgets, due dates, and consequence-free scenarios")
-        HubSectionPicker(PlanSection.entries, section, { it.label }) { section = it }
+        HubSectionPicker(PlanSection.entries, section, { it.label }) { sectionName = it.name }
         Box(Modifier.fillMaxSize()) {
             when (section) {
-                PlanSection.BUDGETS -> BudgetsScreen(
-                    transactions = effectiveExpenseTransactions,
-                    budgets = budgets,
-                    onSetBudget = onSetBudget,
-                    showHeader = false,
-                    contentPadding = PaddingValues(start = 18.dp, top = 8.dp, end = 18.dp, bottom = 28.dp),
+                PlanSection.BUDGETS -> AdvancedBudgetingScreen(
+                    transactions = budgetTransactions,
+                    plans = advancedBudgets,
+                    customCategories = customCategories,
+                    legacyBudgets = budgets,
+                    onSavePlan = onSaveAdvancedBudget,
+                    onDeletePlan = onDeleteAdvancedBudget,
+                    onSetLegacyBudget = onSetBudget,
                 )
                 PlanSection.BILLS -> BillsContent(
                     bills = bills,
@@ -170,6 +197,13 @@ fun PlanningScreen(
                     onEdit = { editingBill = it },
                     onMarkPaid = onMarkBillPaid,
                     onDelete = onDeleteBill,
+                )
+                PlanSection.CARD_BILLS -> CreditCardBillsDashboardContent(
+                    bills = creditCardBills,
+                    transactions = effectiveExpenseTransactions,
+                    accounts = accounts,
+                    onMarkPaid = onMarkCreditCardBillPaid,
+                    onAssignBill = onAssignCreditCardBill,
                 )
                 PlanSection.GOALS -> SavingsGoalsCenterContent(
                     goals = savingsGoals,
@@ -616,6 +650,7 @@ private fun WhatIfContent(
 
 @Composable
 fun InsightsScreen(
+    initialSection: InsightSection = InsightSection.OVERVIEW,
     transactions: List<TransactionRecord>,
     transactionLinks: List<TransactionLink>,
     expenseSplits: List<ExpenseSplit> = emptyList(),
@@ -631,10 +666,12 @@ fun InsightsScreen(
     onSaveNetWorthItem: (NetWorthItem) -> Unit,
     onDeleteNetWorthItem: (Long) -> Unit,
 ) {
-    var section by remember { mutableStateOf(InsightSection.OVERVIEW) }
+    var sectionName by rememberSaveable { mutableStateOf(initialSection.name) }
+    val section = InsightSection.entries.firstOrNull { it.name == sectionName } ?: InsightSection.OVERVIEW
+    LaunchedEffect(initialSection) { sectionName = initialSection.name }
     Column(Modifier.fillMaxSize()) {
         HubHeader("Insights", "Trends and forward-looking estimates, calculated on-device")
-        HubSectionPicker(InsightSection.entries, section, { it.label }) { section = it }
+        HubSectionPicker(InsightSection.entries, section, { it.label }) { sectionName = it.name }
         Box(Modifier.fillMaxSize()) {
             when (section) {
                 InsightSection.OVERVIEW -> AnalyticsScreen(

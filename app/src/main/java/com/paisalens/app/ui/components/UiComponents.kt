@@ -79,6 +79,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.paisalens.app.ui.privacy.PrivacyModeRuntime
+import com.paisalens.app.ui.privacy.maskMoneyText
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ReviewStatus
@@ -351,7 +353,10 @@ fun TransactionRow(
                 if (transaction.originalAmountMinor != null && transaction.originalCurrency != null) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Original: ${transaction.originalCurrency} ${"%,.2f".format(transaction.originalAmountMinor / 100.0)}",
+                        text = "Original: " + maskMoneyText(
+                            "${transaction.originalCurrency} ${"%,.2f".format(transaction.originalAmountMinor / 100.0)}",
+                            PrivacyModeRuntime.active,
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -366,28 +371,55 @@ fun TransactionRow(
                 }
             }
             Spacer(Modifier.width(12.dp))
-            MoneyText(
-                amountMinor = transaction.amountMinor,
-                style = MaterialTheme.typography.titleMedium,
-                color = when (transaction.type) {
-                    TransactionType.INCOME, TransactionType.REFUND -> MaterialTheme.colorScheme.secondary
-                    TransactionType.TRANSFER -> MaterialTheme.colorScheme.onSurfaceVariant
-                    TransactionType.EXPENSE -> MaterialTheme.colorScheme.onSurface
-                },
-                prefix = when (transaction.type) {
-                    TransactionType.INCOME, TransactionType.REFUND -> "+"
-                    TransactionType.TRANSFER -> ""
-                    TransactionType.EXPENSE -> "−"
-                },
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                MoneyText(
+                    amountMinor = transaction.amountMinor,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = when (transaction.type) {
+                        TransactionType.INCOME, TransactionType.REFUND -> MaterialTheme.colorScheme.secondary
+                        TransactionType.TRANSFER -> MaterialTheme.colorScheme.onSurfaceVariant
+                        TransactionType.EXPENSE -> MaterialTheme.colorScheme.onSurface
+                    },
+                    prefix = when (transaction.type) {
+                        TransactionType.INCOME, TransactionType.REFUND -> "+"
+                        TransactionType.TRANSFER -> ""
+                        TransactionType.EXPENSE -> "−"
+                    },
+                )
+                if (transaction.duplicateCount > 1) {
+                    Spacer(Modifier.height(5.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        shape = CircleShape,
+                        modifier = Modifier.semantics {
+                            contentDescription = "${transaction.duplicateCount} duplicate SMS merged"
+                        },
+                    ) {
+                        Text(
+                            text = "×${transaction.duplicateCount}",
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
         }
     }
 }
 
+data class SpendingDonutSlice(
+    val label: String,
+    val valueMinor: Long,
+    val color: Color,
+)
+
 @Composable
 fun SpendingDonut(
-    values: List<Pair<ExpenseCategory, Long>>,
+    values: List<SpendingDonutSlice>,
     totalMinor: Long,
+    periodLabel: String = "This month",
     modifier: Modifier = Modifier,
 ) {
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
@@ -401,7 +433,7 @@ fun SpendingDonut(
             modifier = Modifier
                 .size(156.dp)
                 .semantics {
-                    contentDescription = "Category spending chart. Total " + formatMoney(totalMinor)
+                    contentDescription = "Category spending chart for $periodLabel. Total " + formatMoney(totalMinor)
                 },
         ) {
             val stroke = 17.dp.toPx()
@@ -417,10 +449,10 @@ fun SpendingDonut(
             )
             if (totalMinor > 0) {
                 var start = -90f
-                values.forEach { (category, value) ->
-                    val sweep = (value.toFloat() / totalMinor.toFloat()) * 360f * progress
+                values.forEach { slice ->
+                    val sweep = (slice.valueMinor.toFloat() / totalMinor.toFloat()) * 360f * progress
                     drawArc(
-                        color = categoryColor(category),
+                        color = slice.color,
                         startAngle = start + 2f,
                         sweepAngle = (sweep - 4f).coerceAtLeast(0f),
                         useCenter = false,
@@ -434,7 +466,7 @@ fun SpendingDonut(
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "This month",
+                text = periodLabel,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -490,13 +522,16 @@ fun formatMoney(amountMinor: Long): String {
         maximumFractionDigits = if (amountMinor % 100L == 0L) 0 else 2
         minimumFractionDigits = 0
     }
-    return formatter.format(amountMinor / 100.0)
+    return maskMoneyText(formatter.format(amountMinor / 100.0), PrivacyModeRuntime.active)
 }
 
-fun formatCompactMoney(amountMinor: Long): String = when {
-    amountMinor >= 10_000_000L -> "₹" + "%.1fL".format(Locale.US, amountMinor / 10_000_000.0)
-    amountMinor >= 100_000L -> "₹" + "%.1fK".format(Locale.US, amountMinor / 100_000.0)
-    else -> formatMoney(amountMinor)
+fun formatCompactMoney(amountMinor: Long): String {
+    if (PrivacyModeRuntime.active) return maskMoneyText("", privacyActive = true)
+    return when {
+        amountMinor >= 10_000_000L -> "₹" + "%.1fL".format(Locale.US, amountMinor / 10_000_000.0)
+        amountMinor >= 100_000L -> "₹" + "%.1fK".format(Locale.US, amountMinor / 100_000.0)
+        else -> formatMoney(amountMinor)
+    }
 }
 
 fun formatTransactionTime(timestamp: Long): String =

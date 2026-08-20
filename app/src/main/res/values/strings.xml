@@ -1,4 +1,11 @@
 <resources>
     <string name="app_name">PaisaLens</string>
-    <string name="widget_description">Private monthly spending at a glance</string>
+    <string name="monthly_widget_name">PaisaLens · Monthly spend</string>
+    <string name="category_widget_name">PaisaLens · Categories</string>
+    <string name="due_bills_widget_name">PaisaLens · Bills due</string>
+    <string name="card_bills_widget_name">PaisaLens · Card bills</string>
+    <string name="widget_description">Current month spending snapshot</string>
+    <string name="category_widget_description">Monthly category spending breakdown</string>
+    <string name="due_bills_widget_description">Bills, subscriptions, AutoPay, and EMIs due soon</string>
+    <string name="card_bills_widget_description">Latest unpaid credit card statements</string>
 </resources>

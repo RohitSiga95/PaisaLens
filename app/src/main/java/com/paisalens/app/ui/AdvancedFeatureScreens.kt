@@ -87,6 +87,8 @@ import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.TransactionRow
 import com.paisalens.app.ui.components.formatMoney
+import com.paisalens.app.ui.privacy.PrivacyModeRuntime
+import com.paisalens.app.ui.privacy.maskMoneyText
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
@@ -633,8 +635,11 @@ private fun SheetHeader(title: String, onDismiss: () -> Unit) {
     }
 }
 
-private fun compactMoney(amountMinor: Long): String = when {
-    amountMinor >= 10_000_000 -> "₹${"%.1f".format(amountMinor / 10_000_000.0)}L"
-    amountMinor >= 100_000 -> "₹${"%.1f".format(amountMinor / 100_000.0)}k"
-    else -> "₹${amountMinor / 100}"
+private fun compactMoney(amountMinor: Long): String {
+    if (PrivacyModeRuntime.active) return maskMoneyText("", privacyActive = true)
+    return when {
+        amountMinor >= 10_000_000 -> "₹${"%.1f".format(amountMinor / 10_000_000.0)}L"
+        amountMinor >= 100_000 -> "₹${"%.1f".format(amountMinor / 100_000.0)}k"
+        else -> "₹${amountMinor / 100}"
+    }
 }

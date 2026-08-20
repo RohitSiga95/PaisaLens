@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DashboardCustomize
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,6 +42,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.HomeLayoutConfiguration
+import com.paisalens.app.data.model.HomeDashboardDensity
+import com.paisalens.app.data.model.HomeDashboardPreset
+import com.paisalens.app.data.model.HomeHeroMetric
 import com.paisalens.app.data.model.HomeModule
 import com.paisalens.app.ui.components.PaisaCard
 
@@ -52,7 +57,7 @@ fun HomeCustomizationSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val visible = configuration.normalized().orderedVisibleModules
-    val orderedModules = visible + HomeModule.defaultOrder.filterNot(visible::contains)
+    val orderedModules = visible + HomeModule.customizationOrder.filterNot(visible::contains)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -100,6 +105,81 @@ fun HomeCustomizationSheet(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
+                    }
+                }
+            }
+            item {
+                Text(
+                    text = "LAYOUT PRESET",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(HomeDashboardPreset.entries, key = HomeDashboardPreset::name) { preset ->
+                        FilterChip(
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            selected = configuration.matchingPreset() == preset,
+                            onClick = {
+                                onConfigurationChange(
+                                    HomeLayoutConfiguration.forPreset(
+                                        preset = preset,
+                                        density = configuration.density,
+                                        heroMetric = configuration.heroMetric,
+                                    ),
+                                )
+                            },
+                            label = { Text(preset.label) },
+                        )
+                    }
+                }
+                Text(
+                    text = "Presets only change visible modules; you can continue arranging them below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            item {
+                Text(
+                    text = "SNAPSHOT STYLE",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(HomeDashboardDensity.entries, key = HomeDashboardDensity::storageId) { density ->
+                        FilterChip(
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            selected = configuration.density == density,
+                            onClick = { onConfigurationChange(configuration.copy(density = density)) },
+                            label = { Text(density.label) },
+                        )
+                    }
+                }
+                Text(
+                    text = "HERO METRIC",
+                    modifier = Modifier.padding(top = 10.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Bold,
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(HomeHeroMetric.entries, key = HomeHeroMetric::storageId) { metric ->
+                        FilterChip(
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            selected = configuration.heroMetric == metric,
+                            onClick = { onConfigurationChange(configuration.copy(heroMetric = metric)) },
+                            label = { Text(metric.label) },
+                        )
                     }
                 }
             }
@@ -228,6 +308,11 @@ fun HomeCustomizationSheet(
 }
 
 private fun homeModuleDescription(module: HomeModule): String = when (module) {
+    HomeModule.FINANCIAL_PULSE -> "Safe-to-spend estimate, freshness, obligations, and reserves in one snapshot."
+    HomeModule.NEEDS_ATTENTION -> "A private, on-device queue of items worth checking next."
+    HomeModule.MONEY_TIMELINE -> "Expected income and scheduled outgoings over the next 14 days."
+    HomeModule.BUDGET_PACE -> "Budget period elapsed compared with how much has been spent."
+    HomeModule.CARD_HEALTH -> "Combined card dues, due dates, available credit, and utilisation."
     HomeModule.MONTHLY_SPEND -> "This month's net spending hero."
     HomeModule.SPEND_OVERVIEW -> "Gross expenses, refunds, income, and available money."
     HomeModule.SPENDING_BREAKDOWN -> "Monthly category analysis and month navigation."

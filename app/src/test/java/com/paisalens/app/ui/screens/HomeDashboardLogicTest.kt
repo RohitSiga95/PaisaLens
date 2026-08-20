@@ -9,6 +9,8 @@ import com.paisalens.app.data.model.TransactionType
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -69,6 +71,41 @@ class HomeDashboardLogicTest {
 
         assertEquals(1, consolidateAvailabilityAccounts(accounts, AccountType.BANK_ACCOUNT).size)
         assertEquals(1, consolidateAvailabilityAccounts(accounts, AccountType.CREDIT_CARD).size)
+    }
+
+    @Test
+    fun keepsSameLastFourAccountsSeparateAcrossInstitutionsAndIncompleteIdentities() {
+        val accounts = listOf(
+            bank(id = 1, name = "HDFC Bank", hint = "1234", balanceMinor = 80_000L, fetchedAt = 1L),
+            bank(id = 2, name = "IDFC Bank", hint = "1234", balanceMinor = 70_000L, fetchedAt = 2L),
+            AccountProfile(
+                id = 3,
+                name = "Unknown A",
+                type = AccountType.BANK_ACCOUNT,
+                accountHint = "1234",
+            ),
+            AccountProfile(
+                id = 4,
+                name = "Unknown B",
+                type = AccountType.BANK_ACCOUNT,
+                accountHint = "1234",
+            ),
+        )
+
+        val groups = consolidateAvailabilityAccounts(accounts, AccountType.BANK_ACCOUNT)
+
+        assertEquals(4, groups.size)
+        assertEquals(setOf(1L, 2L, 3L, 4L), groups.flatMapTo(mutableSetOf()) { it.accountIds })
+    }
+
+    @Test
+    fun homeClockRefreshCrossesMonthRolloverWithoutReopeningScreen() {
+        val beforeMidnight = ZonedDateTime.of(2026, 8, 31, 23, 59, 59, 900_000_000, utc)
+        val delayMillis = nextHomeClockRefreshDelayMillis(beforeMidnight)
+        val refreshedAt = beforeMidnight.plus(delayMillis, ChronoUnit.MILLIS)
+
+        assertEquals(250L, delayMillis)
+        assertEquals(YearMonth.of(2026, 9), YearMonth.from(refreshedAt))
     }
 
     private fun bank(

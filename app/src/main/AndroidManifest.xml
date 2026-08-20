@@ -70,13 +70,50 @@
 
         <receiver
             android:name=".widget.PaisaLensWidgetProvider"
-            android:exported="false">
+            android:exported="false"
+            android:label="@string/monthly_widget_name">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/paisalens_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CategoryBreakdownWidgetProvider"
+            android:exported="false"
+            android:label="@string/category_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/category_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.DueBillsWidgetProvider"
+            android:exported="false"
+            android:label="@string/due_bills_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/due_bills_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CreditCardBillsWidgetProvider"
+            android:exported="false"
+            android:label="@string/card_bills_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/card_bills_widget_info" />
         </receiver>
 
         <receiver
@@ -94,6 +131,43 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".notification.ActionableAlertReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".notification.ActionableAlertRescheduleReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".data.backup.ScheduledBackupAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".data.backup.ScheduledBackupRescheduleReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".data.backup.ScheduledBackupJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 
 </manifest>

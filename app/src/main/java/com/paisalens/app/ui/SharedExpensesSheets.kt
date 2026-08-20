@@ -50,6 +50,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -63,13 +65,22 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.ExpenseSplit
+import com.paisalens.app.data.model.ExpenseSplitCategoryStat
+import com.paisalens.app.data.model.ExpenseSplitEntryMode
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.buildExpenseSplitCategoryStats
 import com.paisalens.app.data.model.buildExpenseSplitSummary
+import com.paisalens.app.data.model.expenseSplitBasisPointsFromShares
+import com.paisalens.app.data.model.expenseSplitShareBasisPoints
+import com.paisalens.app.data.model.expenseSplitSharesFromPercentages
 import com.paisalens.app.data.model.expenseSplitStatus
+import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.components.formatTransactionTime
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.util.Locale
 
 private enum class SharedExpenseFilter(val label: String) {
@@ -167,6 +178,9 @@ internal fun SharedExpensesCenterContent(
     val totalReimbursed = remember(grouped) {
         grouped.sumOf { buildExpenseSplitSummary(it.transaction, it.splits).reimbursedMinor }
     }
+    val categoryStats = remember(transactions, splits) {
+        buildExpenseSplitCategoryStats(transactions, splits)
+    }
     val linkedIncomingIds = remember(splits) {
         splits.mapNotNullTo(mutableSetOf(), ExpenseSplit::linkedIncomingTransactionId)
     }
@@ -193,6 +207,11 @@ internal fun SharedExpensesCenterContent(
                     value = formatMoney(totalReimbursed),
                     modifier = Modifier.weight(1f),
                 )
+            }
+        }
+        if (categoryStats.isNotEmpty()) {
+            item {
+                SharedExpenseCategoryStatsCard(categoryStats)
             }
         }
         item {
@@ -365,6 +384,50 @@ private data class SharedExpenseGroup(
 )
 
 @Composable
+private fun SharedExpenseCategoryStatsCard(stats: List<ExpenseSplitCategoryStat>) {
+    val maxAllocated = stats.maxOfOrNull(ExpenseSplitCategoryStat::allocatedMinor)?.coerceAtLeast(1L) ?: 1L
+    PaisaCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Split by category", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Participant shares, reimbursements, and outstanding amounts",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            stats.take(6).forEach { stat ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CategoryIcon(stat.category, modifier = Modifier.size(36.dp), iconSize = 17)
+                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                            Text(stat.categoryLabel, style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                "${stat.transactionCount} ${if (stat.transactionCount == 1) "expense" else "expenses"} · ${formatMoney(stat.reimbursedMinor)} received",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(formatMoney(stat.allocatedMinor), style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                "${formatMoney(stat.outstandingMinor)} owed",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (stat.outstandingMinor > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
+                    }
+                    LinearProgressIndicator(
+                        progress = { (stat.allocatedMinor.toFloat() / maxAllocated).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(7.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SharedExpenseMetric(label: String, value: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
@@ -516,6 +579,64 @@ private data class SplitEditorRow(
     val note: String,
 )
 
+private fun splitEditorRowsSaver(
+    existingById: Map<Long, ExpenseSplit>,
+): Saver<List<SplitEditorRow>, ArrayList<String>> = Saver(
+    save = { rows -> ArrayList(rows.map(::encodeSplitEditorRow)) },
+    restore = { encoded -> encoded.mapNotNull { decodeSplitEditorRow(it, existingById) } },
+)
+
+private fun encodeSplitEditorRow(row: SplitEditorRow): String = encodeLengthPrefixedFields(
+    listOf(
+        row.localKey,
+        (row.original?.id ?: 0L).toString(),
+        row.name,
+        row.share,
+        row.reimbursed,
+        row.note,
+    ),
+)
+
+private fun decodeSplitEditorRow(
+    encoded: String,
+    existingById: Map<Long, ExpenseSplit>,
+): SplitEditorRow? {
+    val fields = decodeLengthPrefixedFields(encoded) ?: return null
+    if (fields.size != 6) return null
+    val originalId = fields[1].toLongOrNull() ?: return null
+    return SplitEditorRow(
+        localKey = fields[0],
+        original = originalId.takeIf { it > 0 }?.let(existingById::get),
+        name = fields[2],
+        share = fields[3],
+        reimbursed = fields[4],
+        note = fields[5],
+    )
+}
+
+private fun encodeLengthPrefixedFields(fields: List<String>): String = buildString {
+    fields.forEach { field ->
+        append(field.length)
+        append(':')
+        append(field)
+    }
+}
+
+private fun decodeLengthPrefixedFields(value: String): List<String>? {
+    val fields = mutableListOf<String>()
+    var cursor = 0
+    while (cursor < value.length) {
+        val separator = value.indexOf(':', cursor)
+        if (separator < 0) return null
+        val length = value.substring(cursor, separator).toIntOrNull() ?: return null
+        if (length < 0 || separator + 1 + length > value.length) return null
+        val start = separator + 1
+        fields += value.substring(start, start + length)
+        cursor = start + length
+    }
+    return fields
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TransactionSplitEditorSheet(
@@ -530,28 +651,77 @@ internal fun TransactionSplitEditorSheet(
         skipPartiallyExpanded = true,
         confirmValueChange = { !currentIsSaving.value },
     )
-    val initialRows = remember(existingSplits, transaction.id) {
-        existingSplits.filter { it.transactionId == transaction.id }.map { split ->
+    val relevantExisting = remember(existingSplits, transaction.id) {
+        existingSplits.filter { it.transactionId == transaction.id }
+    }
+    val initialEntryMode = remember(relevantExisting) {
+        if (
+            relevantExisting.isNotEmpty() &&
+            relevantExisting.all {
+                it.entryMode == ExpenseSplitEntryMode.PERCENTAGE && it.shareBasisPoints in 1..10_000
+            }
+        ) {
+            ExpenseSplitEntryMode.PERCENTAGE
+        } else {
+            ExpenseSplitEntryMode.AMOUNT
+        }
+    }
+    val initialRows = remember(relevantExisting, initialEntryMode) {
+        relevantExisting.map { split ->
             SplitEditorRow(
                 localKey = "saved:${split.id}",
                 original = split,
                 name = split.participantName,
-                share = split.shareMinor.sharedFinanceInput(),
+                share = if (initialEntryMode == ExpenseSplitEntryMode.PERCENTAGE) {
+                    requireNotNull(split.shareBasisPoints).splitPercentageInput()
+                } else {
+                    split.shareMinor.sharedFinanceInput()
+                },
                 reimbursed = split.reimbursedMinor.sharedFinanceInput(),
                 note = split.note.orEmpty(),
             )
         }
     }
-    var rows by remember(initialRows) {
-        mutableStateOf(
-            initialRows.ifEmpty {
-                listOf(newSplitEditorRow())
-            },
-        )
+    val startingRows = remember(initialRows) { initialRows.ifEmpty { listOf(newSplitEditorRow()) } }
+    val existingById = remember(relevantExisting) { relevantExisting.associateBy(ExpenseSplit::id) }
+    val rowsSaver = remember(existingById) { splitEditorRowsSaver(existingById) }
+    var rows by rememberSaveable(transaction.id, stateSaver = rowsSaver) {
+        mutableStateOf(startingRows)
     }
-    var submitted by remember { mutableStateOf(false) }
-    val parsedRows = rows.map { row -> row.share.sharedFinanceMinorOrNull() to row.reimbursed.sharedFinanceMinorOrNull() }
+    var entryMode by rememberSaveable(transaction.id) { mutableStateOf(initialEntryMode) }
+    var submitted by rememberSaveable(transaction.id) { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
+    val hasUnsavedChanges = rows != startingRows || entryMode != initialEntryMode
+    val percentageBasisPoints = if (entryMode == ExpenseSplitEntryMode.PERCENTAGE) {
+        rows.map { it.share.splitPercentageBasisPointsOrNull() }
+    } else {
+        emptyList()
+    }
+    val percentageShares = if (
+        entryMode == ExpenseSplitEntryMode.PERCENTAGE &&
+        percentageBasisPoints.all { it != null } &&
+        percentageBasisPoints.filterNotNull().sum() <= 10_000
+    ) {
+        runCatching {
+            expenseSplitSharesFromPercentages(transaction.amountMinor, percentageBasisPoints.filterNotNull())
+        }.getOrNull()
+    } else {
+        null
+    }
+    val parsedRows = rows.mapIndexed { index, row ->
+        val share = if (entryMode == ExpenseSplitEntryMode.AMOUNT) {
+            row.share.sharedFinanceMinorOrNull()
+        } else {
+            percentageShares?.getOrNull(index)
+        }
+        share to row.reimbursed.sharedFinanceMinorOrNull()
+    }
     val allocated = parsedRows.sumOf { it.first ?: 0 }
+    val allocatedBasisPoints = if (entryMode == ExpenseSplitEntryMode.PERCENTAGE) {
+        percentageBasisPoints.filterNotNull().sum()
+    } else {
+        expenseSplitShareBasisPoints(allocated, transaction.amountMinor)
+    }
     val duplicateNames = rows.map { it.name.trim().lowercase(Locale.ROOT) }.filter(String::isNotBlank)
         .groupingBy { it }.eachCount().any { it.value > 1 }
     val formError = when {
@@ -559,6 +729,10 @@ internal fun TransactionSplitEditorSheet(
         rows.isEmpty() -> "Add at least one participant."
         rows.any { it.name.isBlank() } -> "Enter a name for every participant."
         duplicateNames -> "Each participant name must be unique for this expense."
+        entryMode == ExpenseSplitEntryMode.PERCENTAGE && percentageBasisPoints.any { it == null || it <= 0 } ->
+            "Enter a percentage greater than zero for every participant."
+        entryMode == ExpenseSplitEntryMode.PERCENTAGE && percentageBasisPoints.filterNotNull().sum() > 10_000 ->
+            "Participant percentages cannot exceed 100%."
         parsedRows.any { it.first == null || it.first == 0L } -> "Enter a share greater than zero for every participant."
         parsedRows.any { it.second == null } -> "Enter a valid reimbursed amount, or use zero."
         parsedRows.any { (share, reimbursed) -> share != null && reimbursed != null && reimbursed > share } ->
@@ -570,7 +744,11 @@ internal fun TransactionSplitEditorSheet(
     val remaining = (transaction.amountMinor - allocated).coerceAtLeast(0)
 
     ModalBottomSheet(
-        onDismissRequest = { if (!isSaving) onDismiss() },
+        onDismissRequest = {
+            if (!isSaving) {
+                if (hasUnsavedChanges) confirmDiscard = true else onDismiss()
+            }
+        },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
@@ -583,7 +761,11 @@ internal fun TransactionSplitEditorSheet(
             SharedFinanceSheetHeader(
                 title = "Split expense",
                 subtitle = transaction.merchant,
-                onDismiss = { if (!isSaving) onDismiss() },
+                onDismiss = {
+                    if (!isSaving) {
+                        if (hasUnsavedChanges) confirmDiscard = true else onDismiss()
+                    }
+                },
             )
             LazyColumn(
                 modifier = Modifier.fillMaxWidth(),
@@ -608,10 +790,73 @@ internal fun TransactionSplitEditorSheet(
                         "Add only the portion other people owe you. Any amount left unallocated remains your share.",
                     )
                 }
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Enter shares as", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(ExpenseSplitEntryMode.entries) { option ->
+                                FilterChip(
+                                    selected = entryMode == option,
+                                    onClick = {
+                                        if (entryMode != option) {
+                                            val convertedRows = when (option) {
+                                                ExpenseSplitEntryMode.PERCENTAGE -> {
+                                                    val amounts = rows.map { it.share.sharedFinanceMinorOrNull() }
+                                                    if (amounts.any { it == null || it <= 0L }) {
+                                                        null
+                                                    } else {
+                                                        runCatching {
+                                                            expenseSplitBasisPointsFromShares(
+                                                                amounts.filterNotNull(),
+                                                                transaction.amountMinor,
+                                                            )
+                                                        }.getOrNull()?.let { converted ->
+                                                            rows.mapIndexed { index, row ->
+                                                                row.copy(share = converted[index].splitPercentageInput())
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                ExpenseSplitEntryMode.AMOUNT -> {
+                                                    val basisPoints = rows.map { it.share.splitPercentageBasisPointsOrNull() }
+                                                    if (basisPoints.any { it == null || it <= 0 }) {
+                                                        null
+                                                    } else {
+                                                        runCatching {
+                                                            expenseSplitSharesFromPercentages(
+                                                                transaction.amountMinor,
+                                                                basisPoints.filterNotNull(),
+                                                            )
+                                                        }.getOrNull()?.let { converted ->
+                                                            rows.mapIndexed { index, row ->
+                                                                row.copy(share = converted[index].sharedFinanceInput())
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if (convertedRows != null) {
+                                                rows = convertedRows
+                                                entryMode = option
+                                                submitted = false
+                                            } else {
+                                                submitted = true
+                                            }
+                                        }
+                                    },
+                                    label = { Text(if (option == ExpenseSplitEntryMode.AMOUNT) "Amounts" else "Percentages") },
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                )
+                            }
+                        }
+                    }
+                }
                 items(rows, key = SplitEditorRow::localKey) { row ->
                     val index = rows.indexOfFirst { it.localKey == row.localKey }
                     ParticipantEditorCard(
                         row = row,
+                        entryMode = entryMode,
+                        calculatedShareMinor = parsedRows.getOrNull(index)?.first,
                         onChange = { changed -> rows = rows.toMutableList().also { it[index] = changed } },
                         onRemove = { rows = rows.filterNot { it.localKey == row.localKey } },
                     )
@@ -635,6 +880,16 @@ internal fun TransactionSplitEditorSheet(
                     ) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                             SplitAllocationLine("Participant shares", formatMoney(allocated))
+                            if (entryMode == ExpenseSplitEntryMode.PERCENTAGE) {
+                                SplitAllocationLine(
+                                    "Participant percentages",
+                                    allocatedBasisPoints.splitPercentageInput() + "%",
+                                )
+                                SplitAllocationLine(
+                                    "Your percentage / unallocated",
+                                    (10_000 - allocatedBasisPoints).coerceAtLeast(0).splitPercentageInput() + "%",
+                                )
+                            }
                             SplitAllocationLine("Your share / unallocated", formatMoney(remaining))
                             HorizontalDivider()
                             SplitAllocationLine("Expense total", formatMoney(transaction.amountMinor), emphasize = true)
@@ -672,6 +927,12 @@ internal fun TransactionSplitEditorSheet(
                                         status = expenseSplitStatus(share, reimbursed),
                                         createdAt = original?.createdAt ?: now,
                                         updatedAt = now,
+                                        entryMode = entryMode,
+                                        shareBasisPoints = if (entryMode == ExpenseSplitEntryMode.PERCENTAGE) {
+                                            percentageBasisPoints[index]
+                                        } else {
+                                            null
+                                        },
                                     )
                                 }
                                 val keptIds = upserts.mapTo(mutableSetOf(), ExpenseSplit::id)
@@ -688,11 +949,27 @@ internal fun TransactionSplitEditorSheet(
             }
         }
     }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Discard split changes?") },
+            text = { Text("Participant names, shares, percentages and notes entered here have not been saved.") },
+            confirmButton = {
+                Button(onClick = onDismiss) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") }
+            },
+        )
+    }
 }
 
 @Composable
 private fun ParticipantEditorCard(
     row: SplitEditorRow,
+    entryMode: ExpenseSplitEntryMode,
+    calculatedShareMinor: Long?,
     onChange: (SplitEditorRow) -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -717,11 +994,19 @@ private fun ParticipantEditorCard(
                     value = row.share,
                     onValueChange = { onChange(row.copy(share = it.sharedFinanceAmountInput())) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Share") },
-                    prefix = { Text("₹") },
+                    label = { Text(if (entryMode == ExpenseSplitEntryMode.AMOUNT) "Share amount" else "Share percentage") },
+                    prefix = if (entryMode == ExpenseSplitEntryMode.AMOUNT) ({ Text("₹") }) else null,
+                    suffix = if (entryMode == ExpenseSplitEntryMode.PERCENTAGE) ({ Text("%") }) else null,
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
                 )
+                if (entryMode == ExpenseSplitEntryMode.PERCENTAGE && calculatedShareMinor != null) {
+                    Text(
+                        "Calculated share: ${formatMoney(calculatedShareMinor)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 OutlinedTextField(
                     value = row.reimbursed,
                     onValueChange = { onChange(row.copy(reimbursed = it.sharedFinanceAmountInput())) },
@@ -748,6 +1033,19 @@ private fun ParticipantEditorCard(
         }
     }
 }
+
+private fun String.splitPercentageBasisPointsOrNull(): Int? = runCatching {
+    val clean = trim()
+    if (clean.isEmpty()) null else {
+        BigDecimal(clean)
+            .multiply(BigDecimal(100))
+            .setScale(0, RoundingMode.HALF_UP)
+            .intValueExact()
+    }
+}.getOrNull()
+
+private fun Int.splitPercentageInput(): String =
+    BigDecimal.valueOf(toLong(), 2).stripTrailingZeros().toPlainString()
 
 @Composable
 private fun SplitAllocationLine(label: String, value: String, emphasize: Boolean = false) {

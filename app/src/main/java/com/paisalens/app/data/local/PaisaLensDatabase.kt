@@ -10,6 +10,7 @@ import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountBalanceWriteResult
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.AuditAction
 import com.paisalens.app.data.model.AuditEntityType
 import com.paisalens.app.data.model.AuditEntityKey
@@ -19,10 +20,15 @@ import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.CreditCardBill
+import com.paisalens.app.data.model.CreditCardBillPaymentResult
+import com.paisalens.app.data.model.CreditCardBillStatus
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.ExpenseSplit
+import com.paisalens.app.data.model.ExpenseSplitEntryMode
 import com.paisalens.app.data.model.ExpenseSplitStatus
+import com.paisalens.app.data.model.EncryptedSmsCoverageMessage
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.NetWorthKind
@@ -35,6 +41,7 @@ import com.paisalens.app.data.model.PaymentCommitmentKind
 import com.paisalens.app.data.model.PaymentCommitmentSource
 import com.paisalens.app.data.model.PaymentCommitmentStatus
 import com.paisalens.app.data.model.PaymentFrequency
+import com.paisalens.app.data.model.ParsedCreditCardBill
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.ReconciliationStatus
@@ -53,6 +60,16 @@ import com.paisalens.app.data.model.SmartRuleMatchType
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.SavingsGoalKind
+import com.paisalens.app.data.model.SMS_DUPLICATE_WINDOW_MILLIS
+import com.paisalens.app.data.model.SmsCoverageCandidate
+import com.paisalens.app.data.model.SmsCoverageReason
+import com.paisalens.app.data.model.SmsCoverageRule
+import com.paisalens.app.data.model.SmsCoverageStatus
+import com.paisalens.app.data.model.SmsTransactionIngestResult
+import com.paisalens.app.data.model.TransactionSmsSource
+import com.paisalens.app.data.model.BudgetCadence
+import com.paisalens.app.data.model.BudgetPeriodAnchor
+import com.paisalens.app.data.model.BudgetRolloverMode
 import com.paisalens.app.data.model.ContributionFrequency
 import com.paisalens.app.data.model.deduplicatedPaymentCommitments
 import com.paisalens.app.data.model.findMatchingSmartCategoryRule
@@ -65,6 +82,13 @@ import com.paisalens.app.data.model.expenseSplitStatus
 import com.paisalens.app.data.model.validateExpenseSplits
 import com.paisalens.app.data.model.encodeUserEnteredUpiBalanceSource
 import com.paisalens.app.data.model.validateUserEnteredUpiBalance
+import com.paisalens.app.data.model.validateAdvancedBudgetPlan
+import com.paisalens.app.data.model.matches
+import com.paisalens.app.data.model.normalized
+import com.paisalens.app.data.model.normalizedSmsSender
+import com.paisalens.app.data.model.smsCoverageFingerprint
+import com.paisalens.app.data.model.smsDuplicateFingerprint
+import com.paisalens.app.data.model.hasStableSmsTransactionReference
 import com.paisalens.app.sms.BankSmsSupport
 import java.util.Locale
 import java.util.UUID
@@ -113,12 +137,15 @@ class PaisaLensDatabase(context: Context) :
                 original_currency TEXT,
                 exchange_rate REAL,
                 raw_message_cipher BLOB,
+                duplicate_count INTEGER NOT NULL DEFAULT 1,
+                dedupe_fingerprint TEXT,
                 created_at INTEGER NOT NULL
             )
             """.trimIndent(),
         )
         createTrustAccuracyTables(db)
         createSharedFinanceTables(db)
+        createV10Tables(db)
         createTransactionIndexes(db)
         createMerchantCategoriesTable(db)
         db.execSQL(
@@ -181,18 +208,32 @@ class PaisaLensDatabase(context: Context) :
             deduplicatePaymentCommitments(db)
             createPaymentCommitmentUniqueIndex(db)
         }
+        if (oldVersion < 10) {
+            migrateSmsIntelligenceSchema(db)
+            migrateExpenseSplitConfiguration(db)
+            createV10Tables(db)
+            consolidateSafeLegacySmsDuplicates(db)
+        }
     }
 
-    fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): Int {
-        if (items.isEmpty()) return 0
+    fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): SmsTransactionIngestResult {
+        if (items.isEmpty()) return SmsTransactionIngestResult(0, 0, 0)
         val db = writableDatabase
         val merchantCategories = getMerchantCategoryMap(db)
         val merchantAliases = getMerchantAliasMap(db)
         val smartRules = getSmartCategoryRules(db)
         var inserted = 0
+        var duplicatesMerged = 0
+        var ignoredSources = 0
         db.beginTransaction()
         try {
             items.forEach { (item, encryptedBody) ->
+                val existingSourceTransactionId = transactionIdForSmsSource(db, item.sourceMessageId)
+                if (existingSourceTransactionId != null) {
+                    insertTransactionSmsSource(db, item.sourceMessageId, existingSourceTransactionId, item.occurredAt)
+                    ignoredSources += 1
+                    return@forEach
+                }
                 val canonicalMerchant = merchantAliases[normalizedMerchantKey(item.merchant)]?.canonicalName
                     ?: item.merchant
                 val merchantRule = if (item.type == TransactionType.EXPENSE) {
@@ -225,6 +266,45 @@ class PaisaLensDatabase(context: Context) :
                 } else {
                     null
                 }
+                val duplicateFingerprint = smsDuplicateFingerprint(
+                    sender = item.sender,
+                    body = item.rawMessage,
+                    amountMinor = item.amountMinor,
+                    type = item.type,
+                    accountHint = item.accountHint,
+                    merchant = canonicalMerchant,
+                )
+                val duplicateTransactionId = if (hasStableSmsTransactionReference(item.rawMessage)) {
+                    findDuplicateSmsTransaction(
+                        db = db,
+                        fingerprint = duplicateFingerprint,
+                        occurredAt = item.occurredAt,
+                    )
+                } else {
+                    findExactTimestampDuplicateSmsTransaction(
+                        db = db,
+                        fingerprint = duplicateFingerprint,
+                        occurredAt = item.occurredAt,
+                    )
+                }
+                if (duplicateTransactionId != null) {
+                    val sourceInserted = insertTransactionSmsSource(
+                        db,
+                        item.sourceMessageId,
+                        duplicateTransactionId,
+                        item.occurredAt,
+                    )
+                    if (sourceInserted) {
+                        db.execSQL(
+                            "UPDATE transactions SET duplicate_count = duplicate_count + 1 WHERE id = ?",
+                            arrayOf(duplicateTransactionId),
+                        )
+                        duplicatesMerged += 1
+                    } else {
+                        ignoredSources += 1
+                    }
+                    return@forEach
+                }
                 val values = transactionValues(
                     item,
                     encryptedBody,
@@ -232,11 +312,65 @@ class PaisaLensDatabase(context: Context) :
                     merchantRule,
                     smartRule,
                     canonicalMerchant,
+                    duplicateFingerprint,
                 )
                 val rowId = db.insertWithOnConflict("transactions", null, values, SQLiteDatabase.CONFLICT_IGNORE)
                 if (rowId != -1L) {
+                    insertTransactionSmsSource(db, item.sourceMessageId, rowId, item.occurredAt)
                     inserted += 1
+                } else {
+                    ignoredSources += 1
                 }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return SmsTransactionIngestResult(inserted, duplicatesMerged, ignoredSources)
+    }
+
+    fun insertSmsCoverage(items: List<Pair<SmsCoverageCandidate, ByteArray>>): Int {
+        if (items.isEmpty()) return 0
+        val db = writableDatabase
+        var inserted = 0
+        db.beginTransaction()
+        try {
+            items.forEach { (candidate, encryptedBody) ->
+                val fingerprint = smsCoverageFingerprint(candidate.sender, candidate.body)
+                val alreadyStored = db.rawQuery(
+                    """
+                    SELECT 1 FROM sms_coverage_messages
+                    WHERE source_message_id = ? OR (
+                        body_fingerprint = ? AND received_at BETWEEN ? AND ?
+                    )
+                    LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(
+                        candidate.sourceMessageId,
+                        fingerprint,
+                        (candidate.receivedAt - SMS_DUPLICATE_WINDOW_MILLIS).toString(),
+                        (candidate.receivedAt + SMS_DUPLICATE_WINDOW_MILLIS).toString(),
+                    ),
+                ).use { it.moveToFirst() }
+                if (alreadyStored) return@forEach
+                val now = System.currentTimeMillis()
+                val rowId = db.insertWithOnConflict(
+                    "sms_coverage_messages",
+                    null,
+                    ContentValues().apply {
+                        put("source_message_id", candidate.sourceMessageId)
+                        put("sender", candidate.sender.take(64))
+                        put("body_cipher", encryptedBody)
+                        put("body_fingerprint", fingerprint)
+                        put("received_at", candidate.receivedAt)
+                        put("reason", candidate.reason.name)
+                        put("status", SmsCoverageStatus.NEEDS_REVIEW.name)
+                        put("created_at", now)
+                        put("updated_at", now)
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE,
+                )
+                if (rowId != -1L) inserted += 1
             }
             db.setTransactionSuccessful()
         } finally {
@@ -244,6 +378,482 @@ class PaisaLensDatabase(context: Context) :
         }
         return inserted
     }
+
+    internal fun getEncryptedSmsCoverageMessages(): List<EncryptedSmsCoverageMessage> {
+        val result = mutableListOf<EncryptedSmsCoverageMessage>()
+        readableDatabase.query(
+            "sms_coverage_messages",
+            arrayOf(
+                "id", "source_message_id", "sender", "body_cipher", "received_at",
+                "reason", "status", "created_at", "updated_at",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "CASE status WHEN 'NEEDS_REVIEW' THEN 0 WHEN 'RULE_APPLIED' THEN 1 " +
+                "WHEN 'RESOLVED' THEN 2 ELSE 3 END, " +
+                "received_at DESC, id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += EncryptedSmsCoverageMessage(
+                    id = cursor.getLong(0),
+                    sourceMessageId = cursor.getString(1),
+                    sender = cursor.getString(2),
+                    bodyCipher = cursor.getBlob(3),
+                    receivedAt = cursor.getLong(4),
+                    reason = enumValueOrDefault(cursor.getString(5), SmsCoverageReason.UNSUPPORTED_FORMAT),
+                    status = enumValueOrDefault(cursor.getString(6), SmsCoverageStatus.NEEDS_REVIEW),
+                    createdAt = cursor.getLong(7),
+                    updatedAt = cursor.getLong(8),
+                )
+            }
+        }
+        return result
+    }
+
+    fun updateSmsCoverageStatus(id: Long, status: SmsCoverageStatus): Int = writableDatabase.update(
+        "sms_coverage_messages",
+        ContentValues().apply {
+            put("status", status.name)
+            put("updated_at", System.currentTimeMillis())
+        },
+        "id = ?",
+        arrayOf(id.toString()),
+    )
+
+    fun updateSmsCoverageStatuses(ids: Collection<Long>, status: SmsCoverageStatus): Int {
+        if (ids.isEmpty()) return 0
+        val db = writableDatabase
+        var updated = 0
+        db.beginTransaction()
+        try {
+            ids.distinct().forEach { id ->
+                updated += db.update(
+                    "sms_coverage_messages",
+                    ContentValues().apply {
+                        put("status", status.name)
+                        put("updated_at", System.currentTimeMillis())
+                    },
+                    "id = ?",
+                    arrayOf(id.toString()),
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return updated
+    }
+
+    fun deleteSmsCoverageMessage(id: Long): Int =
+        writableDatabase.delete("sms_coverage_messages", "id = ?", arrayOf(id.toString()))
+
+    fun deleteSmsCoverageMessages(ids: Collection<Long>): Int {
+        if (ids.isEmpty()) return 0
+        val db = writableDatabase
+        var deleted = 0
+        db.beginTransaction()
+        try {
+            ids.distinct().forEach { id ->
+                deleted += db.delete("sms_coverage_messages", "id = ?", arrayOf(id.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return deleted
+    }
+
+    fun deleteHandledSmsCoverageMessages(): Int = writableDatabase.delete(
+        "sms_coverage_messages",
+        "status != ?",
+        arrayOf(SmsCoverageStatus.NEEDS_REVIEW.name),
+    )
+
+    fun getSmsCoverageRules(): List<SmsCoverageRule> {
+        val result = mutableListOf<SmsCoverageRule>()
+        readableDatabase.query(
+            "sms_coverage_rules",
+            arrayOf(
+                "id", "name", "sender_key", "required_phrases", "merchant_name", "category",
+                "type", "source", "enabled", "created_at", "updated_at",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "enabled DESC, name COLLATE NOCASE ASC, id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += SmsCoverageRule(
+                    id = cursor.getLong(0),
+                    name = cursor.getString(1),
+                    senderKey = cursor.getString(2),
+                    requiredPhrases = decodeSmsRulePhrases(cursor.getString(3)),
+                    merchantName = cursor.getString(4),
+                    category = enumValueOrDefault(cursor.getString(5), ExpenseCategory.OTHER),
+                    type = enumValueOrDefault(cursor.getString(6), TransactionType.EXPENSE),
+                    source = enumValueOrDefault(cursor.getString(7), TransactionSource.BANK),
+                    enabled = cursor.getInt(8) != 0,
+                    createdAt = cursor.getLong(9),
+                    updatedAt = cursor.getLong(10),
+                )
+            }
+        }
+        return result
+    }
+
+    fun upsertSmsCoverageRule(rule: SmsCoverageRule): Long {
+        val now = System.currentTimeMillis()
+        val clean = rule.copy(
+            createdAt = rule.createdAt.takeIf { rule.id != 0L } ?: now,
+            updatedAt = now,
+        ).normalized()
+        val values = ContentValues().apply {
+            if (clean.id != 0L) put("id", clean.id)
+            put("name", clean.name)
+            put("sender_key", normalizedSmsSender(clean.senderKey))
+            put("required_phrases", encodeSmsRulePhrases(clean.requiredPhrases))
+            put("merchant_name", clean.merchantName)
+            put("category", clean.category.name)
+            put("type", clean.type.name)
+            put("source", clean.source.name)
+            put("enabled", if (clean.enabled) 1 else 0)
+            put("created_at", clean.createdAt)
+            put("updated_at", clean.updatedAt)
+        }
+        return writableDatabase.insertWithOnConflict(
+            "sms_coverage_rules",
+            null,
+            values,
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    fun deleteSmsCoverageRule(id: Long): Int =
+        writableDatabase.delete("sms_coverage_rules", "id = ?", arrayOf(id.toString()))
+
+    fun getTransactionSmsSources(): List<TransactionSmsSource> {
+        val result = mutableListOf<TransactionSmsSource>()
+        readableDatabase.query(
+            "transaction_sms_sources",
+            arrayOf("source_message_id", "transaction_id", "received_at"),
+            null,
+            null,
+            null,
+            null,
+            "transaction_id ASC, received_at ASC, source_message_id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += TransactionSmsSource(
+                    sourceMessageId = cursor.getString(0),
+                    transactionId = cursor.getLong(1),
+                    receivedAt = cursor.getLong(2),
+                )
+            }
+        }
+        return result
+    }
+
+    fun getCreditCardBills(): List<CreditCardBill> {
+        val result = mutableListOf<CreditCardBill>()
+        readableDatabase.query(
+            "credit_card_bills",
+            arrayOf(
+                "id", "bill_key", "source_message_id", "account_id", "card_identity_key",
+                "account_hint", "institution_name", "total_due_minor", "minimum_due_minor",
+                "due_date_epoch_day", "detected_at", "sender", "status", "paid_at",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "due_date_epoch_day DESC, detected_at DESC, id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += CreditCardBill(
+                    id = cursor.getLong(0),
+                    billKey = cursor.getString(1),
+                    sourceMessageId = cursor.getString(2),
+                    accountId = cursor.longOrNull(3),
+                    cardIdentityKey = cursor.getString(4),
+                    accountHint = cursor.getString(5),
+                    institutionName = cursor.getString(6),
+                    totalDueMinor = cursor.getLong(7),
+                    minimumDueMinor = cursor.longOrNull(8),
+                    dueDateEpochDay = cursor.getLong(9),
+                    detectedAt = cursor.getLong(10),
+                    sender = cursor.getString(11),
+                    status = enumValueOrDefault(cursor.getString(12), CreditCardBillStatus.DUE),
+                    paidAt = cursor.longOrNull(13),
+                )
+            }
+        }
+        return result
+    }
+
+    /** Upserts a bill cycle while deliberately retaining any user-confirmed paid state. */
+    fun upsertCreditCardBills(items: List<ParsedCreditCardBill>): Int {
+        if (items.isEmpty()) return 0
+        val db = writableDatabase
+        var changed = 0
+        db.beginTransaction()
+        try {
+            items.forEach { item ->
+                if (item.totalDueMinor < 0 || item.dueDateEpochDay <= 0 || item.cardIdentityKey.isBlank()) {
+                    return@forEach
+                }
+                val accountId = resolveAccountId(
+                    db = db,
+                    accountHint = item.accountHint,
+                    source = TransactionSource.CARD,
+                    sender = item.sender,
+                )
+                val resolvedAccountHint = accountId?.let { resolvedId ->
+                    db.query(
+                        "accounts",
+                        arrayOf("account_hint"),
+                        "id = ?",
+                        arrayOf(resolvedId.toString()),
+                        null,
+                        null,
+                        null,
+                        "1",
+                    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                } ?: item.accountHint
+                val cardIdentityKey = accountId?.let { "card-account:$it" } ?: item.cardIdentityKey
+                val billKey = "$cardIdentityKey:${item.dueDateEpochDay}"
+                val existing = db.query(
+                    "credit_card_bills",
+                    arrayOf("id", "detected_at"),
+                    "bill_key = ?",
+                    arrayOf(billKey),
+                    null,
+                    null,
+                    null,
+                    "1",
+                ).use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getLong(0) to cursor.getLong(1) else null
+                }
+                if (existing == null) {
+                    val rowId = db.insertWithOnConflict(
+                        "credit_card_bills",
+                        null,
+                        creditCardBillValues(
+                            CreditCardBill(
+                                billKey = billKey,
+                                sourceMessageId = item.sourceMessageId,
+                                accountId = accountId,
+                                cardIdentityKey = cardIdentityKey,
+                                accountHint = resolvedAccountHint,
+                                institutionName = item.institutionName,
+                                totalDueMinor = item.totalDueMinor,
+                                minimumDueMinor = item.minimumDueMinor,
+                                dueDateEpochDay = item.dueDateEpochDay,
+                                detectedAt = item.detectedAt,
+                                sender = item.sender,
+                            ),
+                        ),
+                        SQLiteDatabase.CONFLICT_IGNORE,
+                    )
+                    if (rowId != -1L) changed += 1
+                } else if (item.detectedAt > existing.second) {
+                    changed += db.update(
+                        "credit_card_bills",
+                        ContentValues().apply {
+                            put("source_message_id", item.sourceMessageId)
+                            putNullableLong("account_id", accountId)
+                            putNullableText("account_hint", resolvedAccountHint)
+                            put("institution_name", item.institutionName.take(64))
+                            put("total_due_minor", item.totalDueMinor)
+                            putNullableLong("minimum_due_minor", item.minimumDueMinor)
+                            put("detected_at", item.detectedAt)
+                            put("sender", item.sender.take(64))
+                            put("updated_at", System.currentTimeMillis())
+                        },
+                        "id = ?",
+                        arrayOf(existing.first.toString()),
+                    )
+                } else if (accountId != null) {
+                    changed += db.update(
+                        "credit_card_bills",
+                        ContentValues().apply { put("account_id", accountId) },
+                        "id = ? AND account_id IS NULL",
+                        arrayOf(existing.first.toString()),
+                    )
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return changed
+    }
+
+    fun markCreditCardBillPaid(
+        id: Long,
+        confirmed: Boolean,
+        paidAt: Long = System.currentTimeMillis(),
+    ): CreditCardBillPaymentResult {
+        if (!confirmed) return CreditCardBillPaymentResult.CONFIRMATION_REQUIRED
+        val current = getCreditCardBills().firstOrNull { it.id == id }
+            ?: return CreditCardBillPaymentResult.NOT_FOUND
+        if (current.status == CreditCardBillStatus.PAID) return CreditCardBillPaymentResult.ALREADY_PAID
+        require(paidAt > 0) { "Paid time is invalid" }
+        val updated = writableDatabase.update(
+            "credit_card_bills",
+            ContentValues().apply {
+                put("status", CreditCardBillStatus.PAID.name)
+                put("paid_at", paidAt)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id = ? AND status = ?",
+            arrayOf(id.toString(), CreditCardBillStatus.DUE.name),
+        )
+        return if (updated == 1) CreditCardBillPaymentResult.MARKED_PAID
+        else CreditCardBillPaymentResult.ALREADY_PAID
+    }
+
+    /** Assigns an alert without card digits to a user-selected credit-card profile. */
+    fun assignCreditCardBillToAccount(billId: Long, accountId: Long): Boolean {
+        require(billId > 0 && accountId > 0) { "A card bill and credit-card account are required" }
+        val bills = getCreditCardBills()
+        val bill = bills.firstOrNull { it.id == billId } ?: return false
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val account = db.query(
+                "accounts",
+                arrayOf("type", "account_hint", "institution"),
+                "id = ?",
+                arrayOf(accountId.toString()),
+                null,
+                null,
+                null,
+                "1",
+            ).use { cursor ->
+                if (!cursor.moveToFirst()) null else Triple(
+                    enumValueOrDefault(cursor.getString(0), AccountType.BANK_ACCOUNT),
+                    cursor.getString(1),
+                    cursor.getString(2),
+                )
+            } ?: error("The selected card account no longer exists")
+            require(account.first == AccountType.CREDIT_CARD) { "Choose a credit-card account" }
+
+            val cardIdentityKey = "card-account:$accountId"
+            val billKey = "$cardIdentityKey:${bill.dueDateEpochDay}"
+            val existing = bills.firstOrNull { it.id != bill.id && it.billKey == billKey }
+            val now = System.currentTimeMillis()
+            if (existing == null) {
+                check(
+                    db.update(
+                        "credit_card_bills",
+                        ContentValues().apply {
+                            put("account_id", accountId)
+                            put("card_identity_key", cardIdentityKey)
+                            put("bill_key", billKey)
+                            putNullableText("account_hint", account.second ?: bill.accountHint)
+                            put("updated_at", now)
+                        },
+                        "id = ?",
+                        arrayOf(bill.id.toString()),
+                    ) == 1,
+                ) { "The card bill changed before it could be assigned" }
+            } else {
+                val newest = listOf(existing, bill).maxBy(CreditCardBill::detectedAt)
+                val paid = listOf(existing, bill).firstOrNull { it.status == CreditCardBillStatus.PAID }
+                db.delete("credit_card_bills", "id = ?", arrayOf(bill.id.toString()))
+                check(
+                    db.update(
+                        "credit_card_bills",
+                        ContentValues().apply {
+                            put("source_message_id", newest.sourceMessageId)
+                            put("account_id", accountId)
+                            put("card_identity_key", cardIdentityKey)
+                            put("bill_key", billKey)
+                            putNullableText("account_hint", account.second ?: newest.accountHint)
+                            put("institution_name", newest.institutionName)
+                            put("total_due_minor", newest.totalDueMinor)
+                            putNullableLong("minimum_due_minor", newest.minimumDueMinor)
+                            put("detected_at", newest.detectedAt)
+                            put("sender", newest.sender)
+                            put("status", paid?.status?.name ?: CreditCardBillStatus.DUE.name)
+                            putNullableLong("paid_at", paid?.paidAt)
+                            put("updated_at", now)
+                        },
+                        "id = ?",
+                        arrayOf(existing.id.toString()),
+                    ) == 1,
+                ) { "The existing card cycle could not be updated" }
+            }
+            db.setTransactionSuccessful()
+            true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getAdvancedBudgetPlans(): List<AdvancedBudgetPlan> {
+        val result = mutableListOf<AdvancedBudgetPlan>()
+        readableDatabase.query(
+            "advanced_budget_plans",
+            arrayOf(
+                "id", "name", "category", "custom_category_id", "allocation_minor", "cadence",
+                "period_anchor", "payday_day", "annual_start_month", "irregular_start_epoch_day",
+                "irregular_end_epoch_day", "rollover_mode", "warning_threshold_basis_points",
+                "starting_rollover_minor", "effective_from_epoch_day", "enabled", "created_at", "updated_at",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "enabled DESC, name COLLATE NOCASE ASC, id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += AdvancedBudgetPlan(
+                    id = cursor.getLong(0),
+                    name = cursor.getString(1),
+                    category = cursor.getString(2)?.let { enumValueOrDefault(it, ExpenseCategory.OTHER) },
+                    customCategoryId = cursor.longOrNull(3),
+                    allocationMinor = cursor.getLong(4),
+                    cadence = enumValueOrDefault(cursor.getString(5), BudgetCadence.MONTHLY),
+                    periodAnchor = enumValueOrDefault(cursor.getString(6), BudgetPeriodAnchor.CALENDAR_MONTH),
+                    paydayDay = cursor.getInt(7),
+                    annualStartMonth = cursor.getInt(8),
+                    irregularStartEpochDay = cursor.longOrNull(9),
+                    irregularEndEpochDay = cursor.longOrNull(10),
+                    rolloverMode = enumValueOrDefault(cursor.getString(11), BudgetRolloverMode.NONE),
+                    warningThresholdBasisPoints = cursor.getInt(12),
+                    startingRolloverMinor = cursor.getLong(13),
+                    effectiveFromEpochDay = cursor.getLong(14),
+                    enabled = cursor.getInt(15) != 0,
+                    createdAt = cursor.getLong(16),
+                    updatedAt = cursor.getLong(17),
+                )
+            }
+        }
+        return result
+    }
+
+    fun upsertAdvancedBudgetPlan(plan: AdvancedBudgetPlan): Long {
+        validateAdvancedBudgetPlan(plan)
+        val now = System.currentTimeMillis()
+        val normalized = plan.copy(
+            name = plan.name.trim().replace(Regex("\\s+"), " ").take(64),
+            createdAt = plan.createdAt.takeIf { plan.id != 0L } ?: now,
+            updatedAt = now,
+        )
+        return writableDatabase.insertWithOnConflict(
+            "advanced_budget_plans",
+            null,
+            advancedBudgetValues(normalized, includeId = normalized.id != 0L),
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    fun deleteAdvancedBudgetPlan(id: Long): Int =
+        writableDatabase.delete("advanced_budget_plans", "id = ?", arrayOf(id.toString()))
 
     fun insertManual(record: TransactionRecord): Long {
         val canonical = getMerchantAliasMap(readableDatabase)[normalizedMerchantKey(record.merchant)]?.canonicalName
@@ -335,7 +945,7 @@ class PaisaLensDatabase(context: Context) :
                 t.category, t.type, t.occurred_at, t.source, t.sender, t.note,
                 t.account_id, a.name, t.custom_category_id, c.name, t.tags,
                 t.review_status, t.review_reason, t.original_amount_minor,
-                t.original_currency, t.exchange_rate, a.institution
+                t.original_currency, t.exchange_rate, a.institution, t.duplicate_count
             FROM transactions t
             LEFT JOIN accounts a ON a.id = t.account_id
             LEFT JOIN custom_categories c ON c.id = t.custom_category_id
@@ -369,6 +979,7 @@ class PaisaLensDatabase(context: Context) :
                     institutionName = BankSmsSupport.institutionNameOrNull(cursor.getString(9))
                         ?: BankSmsSupport.institutionNameOrNull(cursor.getString(21).orEmpty())
                         ?: cursor.getString(21)?.trim()?.takeIf(String::isNotBlank),
+                    duplicateCount = cursor.getInt(22).coerceAtLeast(1),
                 )
             }
         }
@@ -944,6 +1555,7 @@ class PaisaLensDatabase(context: Context) :
             arrayOf(
                 "id", "transaction_id", "participant_name", "share_minor", "reimbursed_minor",
                 "linked_incoming_transaction_id", "note", "status", "created_at", "updated_at",
+                "entry_mode", "share_basis_points",
             ),
             transactionId?.let { "transaction_id = ?" },
             transactionId?.let { arrayOf(it.toString()) },
@@ -963,6 +1575,8 @@ class PaisaLensDatabase(context: Context) :
                     status = enumValueOrDefault(cursor.getString(7), ExpenseSplitStatus.OPEN),
                     createdAt = cursor.getLong(8),
                     updatedAt = cursor.getLong(9),
+                    entryMode = enumValueOrDefault(cursor.getString(10), ExpenseSplitEntryMode.AMOUNT),
+                    shareBasisPoints = cursor.intOrNull(11),
                 )
             }
         }
@@ -1269,6 +1883,8 @@ class PaisaLensDatabase(context: Context) :
         put("status", expenseSplitStatus(split.shareMinor, split.reimbursedMinor).name)
         put("created_at", split.createdAt)
         put("updated_at", split.updatedAt)
+        put("entry_mode", split.entryMode.name)
+        putNullableInt("share_basis_points", split.shareBasisPoints)
     }
 
     fun getSavingsGoals(): List<SavingsGoal> {
@@ -1507,6 +2123,45 @@ class PaisaLensDatabase(context: Context) :
         putNullableText("notes", commitment.notes)
         put("created_at", commitment.createdAt)
         put("updated_at", commitment.updatedAt)
+    }
+
+    private fun creditCardBillValues(bill: CreditCardBill, includeId: Boolean = false) = ContentValues().apply {
+        if (includeId) put("id", bill.id)
+        put("bill_key", bill.billKey)
+        put("source_message_id", bill.sourceMessageId)
+        putNullableLong("account_id", bill.accountId)
+        put("card_identity_key", bill.cardIdentityKey)
+        putNullableText("account_hint", bill.accountHint)
+        put("institution_name", bill.institutionName.trim().take(64))
+        put("total_due_minor", bill.totalDueMinor.coerceAtLeast(0))
+        putNullableLong("minimum_due_minor", bill.minimumDueMinor?.coerceAtLeast(0))
+        put("due_date_epoch_day", bill.dueDateEpochDay)
+        put("detected_at", bill.detectedAt)
+        put("sender", bill.sender.take(64))
+        put("status", bill.status.name)
+        putNullableLong("paid_at", bill.paidAt)
+        put("updated_at", maxOf(bill.detectedAt, bill.paidAt ?: 0L))
+    }
+
+    private fun advancedBudgetValues(plan: AdvancedBudgetPlan, includeId: Boolean = false) = ContentValues().apply {
+        if (includeId) put("id", plan.id)
+        put("name", plan.name)
+        putNullableText("category", plan.category?.name)
+        putNullableLong("custom_category_id", plan.customCategoryId)
+        put("allocation_minor", plan.allocationMinor)
+        put("cadence", plan.cadence.name)
+        put("period_anchor", plan.periodAnchor.name)
+        put("payday_day", plan.paydayDay)
+        put("annual_start_month", plan.annualStartMonth)
+        putNullableLong("irregular_start_epoch_day", plan.irregularStartEpochDay)
+        putNullableLong("irregular_end_epoch_day", plan.irregularEndEpochDay)
+        put("rollover_mode", plan.rolloverMode.name)
+        put("warning_threshold_basis_points", plan.warningThresholdBasisPoints)
+        put("starting_rollover_minor", plan.startingRolloverMinor)
+        put("effective_from_epoch_day", plan.effectiveFromEpochDay)
+        put("enabled", if (plan.enabled) 1 else 0)
+        put("created_at", plan.createdAt)
+        put("updated_at", plan.updatedAt)
     }
 
     fun getBills(): List<BillReminder> {
@@ -2324,6 +2979,13 @@ class PaisaLensDatabase(context: Context) :
         val db = writableDatabase
         db.beginTransaction()
         try {
+            val advancedBudgetCount = db.rawQuery(
+                "SELECT COUNT(*) FROM advanced_budget_plans WHERE custom_category_id = ?",
+                arrayOf(id.toString()),
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+            require(advancedBudgetCount == 0) {
+                "This category is used by Budgeting 2.0. Change or delete that budget plan first."
+            }
             db.delete("merchant_categories", "custom_category_id = ?", arrayOf(id.toString()))
             db.delete("custom_categories", "id = ?", arrayOf(id.toString()))
             db.setTransactionSuccessful()
@@ -2365,33 +3027,48 @@ class PaisaLensDatabase(context: Context) :
         writableDatabase.insertWithOnConflict("budgets", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
-    fun snapshot(): PaisaLensBackupSnapshot = PaisaLensBackupSnapshot(
-        createdAt = System.currentTimeMillis(),
-        transactions = getTransactions(),
-        budgets = getBudgets(),
-        accounts = getAccounts(),
-        customCategories = getCustomCategories(),
-        merchantRules = getMerchantRules(),
-        merchantAliases = getMerchantAliases(),
-        loans = getLoans(),
-        balanceHistory = getBalanceHistory(),
-        bills = getBills(),
-        netWorthItems = getNetWorthItems(),
-        smartCategoryRules = getSmartCategoryRules(),
-        reconciliations = getMonthlyReconciliations(),
-        transactionLinks = getTransactionLinks(),
-        auditEvents = getAuditEvents(200_000),
-        expenseSplits = getExpenseSplits(),
-        savingsGoals = getSavingsGoals(),
-        savingsContributions = getSavingsContributions(),
-        paymentCommitments = getPaymentCommitments(),
-    )
+    fun snapshot(): PaisaLensBackupSnapshot {
+        val db = readableDatabase
+        db.beginTransaction()
+        return try {
+            PaisaLensBackupSnapshot(
+                createdAt = System.currentTimeMillis(),
+                transactions = getTransactions(),
+                budgets = getBudgets(),
+                accounts = getAccounts(),
+                customCategories = getCustomCategories(),
+                merchantRules = getMerchantRules(),
+                merchantAliases = getMerchantAliases(),
+                loans = getLoans(),
+                balanceHistory = getBalanceHistory(),
+                bills = getBills(),
+                netWorthItems = getNetWorthItems(),
+                smartCategoryRules = getSmartCategoryRules(),
+                reconciliations = getMonthlyReconciliations(),
+                transactionLinks = getTransactionLinks(),
+                auditEvents = getAuditEvents(200_000),
+                expenseSplits = getExpenseSplits(),
+                savingsGoals = getSavingsGoals(),
+                savingsContributions = getSavingsContributions(),
+                paymentCommitments = getPaymentCommitments(),
+                transactionSmsSources = getTransactionSmsSources(),
+                // Full unresolved SMS text is intentionally excluded from portable backups.
+                smsCoverageMessages = emptyList(),
+                smsCoverageRules = getSmsCoverageRules(),
+                advancedBudgets = getAdvancedBudgetPlans(),
+                creditCardBills = getCreditCardBills(),
+            ).also { db.setTransactionSuccessful() }
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     fun restore(snapshot: PaisaLensBackupSnapshot) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            clearAllTables(db)
+            // Coverage candidates are device-only by design and absent from portable backups.
+            clearAllTables(db, preserveSmsCoverageMessages = true)
             snapshot.accounts.forEach { account ->
                 db.insertOrThrow(
                     "accounts",
@@ -2482,6 +3159,14 @@ class PaisaLensDatabase(context: Context) :
                     },
                 )
             }
+            snapshot.advancedBudgets.forEach { plan ->
+                validateAdvancedBudgetPlan(plan)
+                db.insertOrThrow(
+                    "advanced_budget_plans",
+                    null,
+                    advancedBudgetValues(plan, includeId = true),
+                )
+            }
             val auditedCreatedAtByTransactionId = snapshot.auditEvents
                 .asSequence()
                 .filter { it.entityType == AuditEntityType.TRANSACTION }
@@ -2498,6 +3183,72 @@ class PaisaLensDatabase(context: Context) :
                     transactionValues(transaction, includeId = true).apply {
                         put("created_at", auditedCreatedAtByTransactionId[transaction.id] ?: snapshot.createdAt)
                     },
+                )
+            }
+            val restoredTransactionIds = snapshot.transactions.mapTo(mutableSetOf(), TransactionRecord::id)
+            val restoredSmsSources = if (snapshot.transactionSmsSources.isEmpty()) {
+                snapshot.transactions
+                    .filter { it.source in setOf(TransactionSource.BANK, TransactionSource.CARD, TransactionSource.UPI, TransactionSource.WALLET) }
+                    .map { TransactionSmsSource(it.sourceMessageId, it.id, it.occurredAt) }
+            } else {
+                snapshot.transactionSmsSources
+            }
+            restoredSmsSources.forEach { source ->
+                require(source.transactionId in restoredTransactionIds) {
+                    "Backup SMS source references a missing transaction"
+                }
+                db.insertOrThrow(
+                    "transaction_sms_sources",
+                    null,
+                    ContentValues().apply {
+                        put("source_message_id", source.sourceMessageId)
+                        put("transaction_id", source.transactionId)
+                        put("received_at", source.receivedAt)
+                    },
+                )
+            }
+            snapshot.transactions
+                .filter { it.source in setOf(TransactionSource.BANK, TransactionSource.CARD, TransactionSource.UPI, TransactionSource.WALLET) }
+                .forEach { transaction ->
+                    db.insertWithOnConflict(
+                        "transaction_sms_sources",
+                        null,
+                        ContentValues().apply {
+                            put("source_message_id", transaction.sourceMessageId)
+                            put("transaction_id", transaction.id)
+                            put("received_at", transaction.occurredAt)
+                        },
+                        SQLiteDatabase.CONFLICT_IGNORE,
+                    )
+                }
+            snapshot.smsCoverageRules.forEach { rule ->
+                val clean = rule.normalized()
+                db.insertOrThrow(
+                    "sms_coverage_rules",
+                    null,
+                    ContentValues().apply {
+                        put("id", clean.id)
+                        put("name", clean.name)
+                        put("sender_key", clean.senderKey)
+                        put("required_phrases", encodeSmsRulePhrases(clean.requiredPhrases))
+                        put("merchant_name", clean.merchantName)
+                        put("category", clean.category.name)
+                        put("type", clean.type.name)
+                        put("source", clean.source.name)
+                        put("enabled", if (clean.enabled) 1 else 0)
+                        put("created_at", clean.createdAt)
+                        put("updated_at", clean.updatedAt)
+                    },
+                )
+            }
+            snapshot.creditCardBills.forEach { bill ->
+                require(bill.totalDueMinor >= 0 && bill.dueDateEpochDay > 0 && bill.cardIdentityKey.isNotBlank()) {
+                    "Backup contains an invalid credit-card bill"
+                }
+                db.insertOrThrow(
+                    "credit_card_bills",
+                    null,
+                    creditCardBillValues(bill, includeId = true),
                 )
             }
             snapshot.loans.forEach { loan ->
@@ -2607,7 +3358,6 @@ class PaisaLensDatabase(context: Context) :
                 )
             }
             val restoredLinks = mutableListOf<TransactionLink>()
-            val restoredTransactionIds = snapshot.transactions.mapTo(mutableSetOf(), TransactionRecord::id)
             val restoredTransactionsById = snapshot.transactions.associateBy(TransactionRecord::id)
             snapshot.transactionLinks.forEach { link ->
                 val validation = validateTransactionLink(
@@ -2708,6 +3458,7 @@ class PaisaLensDatabase(context: Context) :
         merchantRule: MerchantCategoryRule?,
         smartRule: SmartCategoryRule?,
         canonicalMerchant: String,
+        duplicateFingerprint: String,
     ) = ContentValues().apply {
         put("source_message_id", item.sourceMessageId)
         put("amount_minor", item.amountMinor)
@@ -2728,6 +3479,8 @@ class PaisaLensDatabase(context: Context) :
         putNull("original_currency")
         putNull("exchange_rate")
         put("raw_message_cipher", encryptedBody)
+        put("duplicate_count", 1)
+        put("dedupe_fingerprint", duplicateFingerprint)
         put("created_at", System.currentTimeMillis())
     }
 
@@ -2752,8 +3505,83 @@ class PaisaLensDatabase(context: Context) :
         putNullableText("original_currency", record.originalCurrency)
         if (record.exchangeRate == null) putNull("exchange_rate") else put("exchange_rate", record.exchangeRate)
         putNull("raw_message_cipher")
+        put("duplicate_count", record.duplicateCount.coerceAtLeast(1))
+        putNull("dedupe_fingerprint")
         put("created_at", System.currentTimeMillis())
     }
+
+    private fun transactionIdForSmsSource(db: SQLiteDatabase, sourceMessageId: String): Long? {
+        db.query(
+            "transaction_sms_sources",
+            arrayOf("transaction_id"),
+            "source_message_id = ?",
+            arrayOf(sourceMessageId),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) return cursor.getLong(0) }
+        return db.query(
+            "transactions",
+            arrayOf("id"),
+            "source_message_id = ?",
+            arrayOf(sourceMessageId),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+    }
+
+    private fun findDuplicateSmsTransaction(
+        db: SQLiteDatabase,
+        fingerprint: String,
+        occurredAt: Long,
+    ): Long? = db.query(
+        "transactions",
+        arrayOf("id"),
+        "dedupe_fingerprint = ? AND occurred_at BETWEEN ? AND ?",
+        arrayOf(
+            fingerprint,
+            (occurredAt - SMS_DUPLICATE_WINDOW_MILLIS).toString(),
+            (occurredAt + SMS_DUPLICATE_WINDOW_MILLIS).toString(),
+        ),
+        null,
+        null,
+        "occurred_at ASC, id ASC",
+        "1",
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+
+    private fun findExactTimestampDuplicateSmsTransaction(
+        db: SQLiteDatabase,
+        fingerprint: String,
+        occurredAt: Long,
+    ): Long? = db.query(
+        "transactions",
+        arrayOf("id"),
+        "dedupe_fingerprint = ? AND occurred_at = ?",
+        arrayOf(fingerprint, occurredAt.toString()),
+        null,
+        null,
+        "id ASC",
+        "1",
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+
+    private fun insertTransactionSmsSource(
+        db: SQLiteDatabase,
+        sourceMessageId: String,
+        transactionId: Long,
+        receivedAt: Long,
+    ): Boolean = db.insertWithOnConflict(
+        "transaction_sms_sources",
+        null,
+        ContentValues().apply {
+            put("source_message_id", sourceMessageId)
+            put("transaction_id", transactionId)
+            put("received_at", receivedAt)
+        },
+        SQLiteDatabase.CONFLICT_IGNORE,
+    ) != -1L
 
     private fun categoryValues(selection: CategorySelection) = ContentValues().apply {
         put("category", selection.builtIn.name)
@@ -2989,6 +3817,8 @@ class PaisaLensDatabase(context: Context) :
                 status TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                entry_mode TEXT NOT NULL DEFAULT 'AMOUNT',
+                share_basis_points INTEGER CHECK(share_basis_points IS NULL OR share_basis_points BETWEEN 1 AND 10000),
                 CHECK(transaction_id != linked_incoming_transaction_id)
             )
             """.trimIndent(),
@@ -3087,7 +3917,257 @@ class PaisaLensDatabase(context: Context) :
         db.execSQL("CREATE INDEX IF NOT EXISTS index_transactions_category ON transactions(category)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_transactions_account ON transactions(account_id)")
         db.execSQL("CREATE INDEX IF NOT EXISTS index_transactions_review ON transactions(review_status)")
+        if (hasColumn(db, "transactions", "dedupe_fingerprint")) {
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_transactions_sms_dedupe " +
+                    "ON transactions(dedupe_fingerprint, occurred_at)",
+            )
+        }
     }
+
+    private fun createV10Tables(db: SQLiteDatabase) {
+        createSmsIntelligenceTables(db)
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS credit_card_bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bill_key TEXT NOT NULL UNIQUE,
+                source_message_id TEXT NOT NULL UNIQUE,
+                account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+                card_identity_key TEXT NOT NULL,
+                account_hint TEXT,
+                institution_name TEXT NOT NULL,
+                total_due_minor INTEGER NOT NULL CHECK(total_due_minor >= 0),
+                minimum_due_minor INTEGER CHECK(minimum_due_minor IS NULL OR minimum_due_minor >= 0),
+                due_date_epoch_day INTEGER NOT NULL,
+                detected_at INTEGER NOT NULL,
+                sender TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'DUE',
+                paid_at INTEGER,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_credit_card_bills_status_due " +
+                "ON credit_card_bills(status, due_date_epoch_day, card_identity_key)",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_credit_card_bills_card_history " +
+                "ON credit_card_bills(card_identity_key, due_date_epoch_day DESC)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS advanced_budget_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category TEXT,
+                custom_category_id INTEGER REFERENCES custom_categories(id) ON DELETE SET NULL,
+                allocation_minor INTEGER NOT NULL CHECK(allocation_minor > 0),
+                cadence TEXT NOT NULL,
+                period_anchor TEXT NOT NULL,
+                payday_day INTEGER NOT NULL CHECK(payday_day BETWEEN 1 AND 31),
+                annual_start_month INTEGER NOT NULL CHECK(annual_start_month BETWEEN 1 AND 12),
+                irregular_start_epoch_day INTEGER,
+                irregular_end_epoch_day INTEGER,
+                rollover_mode TEXT NOT NULL,
+                warning_threshold_basis_points INTEGER NOT NULL CHECK(warning_threshold_basis_points BETWEEN 1 AND 10000),
+                starting_rollover_minor INTEGER NOT NULL DEFAULT 0,
+                effective_from_epoch_day INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                CHECK(irregular_end_epoch_day IS NULL OR irregular_start_epoch_day IS NULL OR irregular_end_epoch_day >= irregular_start_epoch_day)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_advanced_budgets_enabled_date " +
+                "ON advanced_budget_plans(enabled DESC, effective_from_epoch_day, id)",
+        )
+    }
+
+    private fun migrateExpenseSplitConfiguration(db: SQLiteDatabase) {
+        if (!hasColumn(db, "expense_splits", "entry_mode")) {
+            db.execSQL("ALTER TABLE expense_splits ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'AMOUNT'")
+        }
+        if (!hasColumn(db, "expense_splits", "share_basis_points")) {
+            db.execSQL(
+                "ALTER TABLE expense_splits ADD COLUMN share_basis_points INTEGER " +
+                    "CHECK(share_basis_points IS NULL OR share_basis_points BETWEEN 1 AND 10000)",
+            )
+        }
+    }
+
+    /** Called by the version migration owner after the transaction columns are present. */
+    private fun createSmsIntelligenceTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_sms_sources (
+                source_message_id TEXT PRIMARY KEY NOT NULL,
+                transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+                received_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_transaction_sms_sources_transaction " +
+                "ON transaction_sms_sources(transaction_id)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sms_coverage_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_message_id TEXT NOT NULL UNIQUE,
+                sender TEXT NOT NULL,
+                body_cipher BLOB NOT NULL,
+                body_fingerprint TEXT NOT NULL,
+                received_at INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'NEEDS_REVIEW',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_sms_coverage_status_date " +
+                "ON sms_coverage_messages(status, received_at DESC)",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_sms_coverage_fingerprint_date " +
+                "ON sms_coverage_messages(body_fingerprint, received_at)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sms_coverage_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sender_key TEXT NOT NULL,
+                required_phrases TEXT NOT NULL,
+                merchant_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_sms_coverage_rules_sender " +
+                "ON sms_coverage_rules(sender_key, enabled)",
+        )
+    }
+
+    /**
+     * Adds the vNext SMS intelligence schema without changing DATABASE_VERSION. The parent
+     * migration owner invokes this from the consolidated upgrade step.
+     */
+    private fun migrateSmsIntelligenceSchema(db: SQLiteDatabase) {
+        if (!hasColumn(db, "transactions", "duplicate_count")) {
+            db.execSQL("ALTER TABLE transactions ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 1")
+        }
+        if (!hasColumn(db, "transactions", "dedupe_fingerprint")) {
+            db.execSQL("ALTER TABLE transactions ADD COLUMN dedupe_fingerprint TEXT")
+        }
+        createSmsIntelligenceTables(db)
+        createTransactionIndexes(db)
+        db.execSQL(
+            """
+            INSERT OR IGNORE INTO transaction_sms_sources(source_message_id, transaction_id, received_at)
+            SELECT source_message_id, id, occurred_at FROM transactions
+            WHERE source IN ('BANK', 'CARD', 'UPI', 'WALLET')
+            """.trimIndent(),
+        )
+    }
+
+    /**
+     * Consolidates only legacy rows that are identical at the same timestamp and have no
+     * ledger/audit dependants. Referenced transactions are intentionally retained.
+     */
+    private fun consolidateSafeLegacySmsDuplicates(db: SQLiteDatabase) {
+        data class Candidate(
+            val id: Long,
+            val sourceMessageId: String,
+            val amountMinor: Long,
+            val merchant: String,
+            val accountHint: String?,
+            val type: TransactionType,
+            val occurredAt: Long,
+            val source: TransactionSource,
+            val sender: String,
+            val duplicateCount: Int,
+        )
+        val candidates = mutableListOf<Candidate>()
+        db.query(
+            "transactions",
+            arrayOf(
+                "id", "source_message_id", "amount_minor", "merchant", "account_hint", "type",
+                "occurred_at", "source", "sender", "duplicate_count",
+            ),
+            "source IN ('BANK', 'CARD', 'UPI', 'WALLET')",
+            null,
+            null,
+            null,
+            "occurred_at ASC, id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                candidates += Candidate(
+                    id = cursor.getLong(0),
+                    sourceMessageId = cursor.getString(1),
+                    amountMinor = cursor.getLong(2),
+                    merchant = cursor.getString(3),
+                    accountHint = cursor.getString(4),
+                    type = enumValueOrDefault(cursor.getString(5), TransactionType.EXPENSE),
+                    occurredAt = cursor.getLong(6),
+                    source = enumValueOrDefault(cursor.getString(7), TransactionSource.BANK),
+                    sender = cursor.getString(8),
+                    duplicateCount = cursor.getInt(9).coerceAtLeast(1),
+                )
+            }
+        }
+        candidates.groupBy { candidate ->
+            listOf(
+                normalizedSmsSender(candidate.sender),
+                candidate.amountMinor.toString(),
+                normalizedMerchantKey(candidate.merchant),
+                candidate.accountHint?.filter(Char::isDigit)?.takeLast(4).orEmpty(),
+                candidate.type.name,
+                candidate.source.name,
+                candidate.occurredAt.toString(),
+            ).joinToString("\u001F")
+        }.values.filter { it.size > 1 }.forEach { group ->
+            val canonical = group.minBy(Candidate::id)
+            group.asSequence().filter { it.id != canonical.id }.forEach { duplicate ->
+                if (hasTransactionDependants(db, duplicate.id)) return@forEach
+                db.update(
+                    "transaction_sms_sources",
+                    ContentValues().apply { put("transaction_id", canonical.id) },
+                    "transaction_id = ?",
+                    arrayOf(duplicate.id.toString()),
+                )
+                db.execSQL(
+                    "UPDATE transactions SET duplicate_count = duplicate_count + ? WHERE id = ?",
+                    arrayOf<Any>(duplicate.duplicateCount, canonical.id),
+                )
+                db.delete("transactions", "id = ?", arrayOf(duplicate.id.toString()))
+            }
+        }
+    }
+
+    private fun hasTransactionDependants(db: SQLiteDatabase, transactionId: Long): Boolean = db.rawQuery(
+        """
+        SELECT (
+            EXISTS(SELECT 1 FROM transaction_links WHERE source_transaction_id = ? OR target_transaction_id = ?) OR
+            EXISTS(SELECT 1 FROM expense_splits WHERE transaction_id = ? OR linked_incoming_transaction_id = ?) OR
+            EXISTS(SELECT 1 FROM savings_contributions WHERE linked_transaction_id = ?) OR
+            EXISTS(SELECT 1 FROM audit_events WHERE entity_type = 'TRANSACTION' AND entity_id = ?)
+        )
+        """.trimIndent(),
+        Array(6) { transactionId.toString() },
+    ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) != 0 }
 
     private fun createMerchantCategoriesTable(db: SQLiteDatabase) {
         db.execSQL(
@@ -3942,7 +5022,15 @@ class PaisaLensDatabase(context: Context) :
 
     private fun newAuditBatchId(prefix: String): String = "$prefix-${UUID.randomUUID()}"
 
-    private fun clearAllTables(db: SQLiteDatabase) {
+    private fun clearAllTables(
+        db: SQLiteDatabase,
+        preserveSmsCoverageMessages: Boolean = false,
+    ) {
+        if (!preserveSmsCoverageMessages) db.delete("sms_coverage_messages", null, null)
+        db.delete("sms_coverage_rules", null, null)
+        db.delete("transaction_sms_sources", null, null)
+        db.delete("credit_card_bills", null, null)
+        db.delete("advanced_budget_plans", null, null)
         db.delete("expense_splits", null, null)
         db.delete("savings_contributions", null, null)
         db.delete("savings_goals", null, null)
@@ -3999,10 +5087,27 @@ class PaisaLensDatabase(context: Context) :
         ?.filter(String::isNotBlank)
         .orEmpty()
 
+    private fun encodeSmsRulePhrases(phrases: List<String>): String = phrases
+        .map { it.trim().replace(SMS_RULE_PHRASE_SEPARATOR, " ").take(80) }
+        .filter(String::isNotBlank)
+        .distinct()
+        .take(6)
+        .joinToString(SMS_RULE_PHRASE_SEPARATOR)
+
+    private fun decodeSmsRulePhrases(value: String?): List<String> = value
+        ?.split(SMS_RULE_PHRASE_SEPARATOR)
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        .orEmpty()
+
     private fun normalizeColor(value: String): String =
         value.trim().uppercase(Locale.ROOT).takeIf { it.matches(Regex("#[0-9A-F]{6}")) } ?: "#7784FF"
 
     private fun ContentValues.putNullableLong(key: String, value: Long?) {
+        if (value == null) putNull(key) else put(key, value)
+    }
+
+    private fun ContentValues.putNullableInt(key: String, value: Int?) {
         if (value == null) putNull(key) else put(key, value)
     }
 
@@ -4024,7 +5129,8 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 9
+        const val DATABASE_VERSION = 10
         const val TAG_SEPARATOR = "\u001F"
+        const val SMS_RULE_PHRASE_SEPARATOR = "\u001E"
     }
 }

@@ -8,10 +8,12 @@ import com.paisalens.app.data.parser.TransactionSmsParser
 import com.paisalens.app.data.repository.TransactionRepository
 import com.paisalens.app.security.SensitiveDataCipher
 import com.paisalens.app.sms.AccountAvailabilitySmsParser
+import com.paisalens.app.sms.CreditCardBillSmsParser
 import com.paisalens.app.data.model.AppThemeMode
 import com.paisalens.app.widget.PaisaLensWidgetProvider
 import com.paisalens.app.notification.PrivateDigestNotifier
 import com.paisalens.app.notification.PrivateDigestScheduler
+import com.paisalens.app.notification.ActionableAlertNotifier
 
 class PaisaLensApplication : Application() {
     lateinit var repository: TransactionRepository
@@ -22,13 +24,17 @@ class PaisaLensApplication : Application() {
         private set
     lateinit var availabilityParser: AccountAvailabilitySmsParser
         private set
+    lateinit var creditCardBillParser: CreditCardBillSmsParser
+        private set
 
     override fun onCreate() {
         super.onCreate()
         parser = TransactionSmsParser()
         availabilityParser = AccountAvailabilitySmsParser()
+        creditCardBillParser = CreditCardBillSmsParser()
         preferences = UserPreferences(this)
         PrivateDigestNotifier.ensureChannel(this)
+        ActionableAlertNotifier.ensureChannels(this)
         // Restore after a force-stop/relaunch without replacing an inexact delivery
         // already queued by Android for today.
         PrivateDigestScheduler.ensure(this, preferences.notificationDigest.value)

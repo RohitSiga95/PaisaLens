@@ -3,14 +3,18 @@ package com.paisalens.app.data.backup
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountType
+import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.AuditAction
 import com.paisalens.app.data.model.AuditEntityType
 import com.paisalens.app.data.model.AuditEvent
 import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
+import com.paisalens.app.data.model.CreditCardBill
+import com.paisalens.app.data.model.CreditCardBillStatus
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExpenseSplit
+import com.paisalens.app.data.model.ExpenseSplitEntryMode
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.NetWorthKind
@@ -26,6 +30,9 @@ import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.SmartRuleMatchType
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
+import com.paisalens.app.data.model.SmsCoverageMessage
+import com.paisalens.app.data.model.SmsCoverageReason
+import com.paisalens.app.data.model.SmsCoverageRule
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionAuditPayload
 import com.paisalens.app.data.model.TransactionAuditPayloadCodec
@@ -33,6 +40,7 @@ import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionLinkType
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.TransactionSmsSource
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
@@ -53,6 +61,7 @@ class PaisaLensBackupCodecTest {
         )
 
         val expected = snapshot.copy(
+            smsCoverageMessages = emptyList(),
             auditEvents = snapshot.auditEvents.map { event ->
                 event.copy(
                     beforePayload = TransactionAuditPayloadCodec.portable(event.beforePayload),
@@ -87,19 +96,39 @@ class PaisaLensBackupCodecTest {
             ByteArrayInputStream(output.toByteArray()),
         )
 
-        assertEquals(6, metadata.formatVersion)
+        assertEquals(7, metadata.formatVersion)
         assertEquals(snapshot.createdAt, metadata.createdAt)
         assertEquals(snapshot.transactions.size, metadata.transactionCount)
         assertEquals(snapshot.accounts.size, metadata.accountCount)
         assertEquals(snapshot.reconciliations.size, metadata.reconciliationCount)
         assertEquals(snapshot.transactionLinks.size, metadata.transactionLinkCount)
         assertEquals(snapshot.auditEvents.size, metadata.auditEventCount)
-        assertEquals(19, metadata.totalRecordCount)
+        assertEquals(23, metadata.totalRecordCount)
         assertEquals(1, metadata.expenseSplitCount)
         assertEquals(1, metadata.savingsGoalCount)
         assertEquals(1, metadata.savingsContributionCount)
         assertEquals(1, metadata.paymentCommitmentCount)
+        assertEquals(1, metadata.transactionSmsSourceCount)
+        assertEquals(0, metadata.smsCoverageMessageCount)
+        assertEquals(1, metadata.smsCoverageRuleCount)
+        assertEquals(1, metadata.advancedBudgetCount)
+        assertEquals(1, metadata.creditCardBillCount)
         assertEquals(64, metadata.contentSha256.length)
+    }
+
+    @Test
+    fun excludesUnresolvedSmsTextFromBackups() {
+        val snapshot = sampleSnapshot()
+        val output = ByteArrayOutputStream()
+
+        PaisaLensBackupCodec.write(snapshot, "correct horse".toCharArray(), output)
+        val restored = PaisaLensBackupCodec.read(
+            "correct horse".toCharArray(),
+            ByteArrayInputStream(output.toByteArray()),
+        )
+
+        assertEquals(emptyList<SmsCoverageMessage>(), restored.smsCoverageMessages)
+        assertEquals(snapshot.smsCoverageRules, restored.smsCoverageRules)
     }
 
     @Test
@@ -128,6 +157,11 @@ class PaisaLensBackupCodecTest {
                 savingsGoals = emptyList(),
                 savingsContributions = emptyList(),
                 paymentCommitments = emptyList(),
+                transactionSmsSources = emptyList(),
+                smsCoverageMessages = emptyList(),
+                smsCoverageRules = emptyList(),
+                advancedBudgets = emptyList(),
+                creditCardBills = emptyList(),
             ),
             restored,
         )
@@ -155,6 +189,51 @@ class PaisaLensBackupCodecTest {
                 savingsGoals = emptyList(),
                 savingsContributions = emptyList(),
                 paymentCommitments = emptyList(),
+                transactionSmsSources = emptyList(),
+                smsCoverageMessages = emptyList(),
+                smsCoverageRules = emptyList(),
+                advancedBudgets = emptyList(),
+                creditCardBills = emptyList(),
+                auditEvents = snapshot.auditEvents.map { event ->
+                    event.copy(
+                        beforePayload = TransactionAuditPayloadCodec.portable(event.beforePayload),
+                        afterPayload = TransactionAuditPayloadCodec.portable(event.afterPayload),
+                    )
+                },
+            ),
+            restored,
+        )
+    }
+
+    @Test
+    fun readsVersionSixBackupWithoutV7Collections() {
+        val snapshot = sampleSnapshot()
+        val output = ByteArrayOutputStream()
+        PaisaLensBackupCodec.writeVersionForTesting(
+            snapshot,
+            "correct horse".toCharArray(),
+            output,
+            formatVersion = 6,
+        )
+
+        val restored = PaisaLensBackupCodec.read(
+            "correct horse".toCharArray(),
+            ByteArrayInputStream(output.toByteArray()),
+        )
+
+        assertEquals(
+            snapshot.copy(
+                transactionSmsSources = emptyList(),
+                smsCoverageMessages = emptyList(),
+                smsCoverageRules = emptyList(),
+                advancedBudgets = emptyList(),
+                creditCardBills = emptyList(),
+                expenseSplits = snapshot.expenseSplits.map { split ->
+                    split.copy(
+                        entryMode = ExpenseSplitEntryMode.AMOUNT,
+                        shareBasisPoints = null,
+                    )
+                },
                 auditEvents = snapshot.auditEvents.map { event ->
                     event.copy(
                         beforePayload = TransactionAuditPayloadCodec.portable(event.beforePayload),
@@ -282,7 +361,18 @@ class PaisaLensBackupCodecTest {
             ),
         ),
         expenseSplits = listOf(
-            ExpenseSplit(13, 9, "Riya", 50_000, 20_000, null, "Lunch split", createdAt = 123456789L, updatedAt = 123456789L),
+            ExpenseSplit(
+                id = 13,
+                transactionId = 9,
+                participantName = "Riya",
+                shareMinor = 50_000,
+                reimbursedMinor = 20_000,
+                note = "Lunch split",
+                createdAt = 123456789L,
+                updatedAt = 123456789L,
+                entryMode = ExpenseSplitEntryMode.PERCENTAGE,
+                shareBasisPoints = 5_000,
+            ),
         ),
         savingsGoals = listOf(
             SavingsGoal(14, "Emergency fund", 5_000_000, 1_000_000, 21_000, 1, createdAt = 123456789L, updatedAt = 123456789L),
@@ -302,6 +392,61 @@ class PaisaLensBackupCodecTest {
                 upiHandle = "music@upi",
                 createdAt = 123456789L,
                 updatedAt = 123456789L,
+            ),
+        ),
+        transactionSmsSources = listOf(
+            TransactionSmsSource("sms-9", 9, 987654321L),
+        ),
+        smsCoverageMessages = listOf(
+            SmsCoverageMessage(
+                id = 17,
+                sourceMessageId = "sms-coverage-17",
+                sender = "VK-BANK",
+                body = "INR 500 was processed using a new alert format",
+                receivedAt = 123456789L,
+                reason = SmsCoverageReason.MISSING_DIRECTION,
+                createdAt = 123456789L,
+                updatedAt = 123456789L,
+            ),
+        ),
+        smsCoverageRules = listOf(
+            SmsCoverageRule(
+                id = 18,
+                name = "New bank purchase",
+                senderKey = "BANK",
+                requiredPhrases = listOf("was processed"),
+                merchantName = "Bank purchase",
+                category = ExpenseCategory.SHOPPING,
+                createdAt = 123456789L,
+                updatedAt = 123456789L,
+            ),
+        ),
+        advancedBudgets = listOf(
+            AdvancedBudgetPlan(
+                id = 19,
+                name = "Monthly food",
+                category = ExpenseCategory.FOOD,
+                allocationMinor = 500_000,
+                effectiveFromEpochDay = 21_000,
+                createdAt = 123456789L,
+                updatedAt = 123456789L,
+            ),
+        ),
+        creditCardBills = listOf(
+            CreditCardBill(
+                id = 20,
+                billKey = "card:bank:4321:21031",
+                sourceMessageId = "sms-bill-20",
+                accountId = 1,
+                cardIdentityKey = "card:bank:4321",
+                accountHint = "4321",
+                institutionName = "Bank",
+                totalDueMinor = 250_000,
+                minimumDueMinor = 25_000,
+                dueDateEpochDay = 21_031,
+                detectedAt = 123456789L,
+                sender = "VK-BANK",
+                status = CreditCardBillStatus.DUE,
             ),
         ),
         transactions = listOf(

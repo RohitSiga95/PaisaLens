@@ -88,6 +88,47 @@ class SharedFinanceModelsTest {
     }
 
     @Test
+    fun convertsPercentageSharesToExactMinorAmountsWithoutExceedingExpense() {
+        assertEquals(
+            listOf(3_333L, 3_333L, 3_334L),
+            expenseSplitSharesFromPercentages(10_000L, listOf(3_333, 3_333, 3_334)),
+        )
+        assertEquals(listOf(2_500L, 2_500L), expenseSplitSharesFromPercentages(10_000L, listOf(2_500, 2_500)))
+        assertEquals(2_500, expenseSplitShareBasisPoints(2_500L, 10_000L))
+        assertEquals(
+            listOf(3_333, 3_333, 3_334),
+            expenseSplitBasisPointsFromShares(listOf(3_333L, 3_333L, 3_335L), 10_001L),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsPercentageSharesAboveOneHundredPercent() {
+        expenseSplitSharesFromPercentages(10_000L, listOf(6_000, 4_001))
+    }
+
+    @Test
+    fun buildsCategorySplitStatsIncludingCustomCategories() {
+        val customExpense = expense.copy(
+            id = 10,
+            category = ExpenseCategory.OTHER,
+            customCategoryId = 44,
+            customCategoryName = "Pets",
+        )
+        val groceriesExpense = expense.copy(id = 11, category = ExpenseCategory.GROCERIES)
+        val stats = buildExpenseSplitCategoryStats(
+            listOf(customExpense, groceriesExpense),
+            listOf(
+                ExpenseSplit(id = 1, transactionId = 10, participantName = "A", shareMinor = 600, reimbursedMinor = 100),
+                ExpenseSplit(id = 2, transactionId = 11, participantName = "B", shareMinor = 400, reimbursedMinor = 400),
+            ),
+        )
+
+        assertEquals(listOf("Pets", "Groceries"), stats.map(ExpenseSplitCategoryStat::categoryLabel))
+        assertEquals(500L, stats.first().outstandingMinor)
+        assertEquals(44L, stats.first().customCategoryId)
+    }
+
+    @Test
     fun savingsProgressIncludesStartingAmountAndPositiveContributions() {
         val goal = SavingsGoal(
             id = 7,

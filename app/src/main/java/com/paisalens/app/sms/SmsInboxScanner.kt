@@ -4,16 +4,26 @@ import android.content.Context
 import android.provider.Telephony
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.ParsedTransaction
+import com.paisalens.app.data.model.ParsedCreditCardBill
+import com.paisalens.app.data.model.SmsCoverageCandidate
+import com.paisalens.app.data.model.SmsCoverageRule
+import com.paisalens.app.data.model.smsCoverageReasonOrNull
 import com.paisalens.app.data.parser.TransactionSmsParser
 
 class SmsInboxScanner(
     private val context: Context,
     private val parser: TransactionSmsParser,
     private val availabilityParser: AccountAvailabilitySmsParser,
+    private val creditCardBillParser: CreditCardBillSmsParser = CreditCardBillSmsParser(),
 ) {
-    fun scan(maxMessages: Int = 10_000): SmsScanBatch {
+    fun scan(
+        maxMessages: Int = 10_000,
+        coverageRules: List<SmsCoverageRule> = emptyList(),
+    ): SmsScanBatch {
         val parsed = mutableListOf<ParsedTransaction>()
         val availability = mutableListOf<AccountAvailabilityUpdate>()
+        val coverageCandidates = mutableListOf<SmsCoverageCandidate>()
+        val creditCardBills = mutableListOf<ParsedCreditCardBill>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
@@ -39,22 +49,39 @@ class SmsInboxScanner(
                 val body = cursor.getString(bodyIndex) ?: continue
                 val sender = cursor.getString(addressIndex).orEmpty()
                 val timestamp = cursor.getLong(dateIndex)
-                parser.parse(
+                val sourceMessageId = "sms-" + cursor.getLong(idIndex)
+                val transaction = parser.parse(
                     sender = sender,
                     body = body,
                     timestamp = timestamp,
-                    messageId = "sms-" + cursor.getLong(idIndex),
-                )?.let(parsed::add)
-                availabilityParser.parse(sender, body, timestamp)?.let { update ->
-                    availability += update
+                    messageId = sourceMessageId,
+                    coverageRules = coverageRules,
+                )
+                val availabilityUpdate = availabilityParser.parse(sender, body, timestamp)
+                val creditCardBill = creditCardBillParser.parse(sender, body, timestamp, sourceMessageId)
+                transaction?.let(parsed::add)
+                availabilityUpdate?.let(availability::add)
+                creditCardBill?.let(creditCardBills::add)
+                if (transaction == null && availabilityUpdate == null && creditCardBill == null) {
+                    smsCoverageReasonOrNull(sender, body)?.let { reason ->
+                        coverageCandidates += SmsCoverageCandidate(
+                            sourceMessageId = sourceMessageId,
+                            sender = sender.ifBlank { "Unknown sender" },
+                            body = body,
+                            receivedAt = timestamp,
+                            reason = reason,
+                        )
+                    }
                 }
             }
         }
-        return SmsScanBatch(parsed, availability)
+        return SmsScanBatch(parsed, availability, coverageCandidates, creditCardBills)
     }
 }
 
 data class SmsScanBatch(
     val transactions: List<ParsedTransaction>,
     val availabilityUpdates: List<AccountAvailabilityUpdate>,
+    val coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
+    val creditCardBills: List<ParsedCreditCardBill> = emptyList(),
 )
