@@ -111,7 +111,7 @@ fun deduplicateReconciliationTransactions(
         val source = recordsById[link.sourceTransactionId] ?: return@mapNotNullTo null
         val target = recordsById[link.targetTransactionId] ?: return@mapNotNullTo null
         target.id.takeIf {
-            source.accountId == target.accountId &&
+            source.accountIdentityId() == target.accountIdentityId() &&
                 source.amountMinor == target.amountMinor &&
                 transactionFlowDirection(source.type) == transactionFlowDirection(target.type)
         }
@@ -126,7 +126,7 @@ fun deduplicateReconciliationTransactions(
                     (prior.source == TransactionSource.STATEMENT)
                 val timeDifference = abs(candidate.occurredAt - prior.occurredAt)
                 mixedSources &&
-                    candidate.accountId == prior.accountId &&
+                    candidate.accountIdentityId() == prior.accountIdentityId() &&
                     candidate.amountMinor == prior.amountMinor &&
                     transactionFlowDirection(candidate.type) == transactionFlowDirection(prior.type) &&
                     timeDifference <= 2 * 86_400_000L &&
@@ -484,7 +484,10 @@ fun validateTransactionLink(
             if (!compatibleOpposingFlow && !bothExplicitTransfers) {
                 return TransactionLinkValidation(false, TransactionLinkIssue.INCOMPATIBLE_FLOW)
             }
-            if (source.accountId != null && source.accountId == target.accountId) {
+            if (
+                source.accountIdentityId() != null &&
+                source.accountIdentityId() == target.accountIdentityId()
+            ) {
                 return TransactionLinkValidation(false, TransactionLinkIssue.SAME_ACCOUNT_TRANSFER)
             }
             if (otherLinks.any { link ->
@@ -566,8 +569,8 @@ fun suggestTransactionLinks(
                 "reimburse" in text -> TransactionLinkType.REIMBURSEMENT
                 else -> TransactionLinkType.TRANSFER
             }
-            val differentAccounts = outgoing.accountId != null && incoming.accountId != null &&
-                outgoing.accountId != incoming.accountId
+            val differentAccounts = outgoing.accountIdentityId() != null && incoming.accountIdentityId() != null &&
+                outgoing.accountIdentityId() != incoming.accountIdentityId()
             val transferEvidence = listOf("transfer", "self", "card payment", "credit card", "cc payment")
                 .any(text::contains)
             if (

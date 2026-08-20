@@ -73,7 +73,11 @@ data class TransactionRecord(
     val institutionName: String? = null,
     /** Number of distinct SMS alerts conservatively merged into this ledger entry. */
     val duplicateCount: Int = 1,
+    /** Raw storage identity retained when [accountId] is projected to a merged root. */
+    val physicalAccountId: Long? = null,
 )
+
+fun TransactionRecord.accountIdentityId(): Long? = physicalAccountId ?: accountId
 
 data class ParsedTransaction(
     val sourceMessageId: String,
@@ -102,6 +106,14 @@ data class AccountProfile(
     val availabilityFetchedAt: Long? = null,
     val availabilitySender: String? = null,
     val identityKey: String? = null,
+    /**
+     * Internal physical-account identity retained after an explicit logical merge.
+     * Normal account lists expose only canonical profiles; backups retain this link so
+     * institution-specific SMS aliases survive a restore.
+     */
+    val mergedIntoAccountId: Long? = null,
+    /** Number of retained physical identities represented by this user-facing profile. */
+    val mergedMemberCount: Int = 1,
 )
 
 data class AccountAvailabilityUpdate(
@@ -155,7 +167,13 @@ data class RecurringPayment(
     val nextDueAt: Long,
     val occurrences: Int,
     val categoryLabel: String,
+    /** User-visible logical account; merged groups expose their canonical root here. */
+    val accountId: Long? = null,
+    /** Physical member whose transaction series produced this recurrence. */
+    val physicalAccountId: Long? = null,
 )
+
+fun RecurringPayment.accountIdentityId(): Long? = physicalAccountId ?: accountId
 
 data class PaisaLensBackupSnapshot(
     val createdAt: Long,
@@ -220,7 +238,7 @@ fun detectRecurringPayments(
     return transactions
         .asSequence()
         .filter { it.type == TransactionType.EXPENSE && it.reviewStatus == ReviewStatus.CONFIRMED }
-        .groupBy { normalizedMerchantKey(it.merchant) to it.accountId }
+        .groupBy { normalizedMerchantKey(it.merchant) to it.accountIdentityId() }
         .values
         .mapNotNull { matches ->
             if (matches.size < 2) return@mapNotNull null
@@ -251,6 +269,8 @@ fun detectRecurringPayments(
                 nextDueAt = nextDue,
                 occurrences = ordered.size,
                 categoryLabel = last.categoryLabel(),
+                accountId = last.accountId,
+                physicalAccountId = last.accountIdentityId(),
             )
         }
         .sortedBy { it.nextDueAt }

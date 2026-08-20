@@ -125,8 +125,14 @@ internal fun AccountFinanceSheet(
                 }
             }
     }
-    val utilization = remember(account) {
-        calculateCreditUtilization(account.id, account.availableCreditMinor, account.creditLimitMinor)
+    val isPartialMergedValue = account.mergedMemberCount > 1 &&
+        account.currentFinanceAmount() != null && account.availabilityFetchedAt == null
+    val utilization = remember(account, isPartialMergedValue) {
+        calculateCreditUtilization(
+            accountId = account.id,
+            availableCreditMinor = account.availableCreditMinor.takeUnless { isPartialMergedValue },
+            creditLimitMinor = account.creditLimitMinor,
+        )
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -163,7 +169,10 @@ internal fun AccountFinanceSheet(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Text(
-                                if (account.type == AccountType.CREDIT_CARD) "Available credit" else "Current balance",
+                                buildString {
+                                    append(if (account.type == AccountType.CREDIT_CARD) "Available credit" else "Current balance")
+                                    if (isPartialMergedValue) append(" · partial")
+                                },
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -173,7 +182,9 @@ internal fun AccountFinanceSheet(
                                 fontWeight = FontWeight.Bold,
                             )
                             Text(
-                                account.availabilityFetchedAt?.let { timestamp ->
+                                if (isPartialMergedValue) {
+                                    "Some merged sources do not have a current value"
+                                } else account.availabilityFetchedAt?.let { timestamp ->
                                     val action = if (
                                         balanceSourceDisplayName(account.availabilitySender)
                                             ?.startsWith("User entered") == true
@@ -220,8 +231,10 @@ internal fun AccountFinanceSheet(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
-                                    IconButton(onClick = { showLimitDialog = true }) {
-                                        Icon(Icons.Rounded.Edit, contentDescription = "Edit total credit limit")
+                                    if (account.mergedMemberCount <= 1) {
+                                        IconButton(onClick = { showLimitDialog = true }) {
+                                            Icon(Icons.Rounded.Edit, contentDescription = "Edit total credit limit")
+                                        }
                                     }
                                 }
                                 utilization.utilizationBasisPoints?.let { basisPoints ->
@@ -231,7 +244,11 @@ internal fun AccountFinanceSheet(
                                         modifier = Modifier.fillMaxWidth(),
                                     )
                                 } ?: Text(
-                                    "Utilisation will appear after a total limit and available credit are known.",
+                                    if (isPartialMergedValue) {
+                                        "Utilisation is hidden until every merged card has a current available-credit value."
+                                    } else {
+                                        "Utilisation will appear after a total limit and available credit are known."
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -255,7 +272,10 @@ internal fun AccountFinanceSheet(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("Balance trend", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                if (account.mergedMemberCount > 1) "Source balance history" else "Balance trend",
+                                style = MaterialTheme.typography.titleLarge,
+                            )
                             Icon(Icons.Rounded.History, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -272,7 +292,12 @@ internal fun AccountFinanceSheet(
                 }
                 item {
                     PaisaCard(modifier = Modifier.fillMaxWidth()) {
-                        if (chartPoints.isEmpty()) {
+                        if (account.mergedMemberCount > 1) {
+                            EmptyFinanceState(
+                                title = "Combined trend not drawn",
+                                detail = "The current total combines ${account.mergedMemberCount} sources, but they update at different times. Individual snapshots remain listed below.",
+                            )
+                        } else if (chartPoints.isEmpty()) {
                             EmptyFinanceState(
                                 title = "No history in this range",
                                 detail = "New SMS and user-entered balance updates will add points to this chart.",
@@ -290,7 +315,10 @@ internal fun AccountFinanceSheet(
                     }
                 }
                 item {
-                    Text("Balance history", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        if (account.mergedMemberCount > 1) "Individual source snapshots" else "Balance history",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
                 }
                 if (filteredHistory.isEmpty()) {
                     item {
@@ -972,6 +1000,7 @@ private fun AccountProfile.financeSubtitle(): String = buildList {
         ?.let(::add)
     add(type.label)
     accountHint?.let { add("•••• $it") }
+    if (mergedMemberCount > 1) add("$mergedMemberCount merged")
 }.joinToString(" · ")
 
 private fun AccountBalanceSnapshot.chartAmount(accountType: AccountType): Long? =

@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.paisalens.app.PaisaLensApplication
 import com.paisalens.app.data.backup.ScheduledBackupConfiguration
 import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.AccountMergeResult
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.ActionableAlertsConfiguration
 import com.paisalens.app.data.model.AdvancedBudgetPlan
@@ -632,8 +633,34 @@ class PaisaLensViewModel(
 
     fun updateAccount(account: AccountProfile) {
         viewModelScope.launch {
-            app.repository.updateAccount(account)
-            _events.emit("Account saved")
+            runCatching { app.repository.updateAccount(account) }
+                .onSuccess { _events.emit("Account saved") }
+                .onFailure { _events.emit(it.message ?: "Could not save that account") }
+        }
+    }
+
+    fun mergeAccounts(
+        accountIds: Collection<Long>,
+        mergedName: String,
+        onComplete: (Result<AccountMergeResult>) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching { app.repository.mergeAccounts(accountIds, mergedName) }
+                .onSuccess { result ->
+                    when (result) {
+                        is AccountMergeResult.Success -> {
+                            _events.emit(
+                                "${result.memberCount} ${if (result.accountType == AccountType.CREDIT_CARD) "cards" else "accounts"} merged as ${result.mergedName}",
+                            )
+                        }
+                        is AccountMergeResult.Failure -> _events.emit(result.message)
+                    }
+                    onComplete(Result.success(result))
+                }
+                .onFailure { error ->
+                    _events.emit(error.message ?: "Could not merge those accounts")
+                    onComplete(Result.failure(error))
+                }
         }
     }
 
@@ -664,8 +691,9 @@ class PaisaLensViewModel(
 
     fun deleteAccount(id: Long) {
         viewModelScope.launch {
-            app.repository.deleteAccount(id)
-            _events.emit("Account removed; transactions were kept")
+            runCatching { app.repository.deleteAccount(id) }
+                .onSuccess { _events.emit("Account removed; transactions were kept") }
+                .onFailure { _events.emit(it.message ?: "Could not remove that account") }
         }
     }
 

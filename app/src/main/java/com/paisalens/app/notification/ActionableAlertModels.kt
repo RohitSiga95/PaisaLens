@@ -92,8 +92,11 @@ data class ActionableAlertNotificationContent(
  * be generated.
  */
 fun consolidatedCashFlowOpeningBalance(accounts: List<AccountProfile>): Long? {
-    val balances = accounts
-        .filter { it.type == AccountType.BANK_ACCOUNT }
+    val bankAccounts = accounts.filter { it.type == AccountType.BANK_ACCOUNT }
+    if (bankAccounts.any { it.mergedMemberCount > 1 && it.availabilityFetchedAt == null }) {
+        return null
+    }
+    val balances = bankAccounts
         .groupBy { account ->
             val lastFour = account.accountHint?.filter(Char::isDigit)?.takeLast(4)
             val institution = BankSmsSupport.accountBankKey(account.institution, account.name)

@@ -220,6 +220,30 @@ class SharedFinanceModelsTest {
     }
 
     @Test
+    fun commitmentDeduplicationRetainsDistinctPhysicalMembersOfMergedAccount() {
+        val firstMember = PaymentCommitment(
+            id = 1,
+            name = "Shared mandate",
+            merchantKey = "shared mandate",
+            kind = PaymentCommitmentKind.UPI_AUTOPAY,
+            amountMinor = 500,
+            nextDueEpochDay = 1,
+            accountId = 10,
+            physicalAccountId = 10,
+        )
+        val secondMember = firstMember.copy(
+            id = 2,
+            accountId = 10,
+            physicalAccountId = 11,
+        )
+
+        assertEquals(
+            listOf(1L, 2L),
+            deduplicatedPaymentCommitments(listOf(firstMember, secondMember)).map(PaymentCommitment::id),
+        )
+    }
+
+    @Test
     fun recurringSuggestionsStayOnDeviceAndExcludeKnownMerchant() {
         val nextDue = LocalDate.of(2026, 5, 7).atStartOfDay(ZoneId.of("UTC")).toInstant().toEpochMilli()
         val recurring = listOf(
@@ -262,6 +286,46 @@ class SharedFinanceModelsTest {
 
         val withoutExisting = suggestPaymentCommitments(recurring, emptyList(), ZoneId.of("UTC"), accounts)
         assertEquals(listOf(1L, 2L), withoutExisting.map(PaymentCommitment::accountId))
+    }
+
+    @Test
+    fun recurringSuggestionsRetainMergedPhysicalMemberScope() {
+        val nextDue = LocalDate.of(2026, 5, 7).atStartOfDay(ZoneId.of("UTC")).toInstant().toEpochMilli()
+        val recurring = RecurringPayment(
+            merchant = "Stream Co",
+            accountName = "Combined cards",
+            typicalAmountMinor = 499,
+            intervalDays = 30,
+            lastPaidAt = 1,
+            nextDueAt = nextDue,
+            occurrences = 3,
+            categoryLabel = "Entertainment",
+            accountId = 10,
+            physicalAccountId = 11,
+        )
+        val otherMemberCommitment = PaymentCommitment(
+            name = "Stream Co",
+            merchantKey = "stream co",
+            amountMinor = 499,
+            nextDueEpochDay = 1,
+            accountId = 10,
+            physicalAccountId = 10,
+        )
+
+        val suggestion = suggestPaymentCommitments(
+            listOf(recurring),
+            listOf(otherMemberCommitment),
+            ZoneId.of("UTC"),
+        ).single()
+        assertEquals(10L, suggestion.accountId)
+        assertEquals(11L, suggestion.physicalAccountId)
+        assertTrue(
+            suggestPaymentCommitments(
+                listOf(recurring),
+                listOf(otherMemberCommitment.copy(physicalAccountId = 11)),
+                ZoneId.of("UTC"),
+            ).isEmpty(),
+        )
     }
 
     private fun transaction(id: Long, type: TransactionType, amount: Long) = TransactionRecord(

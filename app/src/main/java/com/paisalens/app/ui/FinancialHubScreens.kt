@@ -89,7 +89,10 @@ import com.paisalens.app.data.model.buildEffectiveExpenseTransactions
 import com.paisalens.app.data.model.buildNetWorthSummary
 import com.paisalens.app.data.model.simulateWhatIfMonthly
 import com.paisalens.app.data.model.normalizedMerchantKey
+import com.paisalens.app.data.model.paymentCommitmentIdentityKey
+import com.paisalens.app.data.model.recurringPaymentIdentityKey
 import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
+import com.paisalens.app.notification.consolidatedCashFlowOpeningBalance
 import com.paisalens.app.ui.components.MoneyChartPoint
 import com.paisalens.app.ui.components.MoneyLineChart
 import com.paisalens.app.ui.components.MoneyText
@@ -271,15 +274,9 @@ private fun BillsContent(
     val dueItems = remember(bills, recurringPayments, paymentCommitments, loans, accounts, today, zoneId) {
         val accountNames = accounts.associate { it.id to it.name }
         val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
-        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf()) {
-            Triple(normalizedMerchantKey(it.merchantKey.ifBlank { it.name }), it.accountId, it.kind)
-        }
+        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf(), ::paymentCommitmentIdentityKey)
         val dedupedRecurring = recurringPayments.filterNot {
-            Triple(
-                normalizedMerchantKey(it.merchant),
-                it.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByName::get),
-                com.paisalens.app.data.model.PaymentCommitmentKind.SUBSCRIPTION,
-            ) in commitmentKeys
+            recurringPaymentIdentityKey(it, accountIdsByName) in commitmentKeys
         }
         (buildDueItems(bills, dedupedRecurring, loans, today, zoneId, horizonDays = 3_650) +
             buildPaymentCommitmentDueItems(
@@ -523,7 +520,7 @@ private fun WhatIfContent(
     var reduction by remember { mutableIntStateOf(20) }
     var oneTimeExpense by remember { mutableStateOf("0") }
     var expenseMonth by remember { mutableIntStateOf(1) }
-    val opening = remember(accounts) { consolidatedBankBalance(accounts) }
+    val opening = remember(accounts) { consolidatedCashFlowOpeningBalance(accounts) }
     val lookbackStart = today.minusDays(90)
     val recent = remember(transactions, today, zoneId) {
         transactions.filter {
@@ -558,7 +555,9 @@ private fun WhatIfContent(
         oneTimeExpenseMinor = oneTimeExpense.toMinorOrNull() ?: 0,
         oneTimeExpenseMonth = expenseMonth.coerceIn(1, months),
     )
-    val simulation = simulateWhatIfMonthly(opening, monthlyIncome, monthlyFixed, monthlyFlexible, scenario, months)
+    val simulation = opening?.let {
+        simulateWhatIfMonthly(it, monthlyIncome, monthlyFixed, monthlyFlexible, scenario, months)
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
@@ -616,25 +615,34 @@ private fun WhatIfContent(
                 }
             }
         }
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PlannerMetric("Baseline", simulation.baselineEndingMinor, Modifier.weight(1f))
-                PlannerMetric("Scenario", simulation.scenarioEndingMinor, Modifier.weight(1f))
+        if (simulation == null) {
+            item {
+                EmptyPlannerCard(
+                    "Complete merged balances needed",
+                    "One or more merged bank accounts has only a partial balance. Add a current balance for every source before running a scenario.",
+                )
             }
-        }
-        item {
-            PaisaCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Projected cash position", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "${if (simulation.improvementMinor >= 0) "+" else "−"}${formatMoney(abs(simulation.improvementMinor))} versus baseline",
-                        color = if (simulation.improvementMinor >= 0) Color(0xFF138A61) else MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    MoneyLineChart(
-                        simulation.points.map { MoneyChartPoint("M${it.monthNumber}", it.scenarioBalanceMinor) },
-                        Modifier.fillMaxWidth(),
-                    )
+        } else {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PlannerMetric("Baseline", simulation.baselineEndingMinor, Modifier.weight(1f))
+                    PlannerMetric("Scenario", simulation.scenarioEndingMinor, Modifier.weight(1f))
+                }
+            }
+            item {
+                PaisaCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Projected cash position", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            "${if (simulation.improvementMinor >= 0) "+" else "−"}${formatMoney(abs(simulation.improvementMinor))} versus baseline",
+                            color = if (simulation.improvementMinor >= 0) Color(0xFF138A61) else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        MoneyLineChart(
+                            simulation.points.map { MoneyChartPoint("M${it.monthNumber}", it.scenarioBalanceMinor) },
+                            Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
@@ -719,15 +727,9 @@ private fun CashFlowContent(
     var horizon by remember { mutableIntStateOf(30) }
     val dueItems = remember(bills, recurringPayments, paymentCommitments, accounts, loans, today, zoneId, horizon) {
         val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
-        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf()) {
-            Triple(normalizedMerchantKey(it.merchantKey.ifBlank { it.name }), it.accountId, it.kind)
-        }
+        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf(), ::paymentCommitmentIdentityKey)
         val dedupedRecurring = recurringPayments.filterNot {
-            Triple(
-                normalizedMerchantKey(it.merchant),
-                it.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByName::get),
-                com.paisalens.app.data.model.PaymentCommitmentKind.SUBSCRIPTION,
-            ) in commitmentKeys
+            recurringPaymentIdentityKey(it, accountIdsByName) in commitmentKeys
         }
         buildDueItems(
             bills,
@@ -745,7 +747,7 @@ private fun CashFlowContent(
             accountNamesById = accounts.associate { it.id to it.name },
         )
     }
-    val opening = remember(accounts) { consolidatedBankBalance(accounts) }
+    val opening = remember(accounts) { consolidatedCashFlowOpeningBalance(accounts) }
     val bankAccountIds = remember(accounts) {
         accounts.filter { it.type == AccountType.BANK_ACCOUNT }.mapTo(mutableSetOf(), AccountProfile::id)
     }
@@ -753,23 +755,27 @@ private fun CashFlowContent(
         transactions.filter { it.accountId == null || it.accountId in bankAccountIds }
     }
     val forecast = remember(opening, cashFlowTransactions, transactionLinks, dueItems, today, zoneId, horizon) {
-        buildCashFlowForecast(
-            openingBalanceMinor = opening,
-            transactions = cashFlowTransactions,
-            dueItems = dueItems,
-            asOf = today,
-            zoneId = zoneId,
-            horizonDays = horizon,
-            transactionLinks = transactionLinks,
-        )
+        opening?.let {
+            buildCashFlowForecast(
+                openingBalanceMinor = it,
+                transactions = cashFlowTransactions,
+                dueItems = dueItems,
+                asOf = today,
+                zoneId = zoneId,
+                horizonDays = horizon,
+                transactionLinks = transactionLinks,
+            )
+        }
     }
     val chartPoints = remember(forecast, horizon) {
         val step = (horizon / 8).coerceAtLeast(1)
         buildList {
-            add(MoneyChartPoint("Today", forecast.openingBalanceMinor))
-            forecast.points.forEachIndexed { index, point ->
-                if (index % step == 0 || index == forecast.points.lastIndex) {
-                    add(MoneyChartPoint(point.date.format(DateTimeFormatter.ofPattern("d MMM")), point.projectedBalanceMinor))
+            forecast?.let { availableForecast ->
+                add(MoneyChartPoint("Today", availableForecast.openingBalanceMinor))
+                availableForecast.points.forEachIndexed { index, point ->
+                    if (index % step == 0 || index == availableForecast.points.lastIndex) {
+                        add(MoneyChartPoint(point.date.format(DateTimeFormatter.ofPattern("d MMM")), point.projectedBalanceMinor))
+                    }
                 }
             }
         }
@@ -782,44 +788,53 @@ private fun CashFlowContent(
                 }
             }
         }
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PlannerMetric("Opening", forecast.openingBalanceMinor, Modifier.weight(1f))
-                PlannerMetric("Projected", forecast.endingBalanceMinor, Modifier.weight(1f))
+        if (forecast == null) {
+            item {
+                EmptyPlannerCard(
+                    "Complete merged balances needed",
+                    "One or more merged bank accounts has only a partial balance. Add a current balance for every source before forecasting cash flow.",
+                )
             }
-        }
-        item {
-            PaisaCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Expected bank cash", style = MaterialTheme.typography.titleLarge)
-                    MoneyLineChart(chartPoints, Modifier.fillMaxWidth(), forecastStartIndex = 0)
-                    HorizontalDivider()
-                    Text(
-                        "Lowest point: ${formatMoney(forecast.lowestBalanceMinor)}",
-                        color = if (forecast.lowestBalanceMinor < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+        } else {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PlannerMetric("Opening", forecast.openingBalanceMinor, Modifier.weight(1f))
+                    PlannerMetric("Projected", forecast.endingBalanceMinor, Modifier.weight(1f))
                 }
             }
-        }
-        item {
-            PaisaCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Forecast assumptions", style = MaterialTheme.typography.titleMedium)
-                    Text("Daily income · ${formatMoney(forecast.baseline.averageDailyIncomeMinor)}")
-                    Text("Flexible daily spending · ${formatMoney(forecast.baseline.averageDailyFlexibleExpenseMinor)}")
-                    Text("Scheduled bills and EMIs · ${formatMoney(dueItems.sumOf { it.amountMinor })}")
-                    Text(
-                        "Uses the last ${forecast.baseline.lookbackDays} days of confirmed bank and unassigned activity. " +
-                            "Own-account transfers and assigned card purchases are excluded.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            item {
+                PaisaCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Expected bank cash", style = MaterialTheme.typography.titleLarge)
+                        MoneyLineChart(chartPoints, Modifier.fillMaxWidth(), forecastStartIndex = 0)
+                        HorizontalDivider()
+                        Text(
+                            "Lowest point: ${formatMoney(forecast.lowestBalanceMinor)}",
+                            color = if (forecast.lowestBalanceMinor < 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
             }
-        }
-        if (opening == 0L) {
-            item { EmptyPlannerCard("No bank opening balance", "Scan a balance SMS or add current assets in Net worth. The forecast currently starts at zero.") }
+            item {
+                PaisaCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Forecast assumptions", style = MaterialTheme.typography.titleMedium)
+                        Text("Daily income · ${formatMoney(forecast.baseline.averageDailyIncomeMinor)}")
+                        Text("Flexible daily spending · ${formatMoney(forecast.baseline.averageDailyFlexibleExpenseMinor)}")
+                        Text("Scheduled bills and EMIs · ${formatMoney(dueItems.sumOf { it.amountMinor })}")
+                        Text(
+                            "Uses the last ${forecast.baseline.lookbackDays} days of confirmed bank and unassigned activity. " +
+                                "Own-account transfers and assigned card purchases are excluded.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (opening == 0L) {
+                item { EmptyPlannerCard("No bank opening balance", "Scan a balance SMS or add current assets in Net worth. The forecast currently starts at zero.") }
+            }
         }
     }
 }
@@ -1070,17 +1085,3 @@ private fun String.toMinorOrNull(): Long? = toBigDecimalOrNull()
     ?.toLong()
 
 private fun minorToInput(value: Long): String = BigDecimal(value).divide(BigDecimal(100)).stripTrailingZeros().toPlainString()
-
-private fun consolidatedBankBalance(accounts: List<AccountProfile>): Long = accounts
-    .filter { it.type == AccountType.BANK_ACCOUNT }
-    .groupBy { account ->
-        val hint = account.accountHint?.filter(Char::isDigit)?.takeLast(4).orEmpty()
-        if (hint.isNotBlank()) "last4:$hint" else "id:${account.id}"
-    }
-    .values
-    .sumOf { matches ->
-        matches
-            .filter { it.balanceMinor != null }
-            .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
-            ?.balanceMinor ?: 0L
-    }

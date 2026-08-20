@@ -196,6 +196,10 @@ object PaisaLensBackupCodec {
                     data.writeNullableLong(account.availabilityFetchedAt)
                     data.writeNullable(account.availabilitySender)
                     if (formatVersion >= 5) data.writeNullable(account.identityKey)
+                    if (formatVersion >= 8) {
+                        data.writeNullableLong(account.mergedIntoAccountId)
+                        data.writeInt(account.mergedMemberCount.coerceAtLeast(1))
+                    }
                 }
             }
             data.writeInt(snapshot.customCategories.size)
@@ -517,6 +521,8 @@ object PaisaLensBackupCodec {
                     availabilityFetchedAt = if (formatVersion >= 3) data.readNullableLong() else null,
                     availabilitySender = if (formatVersion >= 3) data.readNullable() else null,
                     identityKey = if (formatVersion >= 5) data.readNullable() else null,
+                    mergedIntoAccountId = if (formatVersion >= 8) data.readNullableLong() else null,
+                    mergedMemberCount = if (formatVersion >= 8) data.readSafeCount().coerceAtLeast(1) else 1,
                 )
             }
             val customCategories = List(data.readSafeCount()) {
@@ -1183,7 +1189,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 7
+    private const val FORMAT_VERSION = 8
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

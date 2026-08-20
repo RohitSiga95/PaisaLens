@@ -96,7 +96,7 @@ class PaisaLensBackupCodecTest {
             ByteArrayInputStream(output.toByteArray()),
         )
 
-        assertEquals(7, metadata.formatVersion)
+        assertEquals(8, metadata.formatVersion)
         assertEquals(snapshot.createdAt, metadata.createdAt)
         assertEquals(snapshot.transactions.size, metadata.transactionCount)
         assertEquals(snapshot.accounts.size, metadata.accountCount)
@@ -129,6 +129,32 @@ class PaisaLensBackupCodecTest {
 
         assertEquals(emptyList<SmsCoverageMessage>(), restored.smsCoverageMessages)
         assertEquals(snapshot.smsCoverageRules, restored.smsCoverageRules)
+    }
+
+    @Test
+    fun roundTripsMergedPhysicalAccountIdentity() {
+        val root = sampleSnapshot()
+        val merged = root.copy(
+            accounts = root.accounts + AccountProfile(
+                id = 21,
+                name = "Travel card",
+                type = AccountType.CREDIT_CARD,
+                accountHint = "9876",
+                institution = "Second Bank",
+                identityKey = "CARD:second-bank:9876",
+                mergedIntoAccountId = 1,
+            ),
+        )
+        val output = ByteArrayOutputStream()
+
+        PaisaLensBackupCodec.write(merged, "correct horse".toCharArray(), output)
+        val restored = PaisaLensBackupCodec.read(
+            "correct horse".toCharArray(),
+            ByteArrayInputStream(output.toByteArray()),
+        )
+
+        assertEquals(1L, restored.accounts.single { it.id == 21L }.mergedIntoAccountId)
+        assertEquals(merged.accounts, restored.accounts)
     }
 
     @Test
@@ -234,6 +260,44 @@ class PaisaLensBackupCodecTest {
                         shareBasisPoints = null,
                     )
                 },
+                auditEvents = snapshot.auditEvents.map { event ->
+                    event.copy(
+                        beforePayload = TransactionAuditPayloadCodec.portable(event.beforePayload),
+                        afterPayload = TransactionAuditPayloadCodec.portable(event.afterPayload),
+                    )
+                },
+            ),
+            restored,
+        )
+    }
+
+    @Test
+    fun readsVersionSevenCollectionsWithoutConsumingV8MergeFields() {
+        val original = sampleSnapshot()
+        val snapshot = original.copy(
+            accounts = original.accounts.map {
+                it.copy(mergedIntoAccountId = 99, mergedMemberCount = 2)
+            },
+        )
+        val output = ByteArrayOutputStream()
+        PaisaLensBackupCodec.writeVersionForTesting(
+            snapshot,
+            "correct horse".toCharArray(),
+            output,
+            formatVersion = 7,
+        )
+
+        val restored = PaisaLensBackupCodec.read(
+            "correct horse".toCharArray(),
+            ByteArrayInputStream(output.toByteArray()),
+        )
+
+        assertEquals(
+            snapshot.copy(
+                accounts = snapshot.accounts.map {
+                    it.copy(mergedIntoAccountId = null, mergedMemberCount = 1)
+                },
+                smsCoverageMessages = emptyList(),
                 auditEvents = snapshot.auditEvents.map { event ->
                     event.copy(
                         beforePayload = TransactionAuditPayloadCodec.portable(event.beforePayload),

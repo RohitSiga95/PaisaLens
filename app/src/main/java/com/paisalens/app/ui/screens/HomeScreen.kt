@@ -419,7 +419,9 @@ fun HomeScreen(
                                 valueLabel = "Current balance",
                                 icon = Icons.Rounded.AccountBalance,
                                 onRefresh = { onRefreshAccount(group.account) },
-                                onCheckViaUpi = { onCheckBalanceViaUpi(group.account, group.accountIds) },
+                                onCheckViaUpi = if (group.profileCount > 1) null else {
+                                    { onCheckBalanceViaUpi(group.account, group.accountIds) }
+                                },
                                 onClick = { onAccountClick(group.account) },
                             )
                         }
@@ -1840,7 +1842,9 @@ private fun AccountAvailabilityTile(
     onClick: () -> Unit,
 ) {
     val style = accountTileStyle(account)
-    val utilization = if (account.type == AccountType.CREDIT_CARD) {
+    val isPartialMergedValue = account.mergedMemberCount > 1 &&
+        valueMinor != null && account.availabilityFetchedAt == null
+    val utilization = if (account.type == AccountType.CREDIT_CARD && !isPartialMergedValue) {
         calculateCreditUtilization(account.id, account.availableCreditMinor, account.creditLimitMinor)
     } else {
         null
@@ -1904,7 +1908,11 @@ private fun AccountAvailabilityTile(
                     }
                 }
                 Spacer(Modifier.height(16.dp))
-                Text(valueLabel, style = MaterialTheme.typography.labelLarge, color = style.foreground.copy(alpha = 0.76f))
+                Text(
+                    if (isPartialMergedValue) "$valueLabel · partial" else valueLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = style.foreground.copy(alpha = 0.76f),
+                )
                 if (valueMinor == null) {
                     Text(
                         "Not available",
@@ -1933,16 +1941,20 @@ private fun AccountAvailabilityTile(
                 Spacer(Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                     Text(
-                        text = account.availabilityFetchedAt?.let {
-                            val action = if (
-                                account.availabilitySender?.startsWith(USER_ENTERED_UPI_BALANCE_SOURCE) == true
-                            ) {
-                                "Entered"
-                            } else {
-                                "Fetched"
-                            }
-                            "$action ${formatAvailabilityTime(it)}"
-                        } ?: "No balance saved yet",
+                        text = if (isPartialMergedValue) {
+                            "Some merged sources do not have a current value"
+                        } else {
+                            account.availabilityFetchedAt?.let {
+                                val action = if (
+                                    account.availabilitySender?.startsWith(USER_ENTERED_UPI_BALANCE_SOURCE) == true
+                                ) {
+                                    "Entered"
+                                } else {
+                                    "Fetched"
+                                }
+                                "$action ${formatAvailabilityTime(it)}"
+                            } ?: "No balance saved yet"
+                        },
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = style.foreground.copy(alpha = 0.72f),
@@ -2087,7 +2099,9 @@ private fun UnavailableAccountsPanel(
                                 valueLabel = "Current balance",
                                 icon = Icons.Rounded.AccountBalance,
                                 onRefresh = { onRefreshAccount(group.account) },
-                                onCheckViaUpi = { onCheckBalanceViaUpi(group.account, group.accountIds) },
+                                onCheckViaUpi = if (group.profileCount > 1) null else {
+                                    { onCheckBalanceViaUpi(group.account, group.accountIds) }
+                                },
                                 onClick = { onAccountClick(group.account) },
                             )
                         }
@@ -2172,7 +2186,7 @@ internal fun consolidateAvailabilityAccounts(
                         ?.creditLimitMinor,
             ),
             accountIds = matches.mapTo(linkedSetOf()) { it.id },
-            profileCount = matches.size,
+            profileCount = matches.sumOf { it.mergedMemberCount.coerceAtLeast(1) },
         )
     }
     .sortedWith(

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Merge
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -78,6 +79,7 @@ internal fun AccountManagerSheet(
     onAdd: (String, AccountType, String?) -> Unit,
     onUpdate: (AccountProfile) -> Unit,
     onDelete: (Long) -> Unit,
+    onMerge: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
@@ -102,9 +104,30 @@ internal fun AccountManagerSheet(
             item(key = "accounts-header") {
                 SheetHeader(
                     "Accounts & cards",
-                    "Rename bank accounts and cards once; the chosen names stay attached to matching SMS.",
+                    "Rename or merge bank accounts and cards; your chosen names stay attached to matching SMS.",
                     onDismiss,
                 )
+            }
+            item(key = "merge-accounts-action") {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onMerge,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Icon(Icons.Rounded.Merge, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Merge accounts or cards")
+                    }
+                    Text(
+                        "Combine two or more of the same type under one name. Transactions and linked history are kept.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             item(key = "add-account-form") {
                 Column(
@@ -192,10 +215,17 @@ internal fun AccountManagerSheet(
                                 IconButton(onClick = { editing = account }) {
                                     Icon(Icons.Rounded.Edit, contentDescription = "Rename or edit ${account.name}")
                                 }
-                                IconButton(onClick = { deleting = account }) {
+                                IconButton(
+                                    onClick = { deleting = account },
+                                    enabled = account.mergedMemberCount <= 1,
+                                ) {
                                     Icon(
                                         Icons.Rounded.DeleteOutline,
-                                        contentDescription = "Delete ${account.name}",
+                                        contentDescription = if (account.mergedMemberCount > 1) {
+                                            "Merged groups cannot be removed"
+                                        } else {
+                                            "Delete ${account.name}"
+                                        },
                                         tint = MaterialTheme.colorScheme.error,
                                     )
                                 }
@@ -243,6 +273,9 @@ private fun AccountProfile.managementSubtitle(): String = buildList {
         ?.let(::add)
     add(type.label)
     accountHint?.let { add("•••• $it") }
+    if (mergedMemberCount > 1) {
+        add("$mergedMemberCount merged")
+    }
 }.joinToString(" · ")
 
 @Composable
@@ -257,7 +290,13 @@ private fun AccountEditDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(if (account.type == AccountType.CREDIT_CARD) "Rename or edit card" else "Rename or edit account")
+            Text(
+                when {
+                    account.mergedMemberCount > 1 -> "Rename merged ${if (account.type == AccountType.CREDIT_CARD) "card" else "account"}"
+                    account.type == AccountType.CREDIT_CARD -> "Rename or edit card"
+                    else -> "Rename or edit account"
+                },
+            )
         },
         text = {
             Column(
@@ -271,27 +310,47 @@ private fun AccountEditDialog(
                     supportingText = { Text("Used everywhere, including future matching SMS.") },
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = hint,
-                    onValueChange = { hint = it.filter(Char::isDigit).take(4) },
-                    label = { Text("Last 4 digits") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(AccountType.entries) { option ->
-                        FilterChip(
-                            selected = type == option,
-                            onClick = { type = option },
-                            label = { Text(option.label) },
-                        )
+                if (account.mergedMemberCount > 1) {
+                    Text(
+                        "This name is used for all ${account.mergedMemberCount} merged sources. Their matching details stay protected so future SMS continue to link correctly.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = hint,
+                        onValueChange = { hint = it.filter(Char::isDigit).take(4) },
+                        label = { Text("Last 4 digits") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(AccountType.entries) { option ->
+                            FilterChip(
+                                selected = type == option,
+                                onClick = { type = option },
+                                label = { Text(option.label) },
+                            )
+                        }
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(account.copy(name = name.trim(), type = type, accountHint = hint.takeIf(String::isNotBlank))) },
+                onClick = {
+                    onSave(
+                        if (account.mergedMemberCount > 1) {
+                            account.copy(name = name.trim())
+                        } else {
+                            account.copy(
+                                name = name.trim(),
+                                type = type,
+                                accountHint = hint.takeIf(String::isNotBlank),
+                            )
+                        },
+                    )
+                },
                 enabled = name.isNotBlank(),
             ) { Text("Save changes") }
         },

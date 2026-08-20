@@ -40,11 +40,30 @@ class RecurringPaymentDetectionTest {
         assertTrue(recurring.isEmpty())
     }
 
+    @Test
+    fun keepsSameMerchantCadencesSeparateAcrossMergedPhysicalMembers() {
+        val recurring = detectRecurringPayments(
+            transactions = listOf(
+                expense("Stream Co", 49_900, 10L * day, physicalAccountId = 101),
+                expense("Stream Co", 49_900, 40L * day, physicalAccountId = 101),
+                expense("Stream Co", 79_900, 15L * day, physicalAccountId = 102),
+                expense("Stream Co", 79_900, 45L * day, physicalAccountId = 102),
+            ),
+            now = 70L * day,
+        )
+
+        assertEquals(2, recurring.size)
+        assertEquals(setOf(49_900L, 79_900L), recurring.mapTo(mutableSetOf(), RecurringPayment::typicalAmountMinor))
+        assertEquals(setOf(101L, 102L), recurring.mapNotNullTo(mutableSetOf(), RecurringPayment::physicalAccountId))
+        assertTrue(recurring.all { it.accountId == 1L && it.occurrences == 2 })
+    }
+
     private fun expense(
         merchant: String,
         amountMinor: Long,
         occurredAt: Long,
         reviewStatus: ReviewStatus = ReviewStatus.CONFIRMED,
+        physicalAccountId: Long? = null,
     ) = TransactionRecord(
         sourceMessageId = "$merchant-$occurredAt",
         amountMinor = amountMinor,
@@ -58,5 +77,6 @@ class RecurringPaymentDetectionTest {
         accountId = 1,
         accountName = "Card •1234",
         reviewStatus = reviewStatus,
+        physicalAccountId = physicalAccountId,
     )
 }

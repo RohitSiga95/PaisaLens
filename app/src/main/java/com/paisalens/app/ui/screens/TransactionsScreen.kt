@@ -186,6 +186,9 @@ fun TransactionsScreen(
     val accountOptions = remember(accounts, transactions) {
         activityAccountFilterOptions(accounts, transactions)
     }
+    val accountSelectionResolution = remember(selectedAccountKeys, accountOptions) {
+        resolveActivityAccountSelections(selectedAccountKeys, accountOptions)
+    }
     val categoryOptions = remember(customCategories, transactions) {
         activityCategoryOptions(customCategories, transactions)
     }
@@ -201,12 +204,12 @@ fun TransactionsScreen(
     }
 
     LaunchedEffect(accountOptions, selectedAccountKeysList) {
-        val validSelections = validActivityAccountSelections(
+        val safeSelections = validActivityAccountSelections(
             selectedAccountKeysList.toSet(),
             accountOptions,
         ).toList()
-        if (validSelections.toSet() != selectedAccountKeysList.toSet()) {
-            selectedAccountKeysList = validSelections
+        if (safeSelections.toSet() != selectedAccountKeysList.toSet()) {
+            selectedAccountKeysList = safeSelections
         }
     }
 
@@ -395,7 +398,13 @@ fun TransactionsScreen(
                     text = if (selectedAccountKeys.isEmpty()) {
                         "Bank & card"
                     } else {
-                        "Bank & card (${selectedAccountKeys.size} selected)"
+                        buildString {
+                            append("Bank & card (${selectedAccountKeys.size} selected")
+                            if (accountSelectionResolution.unavailableKeys.isNotEmpty()) {
+                                append(" · ${accountSelectionResolution.unavailableKeys.size} unavailable")
+                            }
+                            append(')')
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelLarge,
@@ -435,14 +444,15 @@ fun TransactionsScreen(
                         )
                     }
                     items(accountOptions, key = { it.key }) { option ->
-                        val isSelected = option.key in selectedAccountKeys
+                        val isSelected = option.key in accountSelectionResolution.resolvedKeys
                         FilterChip(
                             selected = isSelected,
                             onClick = {
+                                val safeSelections = accountSelectionResolution.selectionKeys
                                 selectedAccountKeysList = if (isSelected) {
-                                    selectedAccountKeys - option.key
+                                    safeSelections - option.key
                                 } else {
-                                    selectedAccountKeys + option.key
+                                    safeSelections + option.key
                                 }.toList()
                             },
                             label = {
@@ -468,6 +478,36 @@ fun TransactionsScreen(
                                 .semantics {
                                     contentDescription = "${option.type.label}: ${option.accessibilityLabel}"
                                 },
+                        )
+                    }
+                }
+            }
+            if (accountSelectionResolution.unavailableKeys.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = "This view includes ${accountSelectionResolution.unavailableKeys.size} " +
+                            "account selection" +
+                            (if (accountSelectionResolution.unavailableKeys.size == 1) "" else "s") +
+                            " that could not be mapped after an account changed. " +
+                            "Unavailable accounts match no activity.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    TextButton(
+                        onClick = {
+                            selectedAccountKeysList = accountSelectionResolution.resolvedKeys.toList()
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
+                        Text(
+                            if (accountSelectionResolution.resolvedKeys.isEmpty()) {
+                                "Use all accounts"
+                            } else {
+                                "Remove unavailable"
+                            },
                         )
                     }
                 }
@@ -507,11 +547,19 @@ fun TransactionsScreen(
                     EmptyState(
                         title = when {
                             transactions.isEmpty() -> "No transactions yet"
+                            selectedAccountKeys.isNotEmpty() &&
+                                accountSelectionResolution.resolvedKeys.isEmpty() -> "Saved account unavailable"
                             selectedAccountKeys.isNotEmpty() -> "No activity for these accounts"
                             else -> "Nothing matches"
                         },
                         body = if (transactions.isEmpty()) {
                             "Scan SMS alerts or add an expense manually."
+                        } else if (
+                            selectedAccountKeys.isNotEmpty() &&
+                            accountSelectionResolution.resolvedKeys.isEmpty()
+                        ) {
+                            "This view references an account that was removed or could not be mapped after a " +
+                                "merge. Choose an available bank or card, or explicitly use all accounts."
                         } else if (selectedAccountKeys.isNotEmpty()) {
                             "Choose another bank or card, or clear the account filters."
                         } else {
@@ -685,6 +733,9 @@ private fun ActivityFiltersSheet(
     val endDateInvalid = draft.dateRange == ActivityDateRange.CUSTOM &&
         endDate.isNotBlank() && parsedEndDate == null
     val dateOrderInvalid = parsedStartDate != null && parsedEndDate != null && parsedStartDate > parsedEndDate
+    val draftAccountSelection = remember(draft.selectedAccountKeys, accountOptions) {
+        resolveActivityAccountSelections(draft.selectedAccountKeys, accountOptions)
+    }
     val canApply = !minimumInvalid && !maximumInvalid && !amountOrderInvalid &&
         !customDatesMissing && !startDateInvalid && !endDateInvalid && !dateOrderInvalid
 
@@ -800,7 +851,7 @@ private fun ActivityFiltersSheet(
                     }
                 }
 
-                if (accountOptions.isNotEmpty()) {
+                if (accountOptions.isNotEmpty() || draft.selectedAccountKeys.isNotEmpty()) {
                     item(key = "filter-accounts") {
                         ActivityFilterSection(title = "Bank & card") {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -813,15 +864,16 @@ private fun ActivityFiltersSheet(
                                     )
                                 }
                                 items(accountOptions, key = ActivityAccountFilterOption::key) { option ->
-                                    val selected = option.key in draft.selectedAccountKeys
+                                    val selected = option.key in draftAccountSelection.resolvedKeys
                                     FilterChip(
                                         selected = selected,
                                         onClick = {
+                                            val safeSelections = draftAccountSelection.selectionKeys
                                             draft = draft.copy(
                                                 selectedAccountKeys = if (selected) {
-                                                    draft.selectedAccountKeys - option.key
+                                                    safeSelections - option.key
                                                 } else {
-                                                    draft.selectedAccountKeys + option.key
+                                                    safeSelections + option.key
                                                 },
                                             )
                                         },
@@ -848,6 +900,32 @@ private fun ActivityFiltersSheet(
                                             .semantics {
                                                 contentDescription = "${option.type.label}: ${option.accessibilityLabel}"
                                             },
+                                    )
+                                }
+                            }
+                            if (draftAccountSelection.unavailableKeys.isNotEmpty()) {
+                                Text(
+                                    text = "${draftAccountSelection.unavailableKeys.size} saved account " +
+                                        "selection" +
+                                        (if (draftAccountSelection.unavailableKeys.size == 1) " is" else "s are") +
+                                        " unavailable and will match no activity.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                TextButton(
+                                    onClick = {
+                                        draft = draft.copy(
+                                            selectedAccountKeys = draftAccountSelection.resolvedKeys,
+                                        )
+                                    },
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                ) {
+                                    Text(
+                                        if (draftAccountSelection.resolvedKeys.isEmpty()) {
+                                            "Use all accounts"
+                                        } else {
+                                            "Remove unavailable"
+                                        },
                                     )
                                 }
                             }
@@ -1120,6 +1198,7 @@ private fun ActivityFiltersSheet(
                             onClick = {
                                 onApply(
                                     draft.copy(
+                                        selectedAccountKeys = draftAccountSelection.selectionKeys,
                                         customStartEpochDay = if (draft.dateRange == ActivityDateRange.CUSTOM) {
                                             parsedStartDate
                                         } else {
@@ -1267,8 +1346,11 @@ internal data class ActivityAccountFilterOption(
     val institutionName: String?,
     val institutionNames: Set<String>,
     val lastFour: String?,
+    val lastFourValues: Set<String>,
     val accountIds: Set<Long>,
     val accountNames: Set<String>,
+    /** Previous physical-account option keys that now resolve to this logical account. */
+    val legacyKeys: Set<String>,
 )
 
 private data class TaggedActivityAccount(
@@ -1276,54 +1358,83 @@ private data class TaggedActivityAccount(
     val institutionName: String,
     val lastFour: String?,
     val accountName: String?,
+    val accountId: Long?,
 )
+
+internal data class ActivityAccountSelectionResolution(
+    val resolvedKeys: Set<String>,
+    val unavailableKeys: Set<String>,
+) {
+    val selectionKeys: Set<String>
+        get() = buildSet {
+            addAll(resolvedKeys)
+            addAll(unavailableKeys)
+        }
+}
 
 internal fun activityAccountFilterOptions(
     accounts: List<AccountProfile>,
     transactions: List<TransactionRecord> = emptyList(),
 ): List<ActivityAccountFilterOption> {
-    val knownAccountIds = accounts.mapTo(hashSetOf(), AccountProfile::id)
+    val accountsById = accounts.associateBy(AccountProfile::id)
     val taggedAccounts = transactions.mapNotNull { transaction ->
-        if (transaction.accountId != null && transaction.accountId in knownAccountIds) return@mapNotNull null
-        val type = transaction.activityAccountType() ?: return@mapNotNull null
+        val linkedAccount = transaction.accountId?.let(accountsById::get)
+        val type = linkedAccount?.type
+            ?.takeIf { it == AccountType.BANK_ACCOUNT || it == AccountType.CREDIT_CARD }
+            ?: transaction.activityAccountType()
+            ?: return@mapNotNull null
         val institution = transactionCanonicalInstitution(transaction) ?: return@mapNotNull null
         TaggedActivityAccount(
             type = type,
             institutionName = institution,
             lastFour = accountLastFour(transaction.accountHint),
             accountName = transaction.accountName?.trim()?.takeIf(String::isNotBlank),
+            accountId = transaction.accountId?.takeIf(accountsById::containsKey),
         )
     }
 
     val profileOptions = accounts
         .filter { it.type == AccountType.BANK_ACCOUNT || it.type == AccountType.CREDIT_CARD }
         .groupBy { account ->
-            val institution = accountCanonicalInstitution(account)
-            val institutionKey = institution?.let(::normalizedAccountValue)?.takeIf(String::isNotBlank)
-            val lastFour = accountLastFour(account.accountHint)
-            if (lastFour == null || institutionKey == null) {
-                "${account.type.name}|institution:${institutionKey ?: "unknown"}|account:${account.id}"
-            } else {
-                "${account.type.name}|institution:$institutionKey|last4:$lastFour"
-            }
+            activityAccountOptionKey(
+                type = account.type,
+                institution = accountCanonicalInstitution(account),
+                lastFour = accountLastFour(account.accountHint),
+                fallbackAccountId = account.id,
+            )
         }
         .map { (key, matches) ->
             val preferred = matches.minBy(AccountProfile::id)
-            val lastFour = matches.firstNotNullOfOrNull { accountLastFour(it.accountHint) }
+            val accountIds = matches.mapTo(linkedSetOf(), AccountProfile::id)
             val profileInstitutions = matches.mapNotNull(::accountCanonicalInstitution)
             val profileInstitutionKeys = profileInstitutions
                 .mapTo(hashSetOf(), ::normalizedAccountValue)
-            val taggedMatches = taggedAccounts.filter { tagged ->
+            val linkedTaggedMatches = taggedAccounts.filter { tagged ->
+                tagged.type == preferred.type && tagged.accountId in accountIds
+            }
+            val profileLastFourValues = matches.mapNotNullTo(linkedSetOf()) {
+                accountLastFour(it.accountHint)
+            }
+            val exactUnlinkedMatches = taggedAccounts.filter { tagged ->
                 tagged.type == preferred.type &&
-                    lastFour != null &&
-                    tagged.lastFour == lastFour &&
+                    tagged.accountId == null &&
+                    tagged.lastFour != null &&
+                    tagged.lastFour in profileLastFourValues &&
                     normalizedAccountValue(tagged.institutionName) in profileInstitutionKeys
             }
+            val taggedMatches = (linkedTaggedMatches + exactUnlinkedMatches).distinct()
+            val lastFourValues = (profileLastFourValues + taggedMatches.mapNotNull(TaggedActivityAccount::lastFour))
+                .toCollection(linkedSetOf())
+            val lastFour = lastFourValues.singleOrNull()
             val institutions = (profileInstitutions + taggedMatches.map(TaggedActivityAccount::institutionName))
                 .distinctBy(::normalizedAccountValue)
                 .toCollection(linkedSetOf())
-            val institution = profileInstitutions.firstOrNull() ?: preferredInstitution(institutions)
+            val institution = profileInstitutions.firstOrNull()
+                ?: institutions.singleOrNull()
             val name = preferred.name.trim().ifBlank { institution ?: preferred.type.label }
+            val legacyKeys = linkedTaggedMatches.mapNotNullTo(linkedSetOf()) { tagged ->
+                activityPhysicalAccountOptionKey(tagged.type, tagged.institutionName, tagged.lastFour)
+            }.apply { remove(key) }
             activityAccountFilterOption(
                 key = key,
                 type = preferred.type,
@@ -1331,13 +1442,16 @@ internal fun activityAccountFilterOptions(
                 institution = institution,
                 institutions = institutions,
                 lastFour = lastFour,
-                accountIds = matches.mapTo(linkedSetOf(), AccountProfile::id),
+                lastFourValues = lastFourValues,
+                accountIds = accountIds,
                 accountNames = (matches.mapNotNull { it.name.trim().takeIf(String::isNotBlank) } +
                     taggedMatches.mapNotNull(TaggedActivityAccount::accountName)).toCollection(linkedSetOf()),
+                legacyKeys = legacyKeys,
             )
         }
 
     val virtualOptions = taggedAccounts
+        .filter { it.accountId == null }
         .filterNot { tagged ->
             profileOptions.any { option ->
                 val institutionMatches = option.institutionNames.any {
@@ -1345,12 +1459,12 @@ internal fun activityAccountFilterOptions(
                 }
                 option.type == tagged.type &&
                     institutionMatches &&
-                    (tagged.lastFour == null || option.lastFour == tagged.lastFour)
+                    (tagged.lastFour == null || tagged.lastFour in option.lastFourValues)
             }
         }
         .groupBy { tagged ->
-            "${tagged.type.name}|institution:${normalizedAccountValue(tagged.institutionName)}|" +
-                (tagged.lastFour?.let { "last4:$it" } ?: "last4:unknown")
+            activityPhysicalAccountOptionKey(tagged.type, tagged.institutionName, tagged.lastFour)
+                ?: "${tagged.type.name}|institution:${normalizedAccountValue(tagged.institutionName)}|last4:unknown"
         }
         .map { (key, matches) ->
             val type = matches.first().type
@@ -1365,8 +1479,10 @@ internal fun activityAccountFilterOptions(
                 institution = institution,
                 institutions = institutions,
                 lastFour = matches.firstNotNullOfOrNull(TaggedActivityAccount::lastFour),
+                lastFourValues = matches.mapNotNullTo(linkedSetOf(), TaggedActivityAccount::lastFour),
                 accountIds = emptySet(),
                 accountNames = matches.mapNotNullTo(linkedSetOf(), TaggedActivityAccount::accountName),
+                legacyKeys = emptySet(),
             )
         }
 
@@ -1377,13 +1493,50 @@ internal fun activityAccountFilterOptions(
     )
 }
 
+internal fun resolveActivityAccountSelections(
+    selectedAccountKeys: Set<String>,
+    accountOptions: List<ActivityAccountFilterOption>,
+): ActivityAccountSelectionResolution {
+    val resolved = linkedSetOf<String>()
+    val unavailable = linkedSetOf<String>()
+    val optionsByKey = accountOptions.associateBy(ActivityAccountFilterOption::key)
+
+    selectedAccountKeys.asSequence().filter(String::isNotBlank).forEach { selectedKey ->
+        val exact = optionsByKey[selectedKey]
+        if (exact != null) {
+            resolved += exact.key
+            return@forEach
+        }
+
+        val legacyCandidates = accountOptions.filter { selectedKey in it.legacyKeys }
+        val compatibleCandidates = if (legacyCandidates.isEmpty()) {
+            legacyLastFourSelection(selectedKey)?.let { (type, lastFour) ->
+                accountOptions.filter { option ->
+                    option.type == type && lastFour in option.lastFourValues
+                }
+            }.orEmpty()
+        } else {
+            emptyList()
+        }
+        val candidates = (legacyCandidates + compatibleCandidates).distinctBy(ActivityAccountFilterOption::key)
+        if (candidates.size == 1) {
+            resolved += candidates.single().key
+        } else {
+            // Retaining an unresolved key makes the view narrower (zero matches) instead of
+            // silently turning a stale account-scoped view into "All accounts".
+            unavailable += selectedKey
+        }
+    }
+    return ActivityAccountSelectionResolution(
+        resolvedKeys = resolved,
+        unavailableKeys = unavailable,
+    )
+}
+
 internal fun validActivityAccountSelections(
     selectedAccountKeys: Set<String>,
     accountOptions: List<ActivityAccountFilterOption>,
-): Set<String> {
-    val availableKeys = accountOptions.mapTo(mutableSetOf(), ActivityAccountFilterOption::key)
-    return selectedAccountKeys.intersect(availableKeys)
-}
+): Set<String> = resolveActivityAccountSelections(selectedAccountKeys, accountOptions).selectionKeys
 
 internal fun filterActivityTransactions(
     transactions: List<TransactionRecord>,
@@ -1407,9 +1560,13 @@ internal fun filterActivityTransactions(
     accountOptions: List<ActivityAccountFilterOption>,
     nowMillis: Long = System.currentTimeMillis(),
     zoneId: ZoneId = ZoneId.systemDefault(),
-): List<TransactionRecord> = transactions.filter { transaction ->
-    transactionMatchesActivityFilters(transaction, filters, nowMillis, zoneId) &&
-        transactionMatchesActivityAccounts(transaction, filters.selectedAccountKeys, accountOptions)
+): List<TransactionRecord> {
+    val accountSelection = resolveActivityAccountSelections(filters.selectedAccountKeys, accountOptions)
+    if (filters.selectedAccountKeys.isNotEmpty() && accountSelection.resolvedKeys.isEmpty()) return emptyList()
+    return transactions.filter { transaction ->
+        transactionMatchesActivityFilters(transaction, filters, nowMillis, zoneId) &&
+            transactionMatchesActivityAccounts(transaction, accountSelection.resolvedKeys, accountOptions)
+    }
 }
 
 private fun transactionMatchesActivityAccounts(
@@ -1459,7 +1616,7 @@ private fun transactionMatchesActivityAccounts(
         }
         val identityIsUnambiguous = identityPeers.size == 1
         val accountIdentityMatch = if (transactionLastFour != null) {
-            option.lastFour == transactionLastFour
+            transactionLastFour in option.lastFourValues
         } else {
             identityIsUnambiguous
         }
@@ -1490,8 +1647,10 @@ private fun activityAccountFilterOption(
     institution: String?,
     institutions: Set<String>,
     lastFour: String?,
+    lastFourValues: Set<String>,
     accountIds: Set<Long>,
     accountNames: Set<String>,
+    legacyKeys: Set<String>,
 ): ActivityAccountFilterOption {
     val institutionSuffix = institution
         ?.takeUnless { name.contains(it, ignoreCase = true) }
@@ -1510,10 +1669,44 @@ private fun activityAccountFilterOption(
         institutionName = institution,
         institutionNames = institutions,
         lastFour = lastFour,
+        lastFourValues = lastFourValues,
         accountIds = accountIds,
         accountNames = accountNames,
+        legacyKeys = legacyKeys,
     )
 }
+
+private fun activityAccountOptionKey(
+    type: AccountType,
+    institution: String?,
+    lastFour: String?,
+    fallbackAccountId: Long,
+): String {
+    val physicalKey = activityPhysicalAccountOptionKey(type, institution, lastFour)
+    if (physicalKey != null) return physicalKey
+    val institutionKey = institution?.let(::normalizedAccountValue)?.takeIf(String::isNotBlank)
+    return "${type.name}|institution:${institutionKey ?: "unknown"}|account:$fallbackAccountId"
+}
+
+private fun activityPhysicalAccountOptionKey(
+    type: AccountType,
+    institution: String?,
+    lastFour: String?,
+): String? {
+    val institutionKey = institution?.let(::normalizedAccountValue)?.takeIf(String::isNotBlank)
+        ?: return null
+    val cleanLastFour = lastFour?.takeIf { it.length == 4 && it.all(Char::isDigit) }
+        ?: return null
+    return "${type.name}|institution:$institutionKey|last4:$cleanLastFour"
+}
+
+private fun legacyLastFourSelection(key: String): Pair<AccountType, String>? {
+    val match = LEGACY_LAST_FOUR_SELECTION.matchEntire(key) ?: return null
+    val type = AccountType.entries.firstOrNull { it.name == match.groupValues[1] } ?: return null
+    return type to match.groupValues[2]
+}
+
+private val LEGACY_LAST_FOUR_SELECTION = Regex("^([A-Z_]+)\\|last4:(\\d{4})$")
 
 private fun preferredInstitution(institutions: Set<String>): String? = institutions
     .minWithOrNull(compareBy<String> { it.length }.thenBy(String.CASE_INSENSITIVE_ORDER) { it })

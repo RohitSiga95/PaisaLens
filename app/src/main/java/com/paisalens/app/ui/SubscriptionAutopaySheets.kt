@@ -62,6 +62,7 @@ import com.paisalens.app.data.model.PaymentCommitmentKind
 import com.paisalens.app.data.model.PaymentCommitmentSource
 import com.paisalens.app.data.model.PaymentCommitmentStatus
 import com.paisalens.app.data.model.PaymentFrequency
+import com.paisalens.app.data.model.accountIdentityId
 import com.paisalens.app.data.model.currentPaymentDueDate
 import com.paisalens.app.data.model.buildPaymentCommitmentDueItems
 import com.paisalens.app.data.model.normalizedMerchantKey
@@ -763,10 +764,10 @@ private fun monthlyEquivalentMinor(commitment: PaymentCommitment): Long = when (
     }
 }
 
-private fun suggestionSessionKey(commitment: PaymentCommitment): String = buildString {
+internal fun suggestionSessionKey(commitment: PaymentCommitment): String = buildString {
     append(normalizedMerchantKey(commitment.merchantKey.ifBlank { commitment.name }))
     append(':')
-    append(commitment.accountId ?: "unscoped")
+    append(commitment.accountIdentityId() ?: "unscoped")
     append(':')
     append(commitment.kind.name)
 }
