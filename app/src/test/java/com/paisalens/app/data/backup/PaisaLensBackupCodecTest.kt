@@ -45,6 +45,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -96,7 +97,7 @@ class PaisaLensBackupCodecTest {
             ByteArrayInputStream(output.toByteArray()),
         )
 
-        assertEquals(8, metadata.formatVersion)
+        assertEquals(9, metadata.formatVersion)
         assertEquals(snapshot.createdAt, metadata.createdAt)
         assertEquals(snapshot.transactions.size, metadata.transactionCount)
         assertEquals(snapshot.accounts.size, metadata.accountCount)
@@ -155,6 +156,53 @@ class PaisaLensBackupCodecTest {
 
         assertEquals(1L, restored.accounts.single { it.id == 21L }.mergedIntoAccountId)
         assertEquals(merged.accounts, restored.accounts)
+    }
+
+    @Test
+    fun versionNineRoundTripsOpaqueSmsDedupeFingerprint() {
+        val snapshot = sampleSnapshot().let { original ->
+            original.copy(
+                transactions = original.transactions.mapIndexed { index, transaction ->
+                    transaction.copy(dedupeFingerprint = if (index == 0) "a".repeat(64) else null)
+                },
+            )
+        }
+        val output = ByteArrayOutputStream()
+
+        PaisaLensBackupCodec.write(snapshot, "correct horse".toCharArray(), output)
+        val restored = PaisaLensBackupCodec.read(
+            "correct horse".toCharArray(),
+            ByteArrayInputStream(output.toByteArray()),
+        )
+
+        assertEquals("a".repeat(64), restored.transactions.first().dedupeFingerprint)
+        assertEquals(null, restored.transactions.last().dedupeFingerprint)
+    }
+
+    @Test
+    fun readsVersionEightBackupWithoutDedupeFingerprintField() {
+        val snapshot = sampleSnapshot().copy(
+            transactions = sampleSnapshot().transactions.map {
+                it.copy(dedupeFingerprint = "b".repeat(64))
+            },
+        )
+        val output = ByteArrayOutputStream()
+        PaisaLensBackupCodec.writeVersionForTesting(
+            snapshot,
+            "correct horse".toCharArray(),
+            output,
+            formatVersion = 8,
+        )
+
+        val restored = PaisaLensBackupCodec.read(
+            "correct horse".toCharArray(),
+            ByteArrayInputStream(output.toByteArray()),
+        )
+
+        assertTrue(restored.transactions.all { it.dedupeFingerprint == null })
+        assertEquals(snapshot.transactions.map { it.sourceMessageId }, restored.transactions.map { it.sourceMessageId })
+        assertEquals(snapshot.transactionSmsSources, restored.transactionSmsSources)
+        assertEquals(snapshot.accounts, restored.accounts)
     }
 
     @Test

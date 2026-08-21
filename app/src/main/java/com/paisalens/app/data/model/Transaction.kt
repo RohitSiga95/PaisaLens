@@ -75,6 +75,8 @@ data class TransactionRecord(
     val duplicateCount: Int = 1,
     /** Raw storage identity retained when [accountId] is projected to a merged root. */
     val physicalAccountId: Long? = null,
+    /** Opaque SMS identity retained for safe database upgrades and encrypted backup restores. */
+    val dedupeFingerprint: String? = null,
 )
 
 fun TransactionRecord.accountIdentityId(): Long? = physicalAccountId ?: accountId

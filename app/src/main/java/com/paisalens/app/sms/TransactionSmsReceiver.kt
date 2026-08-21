@@ -22,6 +22,7 @@ class TransactionSmsReceiver : BroadcastReceiver() {
         val sender = messages.first().displayOriginatingAddress.orEmpty()
         val body = messages.joinToString(separator = "") { it.displayMessageBody.orEmpty() }
         val timestamp = messages.first().timestampMillis
+        val sourceMessageId = stableReceiverMessageId(sender, body, timestamp)
         val app = context.applicationContext as PaisaLensApplication
         val pendingResult = goAsync()
 
@@ -33,14 +34,20 @@ class TransactionSmsReceiver : BroadcastReceiver() {
                     sender = sender,
                     body = body,
                     timestamp = timestamp,
+                    messageId = sourceMessageId,
                     coverageRules = app.repository.smsCoverageRulesForParsing(),
                 )
                 val availability = app.availabilityParser.parse(sender, body, timestamp)
-                val creditCardBill = app.creditCardBillParser.parse(sender, body, timestamp)
+                val creditCardBill = app.creditCardBillParser.parse(
+                    sender = sender,
+                    body = body,
+                    timestamp = timestamp,
+                    messageId = sourceMessageId,
+                )
                 val coverageCandidate = if (parsed == null && availability == null && creditCardBill == null) {
                     smsCoverageReasonOrNull(sender, body)?.let { reason ->
                         SmsCoverageCandidate(
-                            sourceMessageId = stableReceiverMessageId(sender, body, timestamp),
+                            sourceMessageId = sourceMessageId,
                             sender = sender.ifBlank { "Unknown sender" },
                             body = body,
                             receivedAt = timestamp,

@@ -254,6 +254,7 @@ object PaisaLensBackupCodec {
                     data.writeNullableDouble(transaction.exchangeRate)
                 }
                 if (formatVersion >= 7) data.writeInt(transaction.duplicateCount.coerceAtLeast(1))
+                if (formatVersion >= 9) data.writeNullable(transaction.dedupeFingerprint)
             }
             if (formatVersion >= 2) {
                 data.writeInt(snapshot.loans.size)
@@ -580,6 +581,7 @@ object PaisaLensBackupCodec {
                     originalCurrency = if (formatVersion >= 2) data.readNullable() else null,
                     exchangeRate = if (formatVersion >= 2) data.readNullableDouble() else null,
                     duplicateCount = if (formatVersion >= 7) data.readInt().coerceAtLeast(1) else 1,
+                    dedupeFingerprint = if (formatVersion >= 9) data.readNullable() else null,
                 )
             }
             val loans = if (formatVersion >= 2) {
@@ -1189,7 +1191,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 8
+    private const val FORMAT_VERSION = 9
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

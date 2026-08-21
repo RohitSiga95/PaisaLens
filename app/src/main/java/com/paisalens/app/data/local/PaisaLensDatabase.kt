@@ -50,6 +50,7 @@ import com.paisalens.app.data.model.ReconciliationStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionAuditPayload
 import com.paisalens.app.data.model.TransactionAuditPayloadCodec
+import com.paisalens.app.data.model.TransactionAuditSmsSource
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionLinkType
 import com.paisalens.app.data.model.TransactionSource
@@ -95,6 +96,8 @@ import com.paisalens.app.data.model.normalizedSmsSender
 import com.paisalens.app.data.model.smsCoverageFingerprint
 import com.paisalens.app.data.model.smsDuplicateFingerprint
 import com.paisalens.app.data.model.hasStableSmsTransactionReference
+import com.paisalens.app.data.model.SmsIngestProvenance
+import com.paisalens.app.data.model.smsIngestProvenance
 import com.paisalens.app.sms.BankSmsSupport
 import java.util.Locale
 import java.util.UUID
@@ -231,6 +234,9 @@ class PaisaLensDatabase(context: Context) :
                 "CREATE INDEX IF NOT EXISTS index_accounts_merge_parent ON accounts(merged_into_account_id)",
             )
         }
+        if (oldVersion < 12) {
+            repairCrossProvenanceSmsDuplicates(db)
+        }
     }
 
     fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): SmsTransactionIngestResult {
@@ -244,15 +250,83 @@ class PaisaLensDatabase(context: Context) :
         var ignoredSources = 0
         db.beginTransaction()
         try {
-            items.forEach { (item, encryptedBody) ->
-                val existingSourceTransactionId = transactionIdForSmsSource(db, item.sourceMessageId)
-                if (existingSourceTransactionId != null) {
-                    insertTransactionSmsSource(db, item.sourceMessageId, existingSourceTransactionId, item.occurredAt)
-                    ignoredSources += 1
-                    return@forEach
-                }
+            items.forEach { (incomingItem, encryptedBody) ->
+                val item = incomingItem
                 val canonicalMerchant = merchantAliases[normalizedMerchantKey(item.merchant)]?.canonicalName
                     ?: item.merchant
+                val duplicateFingerprint = smsDuplicateFingerprint(
+                    sender = item.sender,
+                    body = item.rawMessage,
+                    amountMinor = item.amountMinor,
+                    type = item.type,
+                    accountHint = item.accountHint,
+                    // Alias presentation can change between the live broadcast and a later inbox
+                    // scan. The parser's merchant is stable for the same SMS body; the canonical
+                    // display name is not.
+                    merchant = item.merchant,
+                )
+                val compatibleDuplicateFingerprints = buildList {
+                    add(duplicateFingerprint)
+                    if (canonicalMerchant != item.merchant) {
+                        add(
+                            smsDuplicateFingerprint(
+                                sender = item.sender,
+                                body = item.rawMessage,
+                                amountMinor = item.amountMinor,
+                                type = item.type,
+                                accountHint = item.accountHint,
+                                merchant = canonicalMerchant,
+                            ),
+                        )
+                    }
+                }.distinct()
+                val effectiveSourceMessageId = resolveEffectiveSmsSourceMessageId(
+                    db = db,
+                    sourceMessageId = item.sourceMessageId,
+                    compatibleFingerprints = compatibleDuplicateFingerprints,
+                    incomingFingerprint = duplicateFingerprint,
+                    incomingOccurredAt = item.occurredAt,
+                )
+                val effectiveItem = if (effectiveSourceMessageId == item.sourceMessageId) {
+                    item
+                } else {
+                    item.copy(sourceMessageId = effectiveSourceMessageId)
+                }
+                val existingSourceTransactionId = transactionIdForSmsSource(
+                    db,
+                    effectiveItem.sourceMessageId,
+                )
+                if (existingSourceTransactionId != null) {
+                    // A known source may be repaired only when its stored identity agrees with
+                    // the freshly parsed SMS. Portable backups can otherwise make a provider ID
+                    // such as sms-123 refer to an unrelated message from another device.
+                    val storedFingerprintMatches = smsConsolidationRow(db, existingSourceTransactionId)
+                        ?.dedupeFingerprint
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(compatibleDuplicateFingerprints::contains) == true
+                    val repaired = storedFingerprintMatches &&
+                        isLocalInboxSourceMessageId(effectiveItem.sourceMessageId) &&
+                        transactionSmsProvenance(db, existingSourceTransactionId) == SmsIngestProvenance.INBOX &&
+                        repairRescannedInboxDuplicate(
+                            db = db,
+                            inboxTransactionId = existingSourceTransactionId,
+                            inboxSourceMessageId = effectiveItem.sourceMessageId,
+                            networkSentAt = effectiveItem.occurredAt,
+                            compatibleFingerprints = compatibleDuplicateFingerprints,
+                        )
+                    if (repaired) {
+                        duplicatesMerged += 1
+                    } else {
+                        insertTransactionSmsSource(
+                            db,
+                            effectiveItem.sourceMessageId,
+                            existingSourceTransactionId,
+                            effectiveItem.occurredAt,
+                        )
+                        ignoredSources += 1
+                    }
+                    return@forEach
+                }
                 val merchantRule = if (item.type == TransactionType.EXPENSE) {
                     merchantCategories[normalizedMerchantKey(canonicalMerchant)]
                 } else {
@@ -267,7 +341,7 @@ class PaisaLensDatabase(context: Context) :
                 val smartRule = if (merchantRule == null && item.type == TransactionType.EXPENSE) {
                     findMatchingSmartCategoryRule(
                         TransactionRecord(
-                            sourceMessageId = item.sourceMessageId,
+                            sourceMessageId = effectiveItem.sourceMessageId,
                             amountMinor = item.amountMinor,
                             merchant = canonicalMerchant,
                             accountHint = item.accountHint,
@@ -283,33 +357,28 @@ class PaisaLensDatabase(context: Context) :
                 } else {
                     null
                 }
-                val duplicateFingerprint = smsDuplicateFingerprint(
-                    sender = item.sender,
-                    body = item.rawMessage,
-                    amountMinor = item.amountMinor,
-                    type = item.type,
-                    accountHint = item.accountHint,
-                    merchant = canonicalMerchant,
-                )
-                val duplicateTransactionId = if (hasStableSmsTransactionReference(item.rawMessage)) {
-                    findDuplicateSmsTransaction(
-                        db = db,
-                        fingerprint = duplicateFingerprint,
-                        occurredAt = item.occurredAt,
-                    )
-                } else {
-                    findExactTimestampDuplicateSmsTransaction(
-                        db = db,
-                        fingerprint = duplicateFingerprint,
-                        occurredAt = item.occurredAt,
-                    )
+                val duplicateTransactionId = compatibleDuplicateFingerprints.firstNotNullOfOrNull { fingerprint ->
+                    if (hasStableSmsTransactionReference(item.rawMessage)) {
+                        findDuplicateSmsTransaction(
+                            db = db,
+                            fingerprint = fingerprint,
+                            occurredAt = item.occurredAt,
+                        )
+                    } else {
+                        findCrossProvenanceDuplicateSmsTransaction(
+                            db = db,
+                            fingerprint = fingerprint,
+                            occurredAt = item.occurredAt,
+                            incomingSourceMessageId = effectiveItem.sourceMessageId,
+                        )
+                    }
                 }
                 if (duplicateTransactionId != null) {
                     val sourceInserted = insertTransactionSmsSource(
                         db,
-                        item.sourceMessageId,
+                        effectiveItem.sourceMessageId,
                         duplicateTransactionId,
-                        item.occurredAt,
+                        effectiveItem.occurredAt,
                     )
                     if (sourceInserted) {
                         db.execSQL(
@@ -323,7 +392,7 @@ class PaisaLensDatabase(context: Context) :
                     return@forEach
                 }
                 val values = transactionValues(
-                    item,
+                    effectiveItem,
                     encryptedBody,
                     accountId,
                     merchantRule,
@@ -333,7 +402,12 @@ class PaisaLensDatabase(context: Context) :
                 )
                 val rowId = db.insertWithOnConflict("transactions", null, values, SQLiteDatabase.CONFLICT_IGNORE)
                 if (rowId != -1L) {
-                    insertTransactionSmsSource(db, item.sourceMessageId, rowId, item.occurredAt)
+                    insertTransactionSmsSource(
+                        db,
+                        effectiveItem.sourceMessageId,
+                        rowId,
+                        effectiveItem.occurredAt,
+                    )
                     inserted += 1
                 } else {
                     ignoredSources += 1
@@ -1007,7 +1081,8 @@ class PaisaLensDatabase(context: Context) :
                 t.category, t.type, t.occurred_at, t.source, t.sender, t.note,
                 t.account_id, a.name, t.custom_category_id, c.name, t.tags,
                 t.review_status, t.review_reason, t.original_amount_minor,
-                t.original_currency, t.exchange_rate, a.institution, t.duplicate_count
+                t.original_currency, t.exchange_rate, a.institution, t.duplicate_count,
+                t.dedupe_fingerprint
             FROM transactions t
             LEFT JOIN accounts a ON a.id = t.account_id
             LEFT JOIN custom_categories c ON c.id = t.custom_category_id
@@ -1051,6 +1126,7 @@ class PaisaLensDatabase(context: Context) :
                         ?: cursor.getString(21)?.trim()?.takeIf(String::isNotBlank),
                     duplicateCount = cursor.getInt(22).coerceAtLeast(1),
                     physicalAccountId = storedAccountId.takeIf { canonicalizeAccounts },
+                    dedupeFingerprint = cursor.getString(23),
                 )
             }
         }
@@ -3006,8 +3082,22 @@ class PaisaLensDatabase(context: Context) :
 
     private fun validateAuditBatchUndo(db: SQLiteDatabase, events: List<AuditEvent>) {
         val currentPayloads = events.associate { event ->
-            AuditEntityKey(event.entityType, event.entityId) to
-                currentAuditPayload(db, event.entityType, event.entityId)
+            val currentPayload = currentAuditPayload(db, event.entityType, event.entityId)
+            val comparablePayload = if (
+                event.entityType == AuditEntityType.TRANSACTION &&
+                event.afterPayload != null &&
+                currentPayload != null &&
+                runCatching {
+                    TransactionAuditPayloadCodec.equivalentForUndo(event.afterPayload, currentPayload)
+                }.getOrDefault(false)
+            ) {
+                // Preserve the existing generic conflict checker while allowing pre-extension
+                // transaction payloads to compare only the fields they could encode.
+                event.afterPayload
+            } else {
+                currentPayload
+            }
+            AuditEntityKey(event.entityType, event.entityId) to comparablePayload
         }
         val splitDependencies = getAuditSplitDependencies(db)
         val insertedTransactionIds = events
@@ -3546,10 +3636,16 @@ class PaisaLensDatabase(context: Context) :
                 }
                 .associate { it.record.id to it.createdAt }
             snapshot.transactions.forEach { transaction ->
+                val restoredTransaction = transaction.copy(
+                    sourceMessageId = restoredSmsSourceMessageId(
+                        snapshot.createdAt,
+                        transaction.sourceMessageId,
+                    ),
+                )
                 db.insertOrThrow(
                     "transactions",
                     null,
-                    transactionValues(transaction, includeId = true).apply {
+                    transactionValues(restoredTransaction, includeId = true).apply {
                         put("created_at", auditedCreatedAtByTransactionId[transaction.id] ?: snapshot.createdAt)
                     },
                 )
@@ -3570,7 +3666,10 @@ class PaisaLensDatabase(context: Context) :
                     "transaction_sms_sources",
                     null,
                     ContentValues().apply {
-                        put("source_message_id", source.sourceMessageId)
+                        put(
+                            "source_message_id",
+                            restoredSmsSourceMessageId(snapshot.createdAt, source.sourceMessageId),
+                        )
                         put("transaction_id", source.transactionId)
                         put("received_at", source.receivedAt)
                     },
@@ -3583,7 +3682,13 @@ class PaisaLensDatabase(context: Context) :
                         "transaction_sms_sources",
                         null,
                         ContentValues().apply {
-                            put("source_message_id", transaction.sourceMessageId)
+                            put(
+                                "source_message_id",
+                                restoredSmsSourceMessageId(
+                                    snapshot.createdAt,
+                                    transaction.sourceMessageId,
+                                ),
+                            )
                             put("transaction_id", transaction.id)
                             put("received_at", transaction.occurredAt)
                         },
@@ -3617,7 +3722,15 @@ class PaisaLensDatabase(context: Context) :
                 db.insertOrThrow(
                     "credit_card_bills",
                     null,
-                    creditCardBillValues(bill, includeId = true),
+                    creditCardBillValues(
+                        bill.copy(
+                            sourceMessageId = restoredSmsSourceMessageId(
+                                snapshot.createdAt,
+                                bill.sourceMessageId,
+                            ),
+                        ),
+                        includeId = true,
+                    ),
                 )
             }
             snapshot.loans.forEach { loan ->
@@ -3792,6 +3905,16 @@ class PaisaLensDatabase(context: Context) :
                 restoredSplits += split
             }
             snapshot.auditEvents.sortedBy(AuditEvent::id).forEach { event ->
+                val beforePayload = restoredAuditPayload(
+                    snapshot.createdAt,
+                    event.entityType,
+                    event.beforePayload,
+                )
+                val afterPayload = restoredAuditPayload(
+                    snapshot.createdAt,
+                    event.entityType,
+                    event.afterPayload,
+                )
                 insertAuditEvent(
                     db = db,
                     batchId = event.batchId,
@@ -3799,13 +3922,17 @@ class PaisaLensDatabase(context: Context) :
                     entityType = event.entityType,
                     entityId = event.entityId,
                     action = event.action,
-                    beforePayload = event.beforePayload,
-                    afterPayload = event.afterPayload,
+                    beforePayload = beforePayload,
+                    afterPayload = afterPayload,
                     occurredAt = event.occurredAt,
                     reversesEventId = event.reversesEventId,
                     explicitId = event.id,
                 )
             }
+            // v9+ backups retain only the opaque fingerprint, never raw SMS text. Running the
+            // same dependency-aware repair after every restore prevents known duplicate pairs
+            // from returning without applying a lossy heuristic to legacy backups.
+            repairCrossProvenanceSmsDuplicates(db)
             if (snapshot.balanceHistory.isEmpty()) backfillBalanceHistory(db)
             db.setTransactionSuccessful()
         } finally {
@@ -3879,7 +4006,7 @@ class PaisaLensDatabase(context: Context) :
         if (record.exchangeRate == null) putNull("exchange_rate") else put("exchange_rate", record.exchangeRate)
         putNull("raw_message_cipher")
         put("duplicate_count", record.duplicateCount.coerceAtLeast(1))
-        putNull("dedupe_fingerprint")
+        putNullableText("dedupe_fingerprint", record.dedupeFingerprint)
         put("created_at", System.currentTimeMillis())
     }
 
@@ -3906,6 +4033,73 @@ class PaisaLensDatabase(context: Context) :
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
     }
 
+    /**
+     * Telephony provider row IDs are local to a device, but encrypted backups are portable. If
+     * a restored `sms-N` already identifies different content on this device, keep that history
+     * untouched and namespace the current-device source with the incoming opaque fingerprint.
+     */
+    private fun resolveEffectiveSmsSourceMessageId(
+        db: SQLiteDatabase,
+        sourceMessageId: String,
+        compatibleFingerprints: List<String>,
+        incomingFingerprint: String,
+        incomingOccurredAt: Long,
+    ): String {
+        if (!RAW_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId)) return sourceMessageId
+        val existingTransactionId = transactionIdForSmsSource(db, sourceMessageId)
+            ?: return sourceMessageId
+        val storedRow = smsConsolidationRow(db, existingTransactionId)
+        val storedFingerprint = storedRow?.dedupeFingerprint?.takeIf(String::isNotBlank)
+        val timestampCanRepresentSameSms = storedRow != null &&
+            storedRow.occurredAt >= incomingOccurredAt &&
+            storedRow.occurredAt - incomingOccurredAt <= SMS_DUPLICATE_WINDOW_MILLIS
+        if (
+            storedFingerprint != null &&
+            storedFingerprint in compatibleFingerprints &&
+            timestampCanRepresentSameSms
+        ) {
+            return sourceMessageId
+        }
+        return "$sourceMessageId-$incomingFingerprint-$incomingOccurredAt"
+    }
+
+    private fun isLocalInboxSourceMessageId(sourceMessageId: String): Boolean =
+        RAW_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId) ||
+            COLLISION_SAFE_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId)
+
+    private fun restoredSmsSourceMessageId(backupCreatedAt: Long, sourceMessageId: String): String =
+        if (isLocalInboxSourceMessageId(sourceMessageId)) {
+            "restored-$backupCreatedAt-$sourceMessageId"
+        } else {
+            sourceMessageId
+        }
+
+    private fun restoredAuditPayload(
+        backupCreatedAt: Long,
+        entityType: AuditEntityType,
+        payload: String?,
+    ): String? {
+        if (entityType != AuditEntityType.TRANSACTION || payload == null) return payload
+        return TransactionAuditPayloadCodec.rewritePreservingFormat(payload) { decoded ->
+            decoded.copy(
+                record = decoded.record.copy(
+                    sourceMessageId = restoredSmsSourceMessageId(
+                        backupCreatedAt,
+                        decoded.record.sourceMessageId,
+                    ),
+                ),
+                smsSources = decoded.smsSources.map { source ->
+                    source.copy(
+                        sourceMessageId = restoredSmsSourceMessageId(
+                            backupCreatedAt,
+                            source.sourceMessageId,
+                        ),
+                    )
+                },
+            )
+        }
+    }
+
     private fun findDuplicateSmsTransaction(
         db: SQLiteDatabase,
         fingerprint: String,
@@ -3925,20 +4119,142 @@ class PaisaLensDatabase(context: Context) :
         "1",
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
 
-    private fun findExactTimestampDuplicateSmsTransaction(
+    private fun findCrossProvenanceDuplicateSmsTransaction(
         db: SQLiteDatabase,
         fingerprint: String,
         occurredAt: Long,
-    ): Long? = db.query(
+        incomingSourceMessageId: String,
+    ): Long? {
+        val incomingProvenance = smsIngestProvenance(incomingSourceMessageId)
+        val targetProvenances = when (incomingProvenance) {
+            SmsIngestProvenance.INBOX ->
+                setOf(SmsIngestProvenance.LIVE_RECEIVER, SmsIngestProvenance.RESTORED_INBOX)
+            SmsIngestProvenance.LIVE_RECEIVER ->
+                setOf(SmsIngestProvenance.INBOX, SmsIngestProvenance.RESTORED_INBOX)
+            SmsIngestProvenance.RESTORED_INBOX ->
+                setOf(SmsIngestProvenance.LIVE_RECEIVER, SmsIngestProvenance.INBOX)
+            SmsIngestProvenance.OTHER -> return null
+        }
+        val candidates = mutableListOf<Long>()
+        db.query(
+            "transactions",
+            arrayOf("id"),
+            "dedupe_fingerprint = ? AND occurred_at = ?",
+            arrayOf(fingerprint, occurredAt.toString()),
+            null,
+            null,
+            "id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) candidates += cursor.getLong(0)
+        }
+        return candidates
+            .asSequence()
+            .firstOrNull { id -> transactionSmsProvenance(db, id) in targetProvenances }
+    }
+
+    /**
+     * Older scans stored an inbox row using DATE (delivery time). A later rescan now supplies
+     * DATE_SENT, allowing that already-known source to be paired with an exact live-receiver row
+     * without widening the matching window for unrelated purchases.
+     */
+    private fun repairRescannedInboxDuplicate(
+        db: SQLiteDatabase,
+        inboxTransactionId: Long,
+        inboxSourceMessageId: String,
+        networkSentAt: Long,
+        compatibleFingerprints: List<String>,
+    ): Boolean {
+        val liveTransactionId = compatibleFingerprints.firstNotNullOfOrNull { fingerprint ->
+            findCrossProvenanceDuplicateSmsTransaction(
+                db = db,
+                fingerprint = fingerprint,
+                occurredAt = networkSentAt,
+                incomingSourceMessageId = inboxSourceMessageId,
+            )
+        } ?: return false
+        if (liveTransactionId == inboxTransactionId) return false
+        return consolidateSmsTransactions(
+            db = db,
+            firstTransactionId = liveTransactionId,
+            secondTransactionId = inboxTransactionId,
+            preferredTransactionId = liveTransactionId,
+        )
+    }
+
+    private data class SmsConsolidationRow(
+        val id: Long,
+        val sourceMessageId: String,
+        val occurredAt: Long,
+        val duplicateCount: Int,
+        val dedupeFingerprint: String?,
+    )
+
+    /**
+     * Moves every durable SMS source onto one row before deleting the other. A row carrying a
+     * user edit or another ledger dependency always survives; two dependent rows are left alone.
+     */
+    private fun consolidateSmsTransactions(
+        db: SQLiteDatabase,
+        firstTransactionId: Long,
+        secondTransactionId: Long,
+        preferredTransactionId: Long,
+    ): Boolean {
+        if (firstTransactionId == secondTransactionId) return false
+        val first = smsConsolidationRow(db, firstTransactionId) ?: return false
+        val second = smsConsolidationRow(db, secondTransactionId) ?: return false
+        val firstDependent = hasTransactionDependants(db, first.id)
+        val secondDependent = hasTransactionDependants(db, second.id)
+        if (firstDependent && secondDependent) return false
+
+        val survivor = when {
+            firstDependent -> first
+            secondDependent -> second
+            preferredTransactionId == second.id -> second
+            else -> first
+        }
+        val duplicate = if (survivor.id == first.id) second else first
+
+        // A legacy/hand-restored database may be missing either primary source mapping.
+        insertTransactionSmsSource(db, survivor.sourceMessageId, survivor.id, survivor.occurredAt)
+        insertTransactionSmsSource(db, duplicate.sourceMessageId, duplicate.id, duplicate.occurredAt)
+        db.update(
+            "transaction_sms_sources",
+            ContentValues().apply { put("transaction_id", survivor.id) },
+            "transaction_id = ?",
+            arrayOf(duplicate.id.toString()),
+        )
+        db.execSQL(
+            "UPDATE transactions SET duplicate_count = duplicate_count + ? WHERE id = ?",
+            arrayOf<Any>(duplicate.duplicateCount, survivor.id),
+        )
+        check(db.delete("transactions", "id = ?", arrayOf(duplicate.id.toString())) == 1) {
+            "Unable to safely consolidate duplicate SMS transaction ${duplicate.id}"
+        }
+        return true
+    }
+
+    private fun smsConsolidationRow(
+        db: SQLiteDatabase,
+        transactionId: Long,
+    ): SmsConsolidationRow? = db.query(
         "transactions",
-        arrayOf("id"),
-        "dedupe_fingerprint = ? AND occurred_at = ?",
-        arrayOf(fingerprint, occurredAt.toString()),
+        arrayOf("id", "source_message_id", "occurred_at", "duplicate_count", "dedupe_fingerprint"),
+        "id = ?",
+        arrayOf(transactionId.toString()),
         null,
         null,
-        "id ASC",
+        null,
         "1",
-    ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        SmsConsolidationRow(
+            id = cursor.getLong(0),
+            sourceMessageId = cursor.getString(1),
+            occurredAt = cursor.getLong(2),
+            duplicateCount = cursor.getInt(3).coerceAtLeast(1),
+            dedupeFingerprint = cursor.getString(4),
+        )
+    }
 
     private fun insertTransactionSmsSource(
         db: SQLiteDatabase,
@@ -3955,6 +4271,43 @@ class PaisaLensDatabase(context: Context) :
         },
         SQLiteDatabase.CONFLICT_IGNORE,
     ) != -1L
+
+    private fun transactionSmsProvenance(
+        db: SQLiteDatabase,
+        transactionId: Long,
+    ): SmsIngestProvenance {
+        val sourceIds = linkedSetOf<String>()
+        db.query(
+            "transactions",
+            arrayOf("source_message_id"),
+            "id = ?",
+            arrayOf(transactionId.toString()),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) sourceIds += cursor.getString(0) }
+        db.query(
+            "transaction_sms_sources",
+            arrayOf("source_message_id"),
+            "transaction_id = ?",
+            arrayOf(transactionId.toString()),
+            null,
+            null,
+            "source_message_id ASC",
+        ).use { cursor -> while (cursor.moveToNext()) sourceIds += cursor.getString(0) }
+
+        val provenances = sourceIds.mapTo(mutableSetOf(), ::smsIngestProvenance)
+        val activeProvenances = provenances.filterTo(mutableSetOf()) {
+            it !in setOf(SmsIngestProvenance.OTHER, SmsIngestProvenance.RESTORED_INBOX)
+        }
+        return when {
+            activeProvenances.size == 1 -> activeProvenances.single()
+            activeProvenances.isEmpty() && SmsIngestProvenance.RESTORED_INBOX in provenances ->
+                SmsIngestProvenance.RESTORED_INBOX
+            else -> SmsIngestProvenance.OTHER
+        }
+    }
 
     private fun categoryValues(selection: CategorySelection) = ContentValues().apply {
         put("category", selection.builtIn.name)
@@ -4530,6 +4883,65 @@ class PaisaLensDatabase(context: Context) :
                     arrayOf<Any>(duplicate.duplicateCount, canonical.id),
                 )
                 db.delete("transactions", "id = ?", arrayOf(duplicate.id.toString()))
+            }
+        }
+    }
+
+    /**
+     * Consolidates only cross-provenance rows whose opaque fingerprint and occurred-at timestamp
+     * are both exact. Timestamp-offset v11 rows remain separate until an inbox rescan supplies the
+     * provider's DATE_SENT value and can repair that known source safely.
+     */
+    private fun repairCrossProvenanceSmsDuplicates(db: SQLiteDatabase) {
+        data class Candidate(
+            val id: Long,
+            val fingerprint: String,
+            val occurredAt: Long,
+            val provenance: SmsIngestProvenance,
+        )
+
+        val candidates = mutableListOf<Candidate>()
+        db.query(
+            "transactions",
+            arrayOf("id", "dedupe_fingerprint", "occurred_at"),
+            "dedupe_fingerprint IS NOT NULL AND dedupe_fingerprint != ''",
+            null,
+            null,
+            null,
+            "occurred_at ASC, id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                val provenance = transactionSmsProvenance(db, id)
+                if (provenance == SmsIngestProvenance.OTHER) continue
+                candidates += Candidate(
+                    id = id,
+                    fingerprint = cursor.getString(1),
+                    occurredAt = cursor.getLong(2),
+                    provenance = provenance,
+                )
+            }
+        }
+
+        candidates.groupBy { it.fingerprint to it.occurredAt }.values.forEach { exactMatches ->
+            val live = exactMatches
+                .filter { it.provenance == SmsIngestProvenance.LIVE_RECEIVER }
+                .sortedBy(Candidate::id)
+            val inbox = exactMatches
+                .filter {
+                    it.provenance in setOf(
+                        SmsIngestProvenance.INBOX,
+                        SmsIngestProvenance.RESTORED_INBOX,
+                    )
+                }
+                .sortedBy(Candidate::id)
+            live.zip(inbox).forEach { (liveCandidate, inboxCandidate) ->
+                consolidateSmsTransactions(
+                    db = db,
+                    firstTransactionId = liveCandidate.id,
+                    secondTransactionId = inboxCandidate.id,
+                    preferredTransactionId = minOf(liveCandidate.id, inboxCandidate.id),
+                )
             }
         }
     }
@@ -5224,7 +5636,10 @@ class PaisaLensDatabase(context: Context) :
                     check(
                         db.update(
                             "transactions",
-                            transactionAuditRestoreValues(item.record),
+                            transactionAuditRestoreValues(
+                                record = item.record,
+                                restoreDedupeIdentity = TransactionAuditPayloadCodec.hasExtension(payload),
+                            ),
                             "id = ?",
                             arrayOf(item.record.id.toString()),
                         ) == 1,
@@ -5232,6 +5647,13 @@ class PaisaLensDatabase(context: Context) :
                         "Transaction ${item.record.id} is unavailable for undo"
                     }
                 } else {
+                    val smsSources = transactionAuditSmsSourcesToRestore(item)
+                    smsSources.forEach { source ->
+                        val owner = transactionIdForSmsSource(db, source.sourceMessageId)
+                        require(owner == null || owner == item.record.id) {
+                            "Transaction ${item.record.id} cannot be restored because an SMS source belongs to newer data"
+                        }
+                    }
                     db.insertOrThrow(
                         "transactions",
                         null,
@@ -5244,6 +5666,7 @@ class PaisaLensDatabase(context: Context) :
                             put("created_at", item.createdAt)
                         },
                     )
+                    restoreTransactionAuditSmsSources(db, item.record.id, smsSources)
                 }
             }
             AuditEntityType.TRANSACTION_LINK -> {
@@ -5351,12 +5774,83 @@ class PaisaLensDatabase(context: Context) :
                 record = record,
                 rawMessageCipher = storage.first,
                 createdAt = storage.second,
+                smsSources = transactionAuditSmsSources(db, record),
             ),
         )
     }
 
+    private fun transactionAuditSmsSources(
+        db: SQLiteDatabase,
+        record: TransactionRecord,
+    ): List<TransactionAuditSmsSource> {
+        if (record.source !in SMS_BACKED_TRANSACTION_SOURCES) return emptyList()
+        val sources = linkedMapOf<String, Long>()
+        db.query(
+            "transaction_sms_sources",
+            arrayOf("source_message_id", "received_at"),
+            "transaction_id = ?",
+            arrayOf(record.id.toString()),
+            null,
+            null,
+            "received_at ASC, source_message_id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                sources.putIfAbsent(cursor.getString(0), cursor.getLong(1))
+            }
+        }
+        // Legacy rows can predate transaction_sms_sources. Always retain enough provenance to
+        // restore at least the transaction's primary SMS identity.
+        sources.putIfAbsent(record.sourceMessageId, record.occurredAt)
+        return sources.map { (sourceMessageId, receivedAt) ->
+            TransactionAuditSmsSource(sourceMessageId, receivedAt)
+        }
+    }
+
+    private fun transactionAuditSmsSourcesToRestore(
+        payload: TransactionAuditPayload,
+    ): List<TransactionAuditSmsSource> {
+        val record = payload.record
+        if (record.source !in SMS_BACKED_TRANSACTION_SOURCES) return emptyList()
+        val sources = linkedMapOf<String, Long>()
+        payload.smsSources.forEach { source ->
+            if (source.sourceMessageId.isNotBlank()) {
+                sources.putIfAbsent(source.sourceMessageId, source.receivedAt)
+            }
+        }
+        // Legacy payloads have no source list, and a malformed/partial extension may omit its
+        // primary identity. In both cases the transaction record still carries that provenance.
+        sources.putIfAbsent(record.sourceMessageId, record.occurredAt)
+        return sources.map { (sourceMessageId, receivedAt) ->
+            TransactionAuditSmsSource(sourceMessageId, receivedAt)
+        }
+    }
+
+    private fun restoreTransactionAuditSmsSources(
+        db: SQLiteDatabase,
+        transactionId: Long,
+        sources: List<TransactionAuditSmsSource>,
+    ) {
+        sources
+            .asSequence()
+            .forEach { source ->
+                check(
+                    insertTransactionSmsSource(
+                        db = db,
+                        sourceMessageId = source.sourceMessageId,
+                        transactionId = transactionId,
+                        receivedAt = source.receivedAt,
+                    ),
+                ) {
+                    "Unable to restore SMS source for transaction $transactionId"
+                }
+            }
+    }
+
     /** Restores editable transaction fields while retaining encrypted source text and creation metadata. */
-    private fun transactionAuditRestoreValues(record: TransactionRecord) = ContentValues().apply {
+    private fun transactionAuditRestoreValues(
+        record: TransactionRecord,
+        restoreDedupeIdentity: Boolean,
+    ) = ContentValues().apply {
         put("source_message_id", record.sourceMessageId)
         put("amount_minor", record.amountMinor)
         put("merchant", record.merchant)
@@ -5375,6 +5869,10 @@ class PaisaLensDatabase(context: Context) :
         putNullableLong("original_amount_minor", record.originalAmountMinor)
         putNullableText("original_currency", record.originalCurrency)
         if (record.exchangeRate == null) putNull("exchange_rate") else put("exchange_rate", record.exchangeRate)
+        if (restoreDedupeIdentity) {
+            put("duplicate_count", record.duplicateCount.coerceAtLeast(1))
+            putNullableText("dedupe_fingerprint", record.dedupeFingerprint)
+        }
     }
 
     private fun decodeTransactionAuditPayload(payload: String): TransactionAuditPayload =
@@ -5580,8 +6078,16 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 11
+        const val DATABASE_VERSION = 12
         const val TAG_SEPARATOR = "\u001F"
         const val SMS_RULE_PHRASE_SEPARATOR = "\u001E"
+        val RAW_INBOX_SMS_SOURCE_ID_PATTERN = Regex("^sms-[0-9]+$")
+        val COLLISION_SAFE_INBOX_SMS_SOURCE_ID_PATTERN = Regex("^sms-[0-9]+-[0-9a-f]{64}-[0-9]+$")
+        val SMS_BACKED_TRANSACTION_SOURCES = setOf(
+            TransactionSource.BANK,
+            TransactionSource.CARD,
+            TransactionSource.UPI,
+            TransactionSource.WALLET,
+        )
     }
 }

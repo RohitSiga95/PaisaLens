@@ -80,14 +80,89 @@ class SmsCoverageModelsTest {
     }
 
     @Test
-    fun exactTimestampNoReferenceCopiesFromReceiverAndInboxAreOneSms() {
+    fun stableReferenceRecognitionAcceptsExplicitBankReferenceLabels() {
+        listOf(
+            "UTR 123456789012",
+            "RRN: 987654321000",
+            "Ref ABC123456",
+            "Reference No. ZX90CV1234",
+            "UPI Ref No 123456789012",
+            "Txn ID: AB12CD3456",
+            "Transaction No. 123456789012",
+            "Txn: AB12CD3456",
+            "Txn 123456789012",
+        ).forEach { body ->
+            assertTrue("Expected a stable reference in: $body", hasStableSmsTransactionReference(body))
+        }
+    }
+
+    @Test
+    fun stableReferenceRecognitionRejectsTransactionStatusProse() {
+        listOf(
+            "Txn successful for Rs 80",
+            "Txn initiated",
+            "Txn failed",
+            "Transaction successful for INR 500",
+        ).forEach { body ->
+            assertFalse("Expected no stable reference in: $body", hasStableSmsTransactionReference(body))
+        }
+    }
+
+    @Test
+    fun noReferenceCopiesFromReceiverAndInboxRequireExactNetworkSentTime() {
         val received = transaction(
             id = "received-body-and-time",
             body = "INR 500 debited from A/c 0801 at CAFE",
         )
-        val scanned = received.copy(sourceMessageId = "inbox-row-42")
+        val exactInboxCopy = received.copy(
+            sourceMessageId = "sms-42",
+        )
+        val deliveryTimeOffsetCopy = exactInboxCopy.copy(
+            sourceMessageId = "sms-43",
+            occurredAt = received.occurredAt + 60_000L,
+        )
 
-        assertTrue(areLikelyDuplicateSms(received, scanned))
+        assertTrue(areLikelyDuplicateSms(received, exactInboxCopy))
+        assertFalse(areLikelyDuplicateSms(received, deliveryTimeOffsetCopy))
+    }
+
+    @Test
+    fun noReferenceCopiesFromTheSameIngestPathRemainSeparateEvenAtTheExactTime() {
+        val first = transaction(
+            id = "sms-42",
+            body = "INR 500 debited from A/c 0801 at CAFE",
+        )
+        val second = first.copy(sourceMessageId = "sms-43")
+
+        assertFalse(areLikelyDuplicateSms(first, second))
+    }
+
+    @Test
+    fun ingestProvenanceRecognizesCurrentLegacyAndInboxSourceIds() {
+        assertEquals(
+            SmsIngestProvenance.LIVE_RECEIVER,
+            smsIngestProvenance("received-0123456789abcdef01234567-1700000000000"),
+        )
+        assertEquals(
+            SmsIngestProvenance.LIVE_RECEIVER,
+            smsIngestProvenance("0123456789abcdef01234567"),
+        )
+        assertEquals(SmsIngestProvenance.INBOX, smsIngestProvenance("sms-42"))
+        assertEquals(
+            SmsIngestProvenance.INBOX,
+            smsIngestProvenance("sms-42-${"a".repeat(64)}-1700000000000"),
+        )
+        assertEquals(
+            SmsIngestProvenance.RESTORED_INBOX,
+            smsIngestProvenance("restored-1700000000000-sms-42"),
+        )
+        assertEquals(
+            SmsIngestProvenance.RESTORED_INBOX,
+            smsIngestProvenance(
+                "restored-1700000000000-sms-42-${"a".repeat(64)}-1699999999000",
+            ),
+        )
+        assertEquals(SmsIngestProvenance.OTHER, smsIngestProvenance("manual-42"))
     }
 
     @Test
