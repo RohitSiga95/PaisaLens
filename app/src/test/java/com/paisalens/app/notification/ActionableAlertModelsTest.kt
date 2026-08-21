@@ -244,6 +244,29 @@ class ActionableAlertModelsTest {
     }
 
     @Test
+    fun `opening cash is unknown when a merged bank balance is incomplete`() {
+        val accounts = listOf(
+            AccountProfile(
+                id = 1,
+                name = "Complete account",
+                type = AccountType.BANK_ACCOUNT,
+                balanceMinor = 10_000_00,
+                availabilityFetchedAt = 100,
+            ),
+            AccountProfile(
+                id = 2,
+                name = "Partial merged account",
+                type = AccountType.BANK_ACCOUNT,
+                balanceMinor = 2_000_00,
+                availabilityFetchedAt = null,
+                mergedMemberCount = 2,
+            ),
+        )
+
+        assertEquals(null, consolidatedCashFlowOpeningBalance(accounts))
+    }
+
+    @Test
     fun `budget alert transactions exclude transfers and net linked and unlinked refunds once`() {
         val purchase = transaction(1, 10_000, TransactionType.EXPENSE)
         val linkedRefund = transaction(2, 4_000, TransactionType.REFUND)

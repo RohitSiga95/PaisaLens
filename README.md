@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.5"><img alt="Release v1.8.5" src="https://img.shields.io/badge/release-v1.8.5-5965E8?style=for-the-badge"></a>
-  <img alt="Source v1.8.5" src="https://img.shields.io/badge/source-v1.8.5-1E88E5?style=for-the-badge">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6"><img alt="Release v1.8.6" src="https://img.shields.io/badge/release-v1.8.6-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.8.6" src="https://img.shields.io/badge/source-v1.8.6-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
   <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.5/PaisaLens-v1.8.5-debug.apk"><strong>⬇ Download PaisaLens v1.8.5 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.6/PaisaLens-v1.8.6-debug.apk"><strong>⬇ Download PaisaLens v1.8.6 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.5">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -26,10 +26,12 @@
 > [!IMPORTANT]
 > The downloadable file is the current **debug APK** for direct installation and testing. Android may ask you to allow installation from your browser or file manager. Requires Android 8.0 (API 26) or newer.
 
-## What's new in v1.8.5
+## What's new in v1.8.6
 
 | | Update | Highlights |
 |---|---|---|
+| 🧹 | **Reliable duplicate-SMS cleanup** | Live receiver and inbox-rescan copies now consolidate into one Activity row with a `×N` source count. A resync repairs existing timestamp-offset copies while exact identity, backup, restore, and undo safeguards keep genuine repeat purchases separate. |
+| 🏦 | **Account and card groups** | Merge two or more bank accounts—or two or more credit cards—under a custom name. Transactions keep their original source identity for future SMS matching while appearing together throughout the app. |
 | 💡 | **Financial Pulse & richer Home** | See an explainable safe-to-spend estimate, balance freshness, a 14-day money timeline, budget pace, card health, and configurable Everyday, Budget, Debt, or Minimal layouts. |
 | 🧭 | **Needs Your Attention & Weekly Review** | Turn stale balances, uncertain transactions, upcoming payments, goal pacing, and backup health into a short prioritized action list. |
 | 🎯 | **Budgeting 2.0** | Plan calendar-month, payday, annual, or irregular budgets with rollover options, custom warning levels, and custom-category support. |
@@ -49,15 +51,15 @@
     <td align="center"><strong>Private digest</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens v1.8.5 customizable Home dashboard" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens v1.8.5 savings goals and sinking funds" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens v1.8.5 subscriptions and UPI AutoPay centre" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens v1.8.5 private notification digest settings" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens v1.8.6 customizable Home dashboard" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens v1.8.6 savings goals and sinking funds" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens v1.8.6 subscriptions and UPI AutoPay centre" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens v1.8.6 private notification digest settings" width="210"></td>
   </tr>
 </table>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.5"><strong>Read the complete v1.8.5 release notes →</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6"><strong>Read the complete v1.8.6 release notes →</strong></a>
 </p>
 
 ## See PaisaLens in action
@@ -171,17 +173,17 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.8.5-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.5/PaisaLens-v1.8.5-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.8.6-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.6/PaisaLens-v1.8.6-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.8.5 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.5).
+You can also browse the [v1.8.6 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6).
 
 **APK SHA-256**
 
 ```text
-bf8761f0828b2d46b8c0e42187b2aa6651f4cf4c8b8e63f1bc8e35f621ad1d2d
+0185b59e6bbd9920600b3b35f94bfdf17f0a82eb31b966f9c7f124f405f420dc
 ```
 
 ## Build it yourself
@@ -192,7 +194,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated v1.8.5 APK will be available at:
+The generated v1.8.6 APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk

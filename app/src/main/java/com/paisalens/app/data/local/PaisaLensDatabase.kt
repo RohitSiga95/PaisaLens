@@ -8,6 +8,8 @@ import android.database.sqlite.SQLiteOpenHelper
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountBalanceWriteResult
+import com.paisalens.app.data.model.AccountMergeError
+import com.paisalens.app.data.model.AccountMergeResult
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.AdvancedBudgetPlan
@@ -48,11 +50,15 @@ import com.paisalens.app.data.model.ReconciliationStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionAuditPayload
 import com.paisalens.app.data.model.TransactionAuditPayloadCodec
+import com.paisalens.app.data.model.TransactionAuditSmsSource
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionLinkType
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.normalizedMerchantKey
+import com.paisalens.app.data.model.normalizedAccountMergeName
+import com.paisalens.app.data.model.canonicalAccountId
+import com.paisalens.app.data.model.consolidatedAccountProfiles
 import com.paisalens.app.data.model.orderAuditEventsForUndo
 import com.paisalens.app.data.model.StatementImportResult
 import com.paisalens.app.data.model.SmartCategoryRule
@@ -83,12 +89,15 @@ import com.paisalens.app.data.model.validateExpenseSplits
 import com.paisalens.app.data.model.encodeUserEnteredUpiBalanceSource
 import com.paisalens.app.data.model.validateUserEnteredUpiBalance
 import com.paisalens.app.data.model.validateAdvancedBudgetPlan
+import com.paisalens.app.data.model.validateAccountMergeSelection
 import com.paisalens.app.data.model.matches
 import com.paisalens.app.data.model.normalized
 import com.paisalens.app.data.model.normalizedSmsSender
 import com.paisalens.app.data.model.smsCoverageFingerprint
 import com.paisalens.app.data.model.smsDuplicateFingerprint
 import com.paisalens.app.data.model.hasStableSmsTransactionReference
+import com.paisalens.app.data.model.SmsIngestProvenance
+import com.paisalens.app.data.model.smsIngestProvenance
 import com.paisalens.app.sms.BankSmsSupport
 import java.util.Locale
 import java.util.UUID
@@ -214,6 +223,20 @@ class PaisaLensDatabase(context: Context) :
             createV10Tables(db)
             consolidateSafeLegacySmsDuplicates(db)
         }
+        if (oldVersion < 11) {
+            if (!hasColumn(db, "accounts", "merged_into_account_id")) {
+                db.execSQL(
+                    "ALTER TABLE accounts ADD COLUMN merged_into_account_id INTEGER " +
+                        "REFERENCES accounts(id) ON DELETE SET NULL",
+                )
+            }
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_accounts_merge_parent ON accounts(merged_into_account_id)",
+            )
+        }
+        if (oldVersion < 12) {
+            repairCrossProvenanceSmsDuplicates(db)
+        }
     }
 
     fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): SmsTransactionIngestResult {
@@ -227,15 +250,83 @@ class PaisaLensDatabase(context: Context) :
         var ignoredSources = 0
         db.beginTransaction()
         try {
-            items.forEach { (item, encryptedBody) ->
-                val existingSourceTransactionId = transactionIdForSmsSource(db, item.sourceMessageId)
-                if (existingSourceTransactionId != null) {
-                    insertTransactionSmsSource(db, item.sourceMessageId, existingSourceTransactionId, item.occurredAt)
-                    ignoredSources += 1
-                    return@forEach
-                }
+            items.forEach { (incomingItem, encryptedBody) ->
+                val item = incomingItem
                 val canonicalMerchant = merchantAliases[normalizedMerchantKey(item.merchant)]?.canonicalName
                     ?: item.merchant
+                val duplicateFingerprint = smsDuplicateFingerprint(
+                    sender = item.sender,
+                    body = item.rawMessage,
+                    amountMinor = item.amountMinor,
+                    type = item.type,
+                    accountHint = item.accountHint,
+                    // Alias presentation can change between the live broadcast and a later inbox
+                    // scan. The parser's merchant is stable for the same SMS body; the canonical
+                    // display name is not.
+                    merchant = item.merchant,
+                )
+                val compatibleDuplicateFingerprints = buildList {
+                    add(duplicateFingerprint)
+                    if (canonicalMerchant != item.merchant) {
+                        add(
+                            smsDuplicateFingerprint(
+                                sender = item.sender,
+                                body = item.rawMessage,
+                                amountMinor = item.amountMinor,
+                                type = item.type,
+                                accountHint = item.accountHint,
+                                merchant = canonicalMerchant,
+                            ),
+                        )
+                    }
+                }.distinct()
+                val effectiveSourceMessageId = resolveEffectiveSmsSourceMessageId(
+                    db = db,
+                    sourceMessageId = item.sourceMessageId,
+                    compatibleFingerprints = compatibleDuplicateFingerprints,
+                    incomingFingerprint = duplicateFingerprint,
+                    incomingOccurredAt = item.occurredAt,
+                )
+                val effectiveItem = if (effectiveSourceMessageId == item.sourceMessageId) {
+                    item
+                } else {
+                    item.copy(sourceMessageId = effectiveSourceMessageId)
+                }
+                val existingSourceTransactionId = transactionIdForSmsSource(
+                    db,
+                    effectiveItem.sourceMessageId,
+                )
+                if (existingSourceTransactionId != null) {
+                    // A known source may be repaired only when its stored identity agrees with
+                    // the freshly parsed SMS. Portable backups can otherwise make a provider ID
+                    // such as sms-123 refer to an unrelated message from another device.
+                    val storedFingerprintMatches = smsConsolidationRow(db, existingSourceTransactionId)
+                        ?.dedupeFingerprint
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(compatibleDuplicateFingerprints::contains) == true
+                    val repaired = storedFingerprintMatches &&
+                        isLocalInboxSourceMessageId(effectiveItem.sourceMessageId) &&
+                        transactionSmsProvenance(db, existingSourceTransactionId) == SmsIngestProvenance.INBOX &&
+                        repairRescannedInboxDuplicate(
+                            db = db,
+                            inboxTransactionId = existingSourceTransactionId,
+                            inboxSourceMessageId = effectiveItem.sourceMessageId,
+                            networkSentAt = effectiveItem.occurredAt,
+                            compatibleFingerprints = compatibleDuplicateFingerprints,
+                        )
+                    if (repaired) {
+                        duplicatesMerged += 1
+                    } else {
+                        insertTransactionSmsSource(
+                            db,
+                            effectiveItem.sourceMessageId,
+                            existingSourceTransactionId,
+                            effectiveItem.occurredAt,
+                        )
+                        ignoredSources += 1
+                    }
+                    return@forEach
+                }
                 val merchantRule = if (item.type == TransactionType.EXPENSE) {
                     merchantCategories[normalizedMerchantKey(canonicalMerchant)]
                 } else {
@@ -250,7 +341,7 @@ class PaisaLensDatabase(context: Context) :
                 val smartRule = if (merchantRule == null && item.type == TransactionType.EXPENSE) {
                     findMatchingSmartCategoryRule(
                         TransactionRecord(
-                            sourceMessageId = item.sourceMessageId,
+                            sourceMessageId = effectiveItem.sourceMessageId,
                             amountMinor = item.amountMinor,
                             merchant = canonicalMerchant,
                             accountHint = item.accountHint,
@@ -259,40 +350,35 @@ class PaisaLensDatabase(context: Context) :
                             occurredAt = item.occurredAt,
                             source = item.source,
                             sender = item.sender,
-                            accountId = accountId,
+                            accountId = accountId?.let { resolveMergedAccountId(db, it) },
                         ),
                         smartRules,
                     )
                 } else {
                     null
                 }
-                val duplicateFingerprint = smsDuplicateFingerprint(
-                    sender = item.sender,
-                    body = item.rawMessage,
-                    amountMinor = item.amountMinor,
-                    type = item.type,
-                    accountHint = item.accountHint,
-                    merchant = canonicalMerchant,
-                )
-                val duplicateTransactionId = if (hasStableSmsTransactionReference(item.rawMessage)) {
-                    findDuplicateSmsTransaction(
-                        db = db,
-                        fingerprint = duplicateFingerprint,
-                        occurredAt = item.occurredAt,
-                    )
-                } else {
-                    findExactTimestampDuplicateSmsTransaction(
-                        db = db,
-                        fingerprint = duplicateFingerprint,
-                        occurredAt = item.occurredAt,
-                    )
+                val duplicateTransactionId = compatibleDuplicateFingerprints.firstNotNullOfOrNull { fingerprint ->
+                    if (hasStableSmsTransactionReference(item.rawMessage)) {
+                        findDuplicateSmsTransaction(
+                            db = db,
+                            fingerprint = fingerprint,
+                            occurredAt = item.occurredAt,
+                        )
+                    } else {
+                        findCrossProvenanceDuplicateSmsTransaction(
+                            db = db,
+                            fingerprint = fingerprint,
+                            occurredAt = item.occurredAt,
+                            incomingSourceMessageId = effectiveItem.sourceMessageId,
+                        )
+                    }
                 }
                 if (duplicateTransactionId != null) {
                     val sourceInserted = insertTransactionSmsSource(
                         db,
-                        item.sourceMessageId,
+                        effectiveItem.sourceMessageId,
                         duplicateTransactionId,
-                        item.occurredAt,
+                        effectiveItem.occurredAt,
                     )
                     if (sourceInserted) {
                         db.execSQL(
@@ -306,7 +392,7 @@ class PaisaLensDatabase(context: Context) :
                     return@forEach
                 }
                 val values = transactionValues(
-                    item,
+                    effectiveItem,
                     encryptedBody,
                     accountId,
                     merchantRule,
@@ -316,7 +402,12 @@ class PaisaLensDatabase(context: Context) :
                 )
                 val rowId = db.insertWithOnConflict("transactions", null, values, SQLiteDatabase.CONFLICT_IGNORE)
                 if (rowId != -1L) {
-                    insertTransactionSmsSource(db, item.sourceMessageId, rowId, item.occurredAt)
+                    insertTransactionSmsSource(
+                        db,
+                        effectiveItem.sourceMessageId,
+                        rowId,
+                        effectiveItem.occurredAt,
+                    )
                     inserted += 1
                 } else {
                     ignoredSources += 1
@@ -556,9 +647,20 @@ class PaisaLensDatabase(context: Context) :
         return result
     }
 
-    fun getCreditCardBills(): List<CreditCardBill> {
+    fun getCreditCardBills(): List<CreditCardBill> =
+        getCreditCardBills(readableDatabase, canonicalizeAccounts = true)
+
+    private fun getCreditCardBills(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean,
+    ): List<CreditCardBill> {
         val result = mutableListOf<CreditCardBill>()
-        readableDatabase.query(
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        db.query(
             "credit_card_bills",
             arrayOf(
                 "id", "bill_key", "source_message_id", "account_id", "card_identity_key",
@@ -576,7 +678,9 @@ class PaisaLensDatabase(context: Context) :
                     id = cursor.getLong(0),
                     billKey = cursor.getString(1),
                     sourceMessageId = cursor.getString(2),
-                    accountId = cursor.longOrNull(3),
+                    accountId = cursor.longOrNull(3)?.let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     cardIdentityKey = cursor.getString(4),
                     accountHint = cursor.getString(5),
                     institutionName = cursor.getString(6),
@@ -610,7 +714,17 @@ class PaisaLensDatabase(context: Context) :
                     source = TransactionSource.CARD,
                     sender = item.sender,
                 )
-                val resolvedAccountHint = accountId?.let { resolvedId ->
+                val logicalAccountId = accountId?.let { resolveMergedAccountId(db, it) }
+                val mergedLogicalAccount = logicalAccountId != null &&
+                    (logicalAccountId != accountId || hasMergedMembers(db, logicalAccountId))
+                val parsedAccountHint = item.accountHint
+                    ?.filter(Char::isDigit)
+                    ?.takeLast(4)
+                    ?.takeIf(String::isNotBlank)
+                val resolvedAccountHint = parsedAccountHint ?: if (mergedLogicalAccount) {
+                    null
+                } else {
+                    accountId?.let { resolvedId ->
                     db.query(
                         "accounts",
                         arrayOf("account_hint"),
@@ -621,8 +735,13 @@ class PaisaLensDatabase(context: Context) :
                         null,
                         "1",
                     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
-                } ?: item.accountHint
-                val cardIdentityKey = accountId?.let { "card-account:$it" } ?: item.cardIdentityKey
+                    }
+                }
+                val cardIdentityKey = if (mergedLogicalAccount && !resolvedAccountHint.isNullOrBlank()) {
+                    item.cardIdentityKey
+                } else {
+                    accountId?.let { "card-account:$it" } ?: item.cardIdentityKey
+                }
                 val billKey = "$cardIdentityKey:${item.dueDateEpochDay}"
                 val existing = db.query(
                     "credit_card_bills",
@@ -741,8 +860,10 @@ class PaisaLensDatabase(context: Context) :
             } ?: error("The selected card account no longer exists")
             require(account.first == AccountType.CREDIT_CARD) { "Choose a credit-card account" }
 
-            val cardIdentityKey = "card-account:$accountId"
+            val mergedLogicalAccount = hasMergedMembers(db, accountId)
+            val cardIdentityKey = if (mergedLogicalAccount) bill.cardIdentityKey else "card-account:$accountId"
             val billKey = "$cardIdentityKey:${bill.dueDateEpochDay}"
+            val assignedHint = if (mergedLogicalAccount) bill.accountHint else account.second ?: bill.accountHint
             val existing = bills.firstOrNull { it.id != bill.id && it.billKey == billKey }
             val now = System.currentTimeMillis()
             if (existing == null) {
@@ -753,7 +874,7 @@ class PaisaLensDatabase(context: Context) :
                             put("account_id", accountId)
                             put("card_identity_key", cardIdentityKey)
                             put("bill_key", billKey)
-                            putNullableText("account_hint", account.second ?: bill.accountHint)
+                            putNullableText("account_hint", assignedHint)
                             put("updated_at", now)
                         },
                         "id = ?",
@@ -772,7 +893,10 @@ class PaisaLensDatabase(context: Context) :
                             put("account_id", accountId)
                             put("card_identity_key", cardIdentityKey)
                             put("bill_key", billKey)
-                            putNullableText("account_hint", account.second ?: newest.accountHint)
+                            putNullableText(
+                                "account_hint",
+                                if (mergedLogicalAccount) newest.accountHint else account.second ?: newest.accountHint,
+                            )
                             put("institution_name", newest.institutionName)
                             put("total_due_minor", newest.totalDueMinor)
                             putNullableLong("minimum_due_minor", newest.minimumDueMinor)
@@ -936,16 +1060,29 @@ class PaisaLensDatabase(context: Context) :
         return StatementImportResult(inserted, records.size - inserted)
     }
 
-    fun getTransactions(): List<TransactionRecord> {
+    fun getTransactions(): List<TransactionRecord> = getTransactions(readableDatabase, canonicalizeAccounts = true)
+
+    private fun getTransactions(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean,
+    ): List<TransactionRecord> {
         val result = mutableListOf<TransactionRecord>()
-        readableDatabase.rawQuery(
+        val storedAccounts = if (canonicalizeAccounts) getStoredAccounts(db) else emptyList()
+        val accountsById = storedAccounts.associateBy(AccountProfile::id)
+        val canonicalProfiles = if (canonicalizeAccounts) {
+            consolidatedAccountProfiles(storedAccounts).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        db.rawQuery(
             """
             SELECT
                 t.id, t.source_message_id, t.amount_minor, t.merchant, t.account_hint,
                 t.category, t.type, t.occurred_at, t.source, t.sender, t.note,
                 t.account_id, a.name, t.custom_category_id, c.name, t.tags,
                 t.review_status, t.review_reason, t.original_amount_minor,
-                t.original_currency, t.exchange_rate, a.institution, t.duplicate_count
+                t.original_currency, t.exchange_rate, a.institution, t.duplicate_count,
+                t.dedupe_fingerprint
             FROM transactions t
             LEFT JOIN accounts a ON a.id = t.account_id
             LEFT JOIN custom_categories c ON c.id = t.custom_category_id
@@ -954,6 +1091,10 @@ class PaisaLensDatabase(context: Context) :
             null,
         ).use { cursor ->
             while (cursor.moveToNext()) {
+                val storedAccountId = cursor.longOrNull(11)
+                val exposedAccountId = storedAccountId?.let { accountId ->
+                    if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                }
                 result += TransactionRecord(
                     id = cursor.getLong(0),
                     sourceMessageId = cursor.getString(1),
@@ -966,8 +1107,12 @@ class PaisaLensDatabase(context: Context) :
                     source = enumValueOrDefault(cursor.getString(8), TransactionSource.BANK),
                     sender = cursor.getString(9),
                     note = cursor.getString(10),
-                    accountId = cursor.longOrNull(11),
-                    accountName = cursor.getString(12),
+                    accountId = exposedAccountId,
+                    accountName = if (canonicalizeAccounts) {
+                        exposedAccountId?.let(canonicalProfiles::get)?.name
+                    } else {
+                        cursor.getString(12)
+                    },
                     customCategoryId = cursor.longOrNull(13),
                     customCategoryName = cursor.getString(14),
                     tags = decodeTags(cursor.getString(15)),
@@ -980,6 +1125,8 @@ class PaisaLensDatabase(context: Context) :
                         ?: BankSmsSupport.institutionNameOrNull(cursor.getString(21).orEmpty())
                         ?: cursor.getString(21)?.trim()?.takeIf(String::isNotBlank),
                     duplicateCount = cursor.getInt(22).coerceAtLeast(1),
+                    physicalAccountId = storedAccountId.takeIf { canonicalizeAccounts },
+                    dedupeFingerprint = cursor.getString(23),
                 )
             }
         }
@@ -1265,20 +1412,24 @@ class PaisaLensDatabase(context: Context) :
         }
     }
 
-    fun getAccounts(): List<AccountProfile> {
+    fun getAccounts(): List<AccountProfile> = consolidatedAccountProfiles(
+        getStoredAccounts(readableDatabase),
+    )
+
+    private fun getStoredAccounts(db: SQLiteDatabase): List<AccountProfile> {
         val result = mutableListOf<AccountProfile>()
-        readableDatabase.query(
+        db.query(
             "accounts",
             arrayOf(
                 "id", "name", "type", "account_hint", "institution", "balance_minor",
                 "available_credit_minor", "credit_limit_minor", "availability_fetched_at", "availability_sender",
-                "identity_key",
+                "identity_key", "merged_into_account_id",
             ),
             null,
             null,
             null,
             null,
-            "name COLLATE NOCASE ASC",
+            "id ASC",
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 result += AccountProfile(
@@ -1293,6 +1444,7 @@ class PaisaLensDatabase(context: Context) :
                     availabilityFetchedAt = cursor.longOrNull(8),
                     availabilitySender = cursor.getString(9),
                     identityKey = cursor.getString(10),
+                    mergedIntoAccountId = cursor.longOrNull(11),
                 )
             }
         }
@@ -1330,10 +1482,15 @@ class PaisaLensDatabase(context: Context) :
                 val hint: String?,
                 val bankKey: String?,
                 val institution: String?,
+                val mergedIntoAccountId: Long?,
+                val mergedMemberCount: Int,
             )
             val stored = db.query(
                 "accounts",
-                arrayOf("type", "account_hint", "institution", "name"),
+                arrayOf(
+                    "type", "account_hint", "institution", "name", "merged_into_account_id",
+                    "(SELECT COUNT(*) FROM accounts members WHERE members.merged_into_account_id = accounts.id)",
+                ),
                 "id = ?",
                 arrayOf(account.id.toString()),
                 null,
@@ -1347,13 +1504,22 @@ class PaisaLensDatabase(context: Context) :
                         hint = cursor.getString(1),
                         bankKey = BankSmsSupport.accountBankKey(cursor.getString(2), cursor.getString(3)),
                         institution = cursor.getString(2),
+                        mergedIntoAccountId = cursor.longOrNull(4),
+                        mergedMemberCount = cursor.getInt(5),
                     )
                 } else {
                     null
                 }
             }
             requireNotNull(stored) { "Account not found" }
-            if (stored.type != account.type || stored.hint != cleanHint) {
+            require(stored.mergedIntoAccountId == null) { "Edit the visible merged account instead" }
+            val isMergedCanonical = stored.mergedMemberCount > 0
+            if (isMergedCanonical) {
+                // Presentation values are consolidated across physical members and must never be
+                // written back into one member as though they were its own balance or card limit.
+                values.clear()
+                values.put("name", cleanName)
+            } else if (stored.type != account.type || stored.hint != cleanHint) {
                 // The old key encodes the former type/last-four and must never resolve a
                 // future SMS back to this edited profile. A fresh unique key lets the next
                 // matching alert promote it to the canonical sender-based identity.
@@ -1420,6 +1586,91 @@ class PaisaLensDatabase(context: Context) :
                 }
             }
             db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
+     * Creates one logical account without deleting physical identities or rewriting their links.
+     * Institution-aware SMS matching continues against each retained member and then resolves its
+     * explicit canonical root.
+     */
+    fun mergeAccounts(
+        accountIds: Collection<Long>,
+        mergedName: String,
+    ): AccountMergeResult {
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val storedAccounts = getStoredAccounts(db)
+            val validationFailure = validateAccountMergeSelection(storedAccounts, accountIds, mergedName)
+            if (validationFailure != null) return validationFailure
+
+            val storedById = storedAccounts.associateBy(AccountProfile::id)
+            val selectedIds = accountIds.filter { it > 0 }.toCollection(linkedSetOf())
+            val selectedRootIds = selectedIds.mapTo(linkedSetOf()) {
+                canonicalAccountId(storedById, it)
+            }
+            val canonicalId = selectedRootIds.minOrNull()
+                ?: error("A canonical account could not be selected")
+            val canonical = storedById.getValue(canonicalId)
+            val memberIds = storedAccounts
+                .asSequence()
+                .filter { canonicalAccountId(storedById, it.id) in selectedRootIds }
+                .map(AccountProfile::id)
+                .toCollection(linkedSetOf())
+            val cleanName = normalizedAccountMergeName(mergedName)
+            val reconciledMemberIds = memberIds.filterTo(linkedSetOf()) { memberId ->
+                db.query(
+                    "monthly_reconciliations",
+                    arrayOf("account_id"),
+                    "account_id = ?",
+                    arrayOf(memberId.toString()),
+                    null,
+                    null,
+                    null,
+                    "1",
+                ).use { it.moveToFirst() }
+            }
+            if (reconciledMemberIds.isNotEmpty()) {
+                return AccountMergeResult.Failure(
+                    error = AccountMergeError.HAS_RECONCILIATIONS,
+                    message = "Accounts with monthly reconciliation history cannot be merged. Remove that history first.",
+                    accountIds = reconciledMemberIds,
+                )
+            }
+
+            check(
+                db.update(
+                    "accounts",
+                    ContentValues().apply {
+                        put("name", cleanName)
+                        putNull("merged_into_account_id")
+                    },
+                    "id = ?",
+                    arrayOf(canonicalId.toString()),
+                ) == 1,
+            ) { "The canonical account changed before it could be merged" }
+            memberIds.asSequence().filter { it != canonicalId }.forEach { memberId ->
+                check(
+                    db.update(
+                        "accounts",
+                        ContentValues().apply { put("merged_into_account_id", canonicalId) },
+                        "id = ?",
+                        arrayOf(memberId.toString()),
+                    ) == 1,
+                ) { "A selected account changed before it could be merged" }
+            }
+
+            db.setTransactionSuccessful()
+            AccountMergeResult.Success(
+                canonicalAccountId = canonicalId,
+                mergedAccountIds = selectedIds,
+                mergedName = cleanName,
+                accountType = canonical.type,
+                memberCount = memberIds.size,
+            )
         } finally {
             db.endTransaction()
         }
@@ -1513,27 +1764,68 @@ class PaisaLensDatabase(context: Context) :
     }
 
     fun deleteAccount(id: Long) {
-        writableDatabase.delete("accounts", "id = ?", arrayOf(id.toString()))
+        val db = writableDatabase
+        val mergeState = db.query(
+            "accounts",
+            arrayOf(
+                "merged_into_account_id",
+                "(SELECT COUNT(*) FROM accounts members WHERE members.merged_into_account_id = accounts.id)",
+            ),
+            "id = ?",
+            arrayOf(id.toString()),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.longOrNull(0) to cursor.getInt(1) else null
+        } ?: return
+        require(mergeState.first == null && mergeState.second == 0) {
+            "Merged accounts cannot be deleted"
+        }
+        db.delete("accounts", "id = ?", arrayOf(id.toString()))
     }
 
-    fun getBalanceHistory(accountId: Long? = null): List<AccountBalanceSnapshot> {
+    fun getBalanceHistory(accountId: Long? = null): List<AccountBalanceSnapshot> =
+        getBalanceHistory(readableDatabase, accountId, canonicalizeAccounts = true)
+
+    private fun getBalanceHistory(
+        db: SQLiteDatabase,
+        accountId: Long? = null,
+        canonicalizeAccounts: Boolean,
+    ): List<AccountBalanceSnapshot> {
         val result = mutableListOf<AccountBalanceSnapshot>()
-        readableDatabase.query(
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        val exposedFilterId = accountId?.let { id ->
+            if (canonicalizeAccounts) canonicalAccountId(accountsById, id) else id
+        }
+        db.query(
             "balance_history",
             arrayOf(
                 "id", "account_id", "balance_minor", "available_credit_minor",
                 "credit_limit_minor", "recorded_at", "sender",
             ),
-            accountId?.let { "account_id = ?" },
-            accountId?.let { arrayOf(it.toString()) },
+            accountId?.takeUnless { canonicalizeAccounts }?.let { "account_id = ?" },
+            accountId?.takeUnless { canonicalizeAccounts }?.let { arrayOf(it.toString()) },
             null,
             null,
             "recorded_at DESC, id DESC",
         ).use { cursor ->
             while (cursor.moveToNext()) {
+                val storedAccountId = cursor.getLong(1)
+                val exposedAccountId = if (canonicalizeAccounts) {
+                    canonicalAccountId(accountsById, storedAccountId)
+                } else {
+                    storedAccountId
+                }
+                if (exposedFilterId != null && exposedAccountId != exposedFilterId) continue
                 result += AccountBalanceSnapshot(
                     id = cursor.getLong(0),
-                    accountId = cursor.getLong(1),
+                    accountId = exposedAccountId,
                     balanceMinor = cursor.longOrNull(2),
                     availableCreditMinor = cursor.longOrNull(3),
                     creditLimitMinor = cursor.longOrNull(4),
@@ -1887,9 +2179,20 @@ class PaisaLensDatabase(context: Context) :
         putNullableInt("share_basis_points", split.shareBasisPoints)
     }
 
-    fun getSavingsGoals(): List<SavingsGoal> {
+    fun getSavingsGoals(): List<SavingsGoal> =
+        getSavingsGoals(readableDatabase, canonicalizeAccounts = true)
+
+    private fun getSavingsGoals(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean,
+    ): List<SavingsGoal> {
         val result = mutableListOf<SavingsGoal>()
-        readableDatabase.query(
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        db.query(
             "savings_goals",
             arrayOf(
                 "id", "name", "target_minor", "starting_saved_minor", "target_date_epoch_day",
@@ -1906,7 +2209,9 @@ class PaisaLensDatabase(context: Context) :
                     targetMinor = cursor.getLong(2),
                     startingSavedMinor = cursor.getLong(3),
                     targetDateEpochDay = cursor.longOrNull(4),
-                    linkedAccountId = cursor.longOrNull(5),
+                    linkedAccountId = cursor.longOrNull(5)?.let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     kind = enumValueOrDefault(cursor.getString(6), SavingsGoalKind.SAVINGS_GOAL),
                     contributionFrequency = enumValueOrDefault(cursor.getString(7), ContributionFrequency.MONTHLY),
                     notes = cursor.getString(8),
@@ -2016,8 +2321,16 @@ class PaisaLensDatabase(context: Context) :
 
     fun getPaymentCommitments(): List<PaymentCommitment> = getPaymentCommitments(readableDatabase)
 
-    private fun getPaymentCommitments(db: SQLiteDatabase): List<PaymentCommitment> {
+    private fun getPaymentCommitments(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean = true,
+    ): List<PaymentCommitment> {
         val result = mutableListOf<PaymentCommitment>()
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
         db.query(
             "payment_commitments",
             arrayOf(
@@ -2029,6 +2342,7 @@ class PaisaLensDatabase(context: Context) :
             "status ASC, next_due_epoch_day ASC, name COLLATE NOCASE ASC",
         ).use { cursor ->
             while (cursor.moveToNext()) {
+                val physicalAccountId = cursor.longOrNull(9)
                 result += PaymentCommitment(
                     id = cursor.getLong(0),
                     name = cursor.getString(1),
@@ -2039,7 +2353,9 @@ class PaisaLensDatabase(context: Context) :
                     amountMinor = cursor.getLong(6),
                     maxMandateMinor = cursor.longOrNull(7),
                     nextDueEpochDay = cursor.getLong(8),
-                    accountId = cursor.longOrNull(9),
+                    accountId = physicalAccountId?.let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     upiHandle = cursor.getString(10),
                     status = enumValueOrDefault(cursor.getString(11), PaymentCommitmentStatus.ACTIVE),
                     source = enumValueOrDefault(cursor.getString(12), PaymentCommitmentSource.MANUAL),
@@ -2047,6 +2363,7 @@ class PaisaLensDatabase(context: Context) :
                     notes = cursor.getString(14),
                     createdAt = cursor.getLong(15),
                     updatedAt = cursor.getLong(16),
+                    physicalAccountId = physicalAccountId.takeIf { canonicalizeAccounts },
                 )
             }
         }
@@ -2062,10 +2379,34 @@ class PaisaLensDatabase(context: Context) :
         require(commitment.frequency != PaymentFrequency.CUSTOM || (commitment.customIntervalDays ?: 0) > 0) {
             "Custom payment frequency requires a positive interval"
         }
+        val db = writableDatabase
+        val storedCommitment = commitment.id.takeIf { it > 0 }?.let { id ->
+            getPaymentCommitments(db, canonicalizeAccounts = false).firstOrNull { it.id == id }
+        }
+        val requestedPhysicalAccountId = commitment.physicalAccountId?.takeIf { physicalAccountId ->
+            val exposedAccountId = commitment.accountId ?: return@takeIf false
+            val exists = db.query(
+                "accounts",
+                arrayOf("id"),
+                "id = ?",
+                arrayOf(physicalAccountId.toString()),
+                null,
+                null,
+                null,
+                "1",
+            ).use { it.moveToFirst() }
+            exists && resolveMergedAccountId(db, physicalAccountId) == resolveMergedAccountId(db, exposedAccountId)
+        }
+        val persistedAccountId = storedCommitment?.accountId?.takeIf { storedAccountId ->
+            commitment.accountId?.let { exposedAccountId ->
+                resolveMergedAccountId(db, storedAccountId) == resolveMergedAccountId(db, exposedAccountId)
+            } == true
+        } ?: requestedPhysicalAccountId ?: commitment.accountId
         val now = System.currentTimeMillis()
         val cleanName = commitment.name.trim().replace(Regex("\\s+"), " ").take(64)
         val clean = commitment.copy(
             name = cleanName,
+            accountId = persistedAccountId,
             merchantKey = normalizedMerchantKey(commitment.merchantKey.ifBlank { cleanName }),
             customIntervalDays = commitment.customIntervalDays?.coerceIn(1, 3_650),
             upiHandle = commitment.upiHandle?.trim()?.lowercase(Locale.ROOT)?.take(80)?.takeIf(String::isNotBlank),
@@ -2075,7 +2416,6 @@ class PaisaLensDatabase(context: Context) :
             updatedAt = now,
         )
         val values = paymentCommitmentValues(clean)
-        val db = writableDatabase
         db.beginTransaction()
         return try {
             val id = if (commitment.id == 0L) {
@@ -2164,9 +2504,19 @@ class PaisaLensDatabase(context: Context) :
         put("updated_at", plan.updatedAt)
     }
 
-    fun getBills(): List<BillReminder> {
+    fun getBills(): List<BillReminder> = getBills(readableDatabase, canonicalizeAccounts = true)
+
+    private fun getBills(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean,
+    ): List<BillReminder> {
         val result = mutableListOf<BillReminder>()
-        readableDatabase.query(
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        db.query(
             "bills",
             arrayOf(
                 "id", "title", "amount_minor", "due_date_epoch_day", "recurrence_months",
@@ -2185,7 +2535,9 @@ class PaisaLensDatabase(context: Context) :
                     amountMinor = cursor.getLong(2),
                     dueDateEpochDay = cursor.getLong(3),
                     recurrenceMonths = cursor.getInt(4),
-                    accountId = cursor.longOrNull(5),
+                    accountId = cursor.longOrNull(5)?.let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     notes = cursor.getString(6),
                     isActive = cursor.getInt(7) != 0,
                     lastPaidEpochDay = cursor.longOrNull(8),
@@ -2268,8 +2620,16 @@ class PaisaLensDatabase(context: Context) :
 
     fun getSmartCategoryRules(): List<SmartCategoryRule> = getSmartCategoryRules(readableDatabase)
 
-    private fun getSmartCategoryRules(db: SQLiteDatabase): List<SmartCategoryRule> {
+    private fun getSmartCategoryRules(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean = true,
+    ): List<SmartCategoryRule> {
         val result = mutableListOf<SmartCategoryRule>()
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
         db.query(
             "smart_category_rules",
             arrayOf(
@@ -2291,7 +2651,9 @@ class PaisaLensDatabase(context: Context) :
                     matchType = enumValueOrDefault(cursor.getString(3), SmartRuleMatchType.CONTAINS),
                     minAmountMinor = cursor.longOrNull(4),
                     maxAmountMinor = cursor.longOrNull(5),
-                    accountId = cursor.longOrNull(6),
+                    accountId = cursor.longOrNull(6)?.let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     category = enumValueOrDefault(cursor.getString(7), ExpenseCategory.OTHER),
                     customCategoryId = cursor.longOrNull(8),
                     enabled = cursor.getInt(9) != 0,
@@ -2313,22 +2675,32 @@ class PaisaLensDatabase(context: Context) :
                 rule.minAmountMinor <= rule.maxAmountMinor
         ) { "Minimum amount cannot exceed maximum amount" }
         val db = writableDatabase
-        val latestRuleUpdate = getSmartCategoryRules(db).maxOfOrNull { it.updatedAt } ?: Long.MIN_VALUE
+        val storedRule = rule.id.takeIf { it > 0 }?.let { id ->
+            getSmartCategoryRules(db, canonicalizeAccounts = false).firstOrNull { it.id == id }
+        }
+        val persistedAccountId = storedRule?.accountId?.takeIf { storedAccountId ->
+            rule.accountId?.let { exposedAccountId ->
+                resolveMergedAccountId(db, storedAccountId) == resolveMergedAccountId(db, exposedAccountId)
+            } == true
+        } ?: rule.accountId
+        val persistedRule = rule.copy(accountId = persistedAccountId)
+        val latestRuleUpdate = getSmartCategoryRules(db, canonicalizeAccounts = false)
+            .maxOfOrNull { it.updatedAt } ?: Long.MIN_VALUE
         val now = maxOf(
             System.currentTimeMillis(),
             if (latestRuleUpdate == Long.MAX_VALUE) Long.MAX_VALUE else latestRuleUpdate + 1,
         )
         val values = ContentValues().apply {
-            put("name", rule.name.trim().replace(Regex("\\s+"), " ").take(64).ifBlank { cleanPattern })
+            put("name", persistedRule.name.trim().replace(Regex("\\s+"), " ").take(64).ifBlank { cleanPattern })
             put("merchant_pattern", cleanPattern)
-            put("match_type", rule.matchType.name)
-            putNullableLong("min_amount_minor", rule.minAmountMinor?.coerceAtLeast(0))
-            putNullableLong("max_amount_minor", rule.maxAmountMinor?.coerceAtLeast(0))
-            putNullableLong("account_id", rule.accountId)
-            put("category", rule.category.name)
-            putNullableLong("custom_category_id", rule.customCategoryId)
-            put("enabled", if (rule.enabled) 1 else 0)
-            put("priority", rule.priority.coerceIn(-10_000, 10_000))
+            put("match_type", persistedRule.matchType.name)
+            putNullableLong("min_amount_minor", persistedRule.minAmountMinor?.coerceAtLeast(0))
+            putNullableLong("max_amount_minor", persistedRule.maxAmountMinor?.coerceAtLeast(0))
+            putNullableLong("account_id", persistedRule.accountId)
+            put("category", persistedRule.category.name)
+            putNullableLong("custom_category_id", persistedRule.customCategoryId)
+            put("enabled", if (persistedRule.enabled) 1 else 0)
+            put("priority", persistedRule.priority.coerceIn(-10_000, 10_000))
             put("updated_at", now)
         }
         db.beginTransaction()
@@ -2339,8 +2711,11 @@ class PaisaLensDatabase(context: Context) :
                 db.update("smart_category_rules", values, "id = ?", arrayOf(rule.id.toString()))
                 rule.id
             }
-            if (applyToHistory && rule.enabled) {
-                applySmartCategoryRuleToHistory(db, rule.copy(id = id, merchantPattern = cleanPattern, updatedAt = now))
+            if (applyToHistory && persistedRule.enabled) {
+                applySmartCategoryRuleToHistory(
+                    db,
+                    persistedRule.copy(id = id, merchantPattern = cleanPattern, updatedAt = now),
+                )
             }
             db.setTransactionSuccessful()
             id
@@ -2353,9 +2728,20 @@ class PaisaLensDatabase(context: Context) :
         writableDatabase.delete("smart_category_rules", "id = ?", arrayOf(id.toString()))
     }
 
-    fun getMonthlyReconciliations(): List<MonthlyReconciliation> {
+    fun getMonthlyReconciliations(): List<MonthlyReconciliation> =
+        getMonthlyReconciliations(readableDatabase, canonicalizeAccounts = true)
+
+    private fun getMonthlyReconciliations(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean,
+    ): List<MonthlyReconciliation> {
         val result = mutableListOf<MonthlyReconciliation>()
-        readableDatabase.query(
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        db.query(
             "monthly_reconciliations",
             arrayOf(
                 "id", "account_id", "year", "month", "opening_balance_minor", "closing_balance_minor",
@@ -2371,7 +2757,9 @@ class PaisaLensDatabase(context: Context) :
             while (cursor.moveToNext()) {
                 result += MonthlyReconciliation(
                     id = cursor.getLong(0),
-                    accountId = cursor.getLong(1),
+                    accountId = cursor.getLong(1).let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     year = cursor.getInt(2),
                     month = cursor.getInt(3),
                     openingBalanceMinor = cursor.longOrNull(4),
@@ -2395,10 +2783,17 @@ class PaisaLensDatabase(context: Context) :
         val db = writableDatabase
         db.beginTransaction()
         return try {
-            val existing = reconciliation.id.takeIf { it > 0 }?.let { findReconciliation(db, it) }
+            val existingById = reconciliation.id.takeIf { it > 0 }?.let { findReconciliation(db, it) }
+            val existing = existingById
                 ?: findReconciliation(db, reconciliation.accountId, reconciliation.year, reconciliation.month)
+            val persisted = existingById?.takeIf { stored ->
+                resolveMergedAccountId(db, stored.accountId) ==
+                    resolveMergedAccountId(db, reconciliation.accountId)
+            }?.let { stored ->
+                reconciliation.copy(accountId = stored.accountId)
+            } ?: reconciliation
             val now = System.currentTimeMillis()
-            val values = reconciliationValues(reconciliation.copy(updatedAt = now))
+            val values = reconciliationValues(persisted.copy(updatedAt = now))
             val id = if (existing == null) {
                 db.insertOrThrow("monthly_reconciliations", null, values)
             } else {
@@ -2687,8 +3082,22 @@ class PaisaLensDatabase(context: Context) :
 
     private fun validateAuditBatchUndo(db: SQLiteDatabase, events: List<AuditEvent>) {
         val currentPayloads = events.associate { event ->
-            AuditEntityKey(event.entityType, event.entityId) to
-                currentAuditPayload(db, event.entityType, event.entityId)
+            val currentPayload = currentAuditPayload(db, event.entityType, event.entityId)
+            val comparablePayload = if (
+                event.entityType == AuditEntityType.TRANSACTION &&
+                event.afterPayload != null &&
+                currentPayload != null &&
+                runCatching {
+                    TransactionAuditPayloadCodec.equivalentForUndo(event.afterPayload, currentPayload)
+                }.getOrDefault(false)
+            ) {
+                // Preserve the existing generic conflict checker while allowing pre-extension
+                // transaction payloads to compare only the fields they could encode.
+                event.afterPayload
+            } else {
+                currentPayload
+            }
+            AuditEntityKey(event.entityType, event.entityId) to comparablePayload
         }
         val splitDependencies = getAuditSplitDependencies(db)
         val insertedTransactionIds = events
@@ -2722,6 +3131,23 @@ class PaisaLensDatabase(context: Context) :
             insertedTransactionLinkIdsWithExpenseSplits = linkIdsWithSplits,
         )
         require(conflict == null) { "This change cannot be undone because $conflict" }
+
+        events.asSequence()
+            .filter {
+                it.entityType == AuditEntityType.MONTHLY_RECONCILIATION &&
+                    it.action != AuditAction.INSERT
+            }
+            .forEach { event ->
+                val restored = decodeReconciliationAuditPayload(requireNotNull(event.beforePayload))
+                val reconciliationConflict = reconciliationRestoreConflict(
+                    db = db,
+                    reconciliation = restored,
+                    ignoredId = restored.id.takeIf { event.action == AuditAction.UPDATE },
+                )
+                require(reconciliationConflict == null) {
+                    "This change cannot be undone because $reconciliationConflict"
+                }
+            }
 
         val targetTransactions = getTransactions().associateByTo(mutableMapOf(), TransactionRecord::id)
         val targetLinks = currentLinks.associateByTo(mutableMapOf(), TransactionLink::id)
@@ -2799,7 +3225,7 @@ class PaisaLensDatabase(context: Context) :
                             occurredAt = 0,
                             source = TransactionSource.BANK,
                             sender = "",
-                            accountId = cursor.longOrNull(3),
+                            accountId = cursor.longOrNull(3)?.let { resolveMergedAccountId(db, it) },
                         ),
                         allSmartRules,
                     )?.id == rule.id
@@ -2839,9 +3265,19 @@ class PaisaLensDatabase(context: Context) :
     }
 
 
-    fun getLoans(): List<LoanAccount> {
+    fun getLoans(): List<LoanAccount> = getLoans(readableDatabase, canonicalizeAccounts = true)
+
+    private fun getLoans(
+        db: SQLiteDatabase,
+        canonicalizeAccounts: Boolean,
+    ): List<LoanAccount> {
         val result = mutableListOf<LoanAccount>()
-        readableDatabase.query(
+        val accountsById = if (canonicalizeAccounts) {
+            getStoredAccounts(db).associateBy(AccountProfile::id)
+        } else {
+            emptyMap()
+        }
+        db.query(
             "loans",
             arrayOf(
                 "id", "name", "lender", "principal_minor", "annual_rate_bps", "tenure_months",
@@ -2864,7 +3300,9 @@ class PaisaLensDatabase(context: Context) :
                     startDateEpochDay = cursor.getLong(6),
                     emiMinor = cursor.getLong(7),
                     paidInstallments = cursor.getInt(8),
-                    accountId = cursor.longOrNull(9),
+                    accountId = cursor.longOrNull(9)?.let { accountId ->
+                        if (canonicalizeAccounts) canonicalAccountId(accountsById, accountId) else accountId
+                    },
                     notes = cursor.getString(10),
                 )
             }
@@ -3033,30 +3471,30 @@ class PaisaLensDatabase(context: Context) :
         return try {
             PaisaLensBackupSnapshot(
                 createdAt = System.currentTimeMillis(),
-                transactions = getTransactions(),
+                transactions = getTransactions(db, canonicalizeAccounts = false),
                 budgets = getBudgets(),
-                accounts = getAccounts(),
+                accounts = getStoredAccounts(db),
                 customCategories = getCustomCategories(),
                 merchantRules = getMerchantRules(),
                 merchantAliases = getMerchantAliases(),
-                loans = getLoans(),
-                balanceHistory = getBalanceHistory(),
-                bills = getBills(),
+                loans = getLoans(db, canonicalizeAccounts = false),
+                balanceHistory = getBalanceHistory(db, canonicalizeAccounts = false),
+                bills = getBills(db, canonicalizeAccounts = false),
                 netWorthItems = getNetWorthItems(),
-                smartCategoryRules = getSmartCategoryRules(),
-                reconciliations = getMonthlyReconciliations(),
+                smartCategoryRules = getSmartCategoryRules(db, canonicalizeAccounts = false),
+                reconciliations = getMonthlyReconciliations(db, canonicalizeAccounts = false),
                 transactionLinks = getTransactionLinks(),
                 auditEvents = getAuditEvents(200_000),
                 expenseSplits = getExpenseSplits(),
-                savingsGoals = getSavingsGoals(),
+                savingsGoals = getSavingsGoals(db, canonicalizeAccounts = false),
                 savingsContributions = getSavingsContributions(),
-                paymentCommitments = getPaymentCommitments(),
+                paymentCommitments = getPaymentCommitments(db, canonicalizeAccounts = false),
                 transactionSmsSources = getTransactionSmsSources(),
                 // Full unresolved SMS text is intentionally excluded from portable backups.
                 smsCoverageMessages = emptyList(),
                 smsCoverageRules = getSmsCoverageRules(),
                 advancedBudgets = getAdvancedBudgetPlans(),
-                creditCardBills = getCreditCardBills(),
+                creditCardBills = getCreditCardBills(db, canonicalizeAccounts = false),
             ).also { db.setTransactionSuccessful() }
         } finally {
             db.endTransaction()
@@ -3091,6 +3529,27 @@ class PaisaLensDatabase(context: Context) :
                         put("created_at", snapshot.createdAt)
                     },
                 )
+            }
+            val restoredAccountsById = snapshot.accounts.associateBy(AccountProfile::id)
+            snapshot.accounts.forEach { account ->
+                val parentId = account.mergedIntoAccountId ?: return@forEach
+                val parent = restoredAccountsById[parentId]
+                requireNotNull(parent) { "Backup merged account references a missing canonical account" }
+                require(parent.mergedIntoAccountId == null && parent.id < account.id) {
+                    "Backup contains a non-canonical account merge"
+                }
+                require(
+                    parent.type == account.type &&
+                        parent.type in setOf(AccountType.BANK_ACCOUNT, AccountType.CREDIT_CARD),
+                ) { "Backup contains incompatible merged account types" }
+                check(
+                    db.update(
+                        "accounts",
+                        ContentValues().apply { put("merged_into_account_id", parentId) },
+                        "id = ?",
+                        arrayOf(account.id.toString()),
+                    ) == 1,
+                ) { "Backup merged account could not be restored" }
             }
             snapshot.customCategories.forEach { category ->
                 db.insertOrThrow(
@@ -3177,10 +3636,16 @@ class PaisaLensDatabase(context: Context) :
                 }
                 .associate { it.record.id to it.createdAt }
             snapshot.transactions.forEach { transaction ->
+                val restoredTransaction = transaction.copy(
+                    sourceMessageId = restoredSmsSourceMessageId(
+                        snapshot.createdAt,
+                        transaction.sourceMessageId,
+                    ),
+                )
                 db.insertOrThrow(
                     "transactions",
                     null,
-                    transactionValues(transaction, includeId = true).apply {
+                    transactionValues(restoredTransaction, includeId = true).apply {
                         put("created_at", auditedCreatedAtByTransactionId[transaction.id] ?: snapshot.createdAt)
                     },
                 )
@@ -3201,7 +3666,10 @@ class PaisaLensDatabase(context: Context) :
                     "transaction_sms_sources",
                     null,
                     ContentValues().apply {
-                        put("source_message_id", source.sourceMessageId)
+                        put(
+                            "source_message_id",
+                            restoredSmsSourceMessageId(snapshot.createdAt, source.sourceMessageId),
+                        )
                         put("transaction_id", source.transactionId)
                         put("received_at", source.receivedAt)
                     },
@@ -3214,7 +3682,13 @@ class PaisaLensDatabase(context: Context) :
                         "transaction_sms_sources",
                         null,
                         ContentValues().apply {
-                            put("source_message_id", transaction.sourceMessageId)
+                            put(
+                                "source_message_id",
+                                restoredSmsSourceMessageId(
+                                    snapshot.createdAt,
+                                    transaction.sourceMessageId,
+                                ),
+                            )
                             put("transaction_id", transaction.id)
                             put("received_at", transaction.occurredAt)
                         },
@@ -3248,7 +3722,15 @@ class PaisaLensDatabase(context: Context) :
                 db.insertOrThrow(
                     "credit_card_bills",
                     null,
-                    creditCardBillValues(bill, includeId = true),
+                    creditCardBillValues(
+                        bill.copy(
+                            sourceMessageId = restoredSmsSourceMessageId(
+                                snapshot.createdAt,
+                                bill.sourceMessageId,
+                            ),
+                        ),
+                        includeId = true,
+                    ),
                 )
             }
             snapshot.loans.forEach { loan ->
@@ -3351,6 +3833,10 @@ class PaisaLensDatabase(context: Context) :
             }
             snapshot.reconciliations.forEach { reconciliation ->
                 validateReconciliation(reconciliation)
+                val reconciliationConflict = reconciliationRestoreConflict(db, reconciliation)
+                require(reconciliationConflict == null) {
+                    "Backup contains $reconciliationConflict"
+                }
                 db.insertOrThrow(
                     "monthly_reconciliations",
                     null,
@@ -3419,6 +3905,16 @@ class PaisaLensDatabase(context: Context) :
                 restoredSplits += split
             }
             snapshot.auditEvents.sortedBy(AuditEvent::id).forEach { event ->
+                val beforePayload = restoredAuditPayload(
+                    snapshot.createdAt,
+                    event.entityType,
+                    event.beforePayload,
+                )
+                val afterPayload = restoredAuditPayload(
+                    snapshot.createdAt,
+                    event.entityType,
+                    event.afterPayload,
+                )
                 insertAuditEvent(
                     db = db,
                     batchId = event.batchId,
@@ -3426,13 +3922,17 @@ class PaisaLensDatabase(context: Context) :
                     entityType = event.entityType,
                     entityId = event.entityId,
                     action = event.action,
-                    beforePayload = event.beforePayload,
-                    afterPayload = event.afterPayload,
+                    beforePayload = beforePayload,
+                    afterPayload = afterPayload,
                     occurredAt = event.occurredAt,
                     reversesEventId = event.reversesEventId,
                     explicitId = event.id,
                 )
             }
+            // v9+ backups retain only the opaque fingerprint, never raw SMS text. Running the
+            // same dependency-aware repair after every restore prevents known duplicate pairs
+            // from returning without applying a lossy heuristic to legacy backups.
+            repairCrossProvenanceSmsDuplicates(db)
             if (snapshot.balanceHistory.isEmpty()) backfillBalanceHistory(db)
             db.setTransactionSuccessful()
         } finally {
@@ -3506,7 +4006,7 @@ class PaisaLensDatabase(context: Context) :
         if (record.exchangeRate == null) putNull("exchange_rate") else put("exchange_rate", record.exchangeRate)
         putNull("raw_message_cipher")
         put("duplicate_count", record.duplicateCount.coerceAtLeast(1))
-        putNull("dedupe_fingerprint")
+        putNullableText("dedupe_fingerprint", record.dedupeFingerprint)
         put("created_at", System.currentTimeMillis())
     }
 
@@ -3533,6 +4033,73 @@ class PaisaLensDatabase(context: Context) :
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
     }
 
+    /**
+     * Telephony provider row IDs are local to a device, but encrypted backups are portable. If
+     * a restored `sms-N` already identifies different content on this device, keep that history
+     * untouched and namespace the current-device source with the incoming opaque fingerprint.
+     */
+    private fun resolveEffectiveSmsSourceMessageId(
+        db: SQLiteDatabase,
+        sourceMessageId: String,
+        compatibleFingerprints: List<String>,
+        incomingFingerprint: String,
+        incomingOccurredAt: Long,
+    ): String {
+        if (!RAW_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId)) return sourceMessageId
+        val existingTransactionId = transactionIdForSmsSource(db, sourceMessageId)
+            ?: return sourceMessageId
+        val storedRow = smsConsolidationRow(db, existingTransactionId)
+        val storedFingerprint = storedRow?.dedupeFingerprint?.takeIf(String::isNotBlank)
+        val timestampCanRepresentSameSms = storedRow != null &&
+            storedRow.occurredAt >= incomingOccurredAt &&
+            storedRow.occurredAt - incomingOccurredAt <= SMS_DUPLICATE_WINDOW_MILLIS
+        if (
+            storedFingerprint != null &&
+            storedFingerprint in compatibleFingerprints &&
+            timestampCanRepresentSameSms
+        ) {
+            return sourceMessageId
+        }
+        return "$sourceMessageId-$incomingFingerprint-$incomingOccurredAt"
+    }
+
+    private fun isLocalInboxSourceMessageId(sourceMessageId: String): Boolean =
+        RAW_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId) ||
+            COLLISION_SAFE_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId)
+
+    private fun restoredSmsSourceMessageId(backupCreatedAt: Long, sourceMessageId: String): String =
+        if (isLocalInboxSourceMessageId(sourceMessageId)) {
+            "restored-$backupCreatedAt-$sourceMessageId"
+        } else {
+            sourceMessageId
+        }
+
+    private fun restoredAuditPayload(
+        backupCreatedAt: Long,
+        entityType: AuditEntityType,
+        payload: String?,
+    ): String? {
+        if (entityType != AuditEntityType.TRANSACTION || payload == null) return payload
+        return TransactionAuditPayloadCodec.rewritePreservingFormat(payload) { decoded ->
+            decoded.copy(
+                record = decoded.record.copy(
+                    sourceMessageId = restoredSmsSourceMessageId(
+                        backupCreatedAt,
+                        decoded.record.sourceMessageId,
+                    ),
+                ),
+                smsSources = decoded.smsSources.map { source ->
+                    source.copy(
+                        sourceMessageId = restoredSmsSourceMessageId(
+                            backupCreatedAt,
+                            source.sourceMessageId,
+                        ),
+                    )
+                },
+            )
+        }
+    }
+
     private fun findDuplicateSmsTransaction(
         db: SQLiteDatabase,
         fingerprint: String,
@@ -3552,20 +4119,142 @@ class PaisaLensDatabase(context: Context) :
         "1",
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
 
-    private fun findExactTimestampDuplicateSmsTransaction(
+    private fun findCrossProvenanceDuplicateSmsTransaction(
         db: SQLiteDatabase,
         fingerprint: String,
         occurredAt: Long,
-    ): Long? = db.query(
+        incomingSourceMessageId: String,
+    ): Long? {
+        val incomingProvenance = smsIngestProvenance(incomingSourceMessageId)
+        val targetProvenances = when (incomingProvenance) {
+            SmsIngestProvenance.INBOX ->
+                setOf(SmsIngestProvenance.LIVE_RECEIVER, SmsIngestProvenance.RESTORED_INBOX)
+            SmsIngestProvenance.LIVE_RECEIVER ->
+                setOf(SmsIngestProvenance.INBOX, SmsIngestProvenance.RESTORED_INBOX)
+            SmsIngestProvenance.RESTORED_INBOX ->
+                setOf(SmsIngestProvenance.LIVE_RECEIVER, SmsIngestProvenance.INBOX)
+            SmsIngestProvenance.OTHER -> return null
+        }
+        val candidates = mutableListOf<Long>()
+        db.query(
+            "transactions",
+            arrayOf("id"),
+            "dedupe_fingerprint = ? AND occurred_at = ?",
+            arrayOf(fingerprint, occurredAt.toString()),
+            null,
+            null,
+            "id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) candidates += cursor.getLong(0)
+        }
+        return candidates
+            .asSequence()
+            .firstOrNull { id -> transactionSmsProvenance(db, id) in targetProvenances }
+    }
+
+    /**
+     * Older scans stored an inbox row using DATE (delivery time). A later rescan now supplies
+     * DATE_SENT, allowing that already-known source to be paired with an exact live-receiver row
+     * without widening the matching window for unrelated purchases.
+     */
+    private fun repairRescannedInboxDuplicate(
+        db: SQLiteDatabase,
+        inboxTransactionId: Long,
+        inboxSourceMessageId: String,
+        networkSentAt: Long,
+        compatibleFingerprints: List<String>,
+    ): Boolean {
+        val liveTransactionId = compatibleFingerprints.firstNotNullOfOrNull { fingerprint ->
+            findCrossProvenanceDuplicateSmsTransaction(
+                db = db,
+                fingerprint = fingerprint,
+                occurredAt = networkSentAt,
+                incomingSourceMessageId = inboxSourceMessageId,
+            )
+        } ?: return false
+        if (liveTransactionId == inboxTransactionId) return false
+        return consolidateSmsTransactions(
+            db = db,
+            firstTransactionId = liveTransactionId,
+            secondTransactionId = inboxTransactionId,
+            preferredTransactionId = liveTransactionId,
+        )
+    }
+
+    private data class SmsConsolidationRow(
+        val id: Long,
+        val sourceMessageId: String,
+        val occurredAt: Long,
+        val duplicateCount: Int,
+        val dedupeFingerprint: String?,
+    )
+
+    /**
+     * Moves every durable SMS source onto one row before deleting the other. A row carrying a
+     * user edit or another ledger dependency always survives; two dependent rows are left alone.
+     */
+    private fun consolidateSmsTransactions(
+        db: SQLiteDatabase,
+        firstTransactionId: Long,
+        secondTransactionId: Long,
+        preferredTransactionId: Long,
+    ): Boolean {
+        if (firstTransactionId == secondTransactionId) return false
+        val first = smsConsolidationRow(db, firstTransactionId) ?: return false
+        val second = smsConsolidationRow(db, secondTransactionId) ?: return false
+        val firstDependent = hasTransactionDependants(db, first.id)
+        val secondDependent = hasTransactionDependants(db, second.id)
+        if (firstDependent && secondDependent) return false
+
+        val survivor = when {
+            firstDependent -> first
+            secondDependent -> second
+            preferredTransactionId == second.id -> second
+            else -> first
+        }
+        val duplicate = if (survivor.id == first.id) second else first
+
+        // A legacy/hand-restored database may be missing either primary source mapping.
+        insertTransactionSmsSource(db, survivor.sourceMessageId, survivor.id, survivor.occurredAt)
+        insertTransactionSmsSource(db, duplicate.sourceMessageId, duplicate.id, duplicate.occurredAt)
+        db.update(
+            "transaction_sms_sources",
+            ContentValues().apply { put("transaction_id", survivor.id) },
+            "transaction_id = ?",
+            arrayOf(duplicate.id.toString()),
+        )
+        db.execSQL(
+            "UPDATE transactions SET duplicate_count = duplicate_count + ? WHERE id = ?",
+            arrayOf<Any>(duplicate.duplicateCount, survivor.id),
+        )
+        check(db.delete("transactions", "id = ?", arrayOf(duplicate.id.toString())) == 1) {
+            "Unable to safely consolidate duplicate SMS transaction ${duplicate.id}"
+        }
+        return true
+    }
+
+    private fun smsConsolidationRow(
+        db: SQLiteDatabase,
+        transactionId: Long,
+    ): SmsConsolidationRow? = db.query(
         "transactions",
-        arrayOf("id"),
-        "dedupe_fingerprint = ? AND occurred_at = ?",
-        arrayOf(fingerprint, occurredAt.toString()),
+        arrayOf("id", "source_message_id", "occurred_at", "duplicate_count", "dedupe_fingerprint"),
+        "id = ?",
+        arrayOf(transactionId.toString()),
         null,
         null,
-        "id ASC",
+        null,
         "1",
-    ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        SmsConsolidationRow(
+            id = cursor.getLong(0),
+            sourceMessageId = cursor.getString(1),
+            occurredAt = cursor.getLong(2),
+            duplicateCount = cursor.getInt(3).coerceAtLeast(1),
+            dedupeFingerprint = cursor.getString(4),
+        )
+    }
 
     private fun insertTransactionSmsSource(
         db: SQLiteDatabase,
@@ -3582,6 +4271,43 @@ class PaisaLensDatabase(context: Context) :
         },
         SQLiteDatabase.CONFLICT_IGNORE,
     ) != -1L
+
+    private fun transactionSmsProvenance(
+        db: SQLiteDatabase,
+        transactionId: Long,
+    ): SmsIngestProvenance {
+        val sourceIds = linkedSetOf<String>()
+        db.query(
+            "transactions",
+            arrayOf("source_message_id"),
+            "id = ?",
+            arrayOf(transactionId.toString()),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> if (cursor.moveToFirst()) sourceIds += cursor.getString(0) }
+        db.query(
+            "transaction_sms_sources",
+            arrayOf("source_message_id"),
+            "transaction_id = ?",
+            arrayOf(transactionId.toString()),
+            null,
+            null,
+            "source_message_id ASC",
+        ).use { cursor -> while (cursor.moveToNext()) sourceIds += cursor.getString(0) }
+
+        val provenances = sourceIds.mapTo(mutableSetOf(), ::smsIngestProvenance)
+        val activeProvenances = provenances.filterTo(mutableSetOf()) {
+            it !in setOf(SmsIngestProvenance.OTHER, SmsIngestProvenance.RESTORED_INBOX)
+        }
+        return when {
+            activeProvenances.size == 1 -> activeProvenances.single()
+            activeProvenances.isEmpty() && SmsIngestProvenance.RESTORED_INBOX in provenances ->
+                SmsIngestProvenance.RESTORED_INBOX
+            else -> SmsIngestProvenance.OTHER
+        }
+    }
 
     private fun categoryValues(selection: CategorySelection) = ContentValues().apply {
         put("category", selection.builtIn.name)
@@ -3605,9 +4331,13 @@ class PaisaLensDatabase(context: Context) :
                 credit_limit_minor INTEGER,
                 availability_fetched_at INTEGER,
                 availability_sender TEXT,
+                merged_into_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
                 created_at INTEGER NOT NULL
             )
             """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_accounts_merge_parent ON accounts(merged_into_account_id)",
         )
     }
 
@@ -4157,6 +4887,65 @@ class PaisaLensDatabase(context: Context) :
         }
     }
 
+    /**
+     * Consolidates only cross-provenance rows whose opaque fingerprint and occurred-at timestamp
+     * are both exact. Timestamp-offset v11 rows remain separate until an inbox rescan supplies the
+     * provider's DATE_SENT value and can repair that known source safely.
+     */
+    private fun repairCrossProvenanceSmsDuplicates(db: SQLiteDatabase) {
+        data class Candidate(
+            val id: Long,
+            val fingerprint: String,
+            val occurredAt: Long,
+            val provenance: SmsIngestProvenance,
+        )
+
+        val candidates = mutableListOf<Candidate>()
+        db.query(
+            "transactions",
+            arrayOf("id", "dedupe_fingerprint", "occurred_at"),
+            "dedupe_fingerprint IS NOT NULL AND dedupe_fingerprint != ''",
+            null,
+            null,
+            null,
+            "occurred_at ASC, id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                val provenance = transactionSmsProvenance(db, id)
+                if (provenance == SmsIngestProvenance.OTHER) continue
+                candidates += Candidate(
+                    id = id,
+                    fingerprint = cursor.getString(1),
+                    occurredAt = cursor.getLong(2),
+                    provenance = provenance,
+                )
+            }
+        }
+
+        candidates.groupBy { it.fingerprint to it.occurredAt }.values.forEach { exactMatches ->
+            val live = exactMatches
+                .filter { it.provenance == SmsIngestProvenance.LIVE_RECEIVER }
+                .sortedBy(Candidate::id)
+            val inbox = exactMatches
+                .filter {
+                    it.provenance in setOf(
+                        SmsIngestProvenance.INBOX,
+                        SmsIngestProvenance.RESTORED_INBOX,
+                    )
+                }
+                .sortedBy(Candidate::id)
+            live.zip(inbox).forEach { (liveCandidate, inboxCandidate) ->
+                consolidateSmsTransactions(
+                    db = db,
+                    firstTransactionId = liveCandidate.id,
+                    secondTransactionId = inboxCandidate.id,
+                    preferredTransactionId = minOf(liveCandidate.id, inboxCandidate.id),
+                )
+            }
+        }
+    }
+
     private fun hasTransactionDependants(db: SQLiteDatabase, transactionId: Long): Boolean = db.rawQuery(
         """
         SELECT (
@@ -4279,8 +5068,10 @@ class PaisaLensDatabase(context: Context) :
                 .groupBy { candidate -> candidate.hint?.let { "last4:$it" } ?: "account:${candidate.id}" }
                 .values
                 .singleOrNull()
-                ?: return null
-            return soleGroup.minOfOrNull(NoHintCandidate::id)
+            soleGroup?.minOfOrNull(NoHintCandidate::id)?.let { return it }
+            val mergedRoots = matches.mapTo(linkedSetOf()) { resolveMergedAccountId(db, it.id) }
+            if (mergedRoots.size == 1) return mergedRoots.single()
+            return null
         }
         val identityKey = "${accountType.name}:${bankKey ?: institution.lowercase(Locale.ROOT)}:$hint"
         var staleExactId: Long? = null
@@ -4339,9 +5130,14 @@ class PaisaLensDatabase(context: Context) :
             sameHintAndType
                 .filter { BankSmsSupport.accountBankKey(it.institution, it.name) == institutionKey }
                 .minByOrNull(AccountCandidate::id)
-                ?: sameHintAndType.singleOrNull()?.takeIf {
-                    it.institution.isNullOrBlank() && BankSmsSupport.accountBankKey(it.institution, it.name) == null
-                }
+                ?: sameHintAndType.filter {
+                    it.institution.isNullOrBlank() &&
+                        BankSmsSupport.accountBankKey(it.institution, it.name) == null
+                }.takeIf { unknownCandidates ->
+                    unknownCandidates
+                        .mapTo(linkedSetOf()) { resolveMergedAccountId(db, it.id) }
+                        .size == 1
+                }?.minByOrNull(AccountCandidate::id)
         } else {
             null
         }
@@ -4370,6 +5166,31 @@ class PaisaLensDatabase(context: Context) :
             },
         )
     }
+
+    private fun resolveMergedAccountId(db: SQLiteDatabase, accountId: Long): Long {
+        var current = accountId
+        val visited = linkedSetOf<Long>()
+        while (visited.add(current)) {
+            val parent = db.query(
+                "accounts",
+                arrayOf("merged_into_account_id"),
+                "id = ?",
+                arrayOf(current.toString()),
+                null,
+                null,
+                null,
+                "1",
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.longOrNull(0) else null }
+                ?: return current
+            current = parent
+        }
+        return visited.minOrNull() ?: accountId
+    }
+
+    private fun hasMergedMembers(db: SQLiteDatabase, accountId: Long): Boolean = db.rawQuery(
+        "SELECT 1 FROM accounts WHERE merged_into_account_id = ? LIMIT 1",
+        arrayOf(accountId.toString()),
+    ).use(android.database.Cursor::moveToFirst)
 
     private fun findAvailabilityAccountId(
         db: SQLiteDatabase,
@@ -4815,7 +5636,10 @@ class PaisaLensDatabase(context: Context) :
                     check(
                         db.update(
                             "transactions",
-                            transactionAuditRestoreValues(item.record),
+                            transactionAuditRestoreValues(
+                                record = item.record,
+                                restoreDedupeIdentity = TransactionAuditPayloadCodec.hasExtension(payload),
+                            ),
                             "id = ?",
                             arrayOf(item.record.id.toString()),
                         ) == 1,
@@ -4823,6 +5647,13 @@ class PaisaLensDatabase(context: Context) :
                         "Transaction ${item.record.id} is unavailable for undo"
                     }
                 } else {
+                    val smsSources = transactionAuditSmsSourcesToRestore(item)
+                    smsSources.forEach { source ->
+                        val owner = transactionIdForSmsSource(db, source.sourceMessageId)
+                        require(owner == null || owner == item.record.id) {
+                            "Transaction ${item.record.id} cannot be restored because an SMS source belongs to newer data"
+                        }
+                    }
                     db.insertOrThrow(
                         "transactions",
                         null,
@@ -4835,6 +5666,7 @@ class PaisaLensDatabase(context: Context) :
                             put("created_at", item.createdAt)
                         },
                     )
+                    restoreTransactionAuditSmsSources(db, item.record.id, smsSources)
                 }
             }
             AuditEntityType.TRANSACTION_LINK -> {
@@ -4860,6 +5692,14 @@ class PaisaLensDatabase(context: Context) :
             }
             AuditEntityType.MONTHLY_RECONCILIATION -> {
                 val item = decodeReconciliationAuditPayload(payload)
+                val conflict = reconciliationRestoreConflict(
+                    db = db,
+                    reconciliation = item,
+                    ignoredId = item.id.takeIf { replace },
+                )
+                require(conflict == null) {
+                    "Monthly reconciliation ${item.id} cannot be restored because $conflict"
+                }
                 if (replace) {
                     check(
                         db.update(
@@ -4880,8 +5720,42 @@ class PaisaLensDatabase(context: Context) :
         }
     }
 
+    private fun reconciliationRestoreConflict(
+        db: SQLiteDatabase,
+        reconciliation: MonthlyReconciliation,
+        ignoredId: Long? = null,
+    ): String? {
+        val logicalAccountId = resolveMergedAccountId(db, reconciliation.accountId)
+        if (logicalAccountId != reconciliation.accountId) {
+            return "a monthly reconciliation belongs to a hidden member of a merged account"
+        }
+        val hasLogicalPeriodCollision = db.query(
+            "monthly_reconciliations",
+            arrayOf("id", "account_id"),
+            "year = ? AND month = ?",
+            arrayOf(reconciliation.year.toString(), reconciliation.month.toString()),
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            var collision = false
+            while (cursor.moveToNext() && !collision) {
+                val existingId = cursor.getLong(0)
+                val existingAccountId = cursor.getLong(1)
+                collision = existingId != ignoredId &&
+                    resolveMergedAccountId(db, existingAccountId) == logicalAccountId
+            }
+            collision
+        }
+        return if (hasLogicalPeriodCollision) {
+            "the logical account already has a monthly reconciliation for this period"
+        } else {
+            null
+        }
+    }
+
     private fun transactionAuditPayload(db: SQLiteDatabase, id: Long): String? {
-        val record = getTransactions().firstOrNull { it.id == id } ?: return null
+        val record = getTransactions(db, canonicalizeAccounts = false).firstOrNull { it.id == id } ?: return null
         val storage = db.query(
             "transactions",
             arrayOf("raw_message_cipher", "created_at"),
@@ -4900,12 +5774,83 @@ class PaisaLensDatabase(context: Context) :
                 record = record,
                 rawMessageCipher = storage.first,
                 createdAt = storage.second,
+                smsSources = transactionAuditSmsSources(db, record),
             ),
         )
     }
 
+    private fun transactionAuditSmsSources(
+        db: SQLiteDatabase,
+        record: TransactionRecord,
+    ): List<TransactionAuditSmsSource> {
+        if (record.source !in SMS_BACKED_TRANSACTION_SOURCES) return emptyList()
+        val sources = linkedMapOf<String, Long>()
+        db.query(
+            "transaction_sms_sources",
+            arrayOf("source_message_id", "received_at"),
+            "transaction_id = ?",
+            arrayOf(record.id.toString()),
+            null,
+            null,
+            "received_at ASC, source_message_id ASC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                sources.putIfAbsent(cursor.getString(0), cursor.getLong(1))
+            }
+        }
+        // Legacy rows can predate transaction_sms_sources. Always retain enough provenance to
+        // restore at least the transaction's primary SMS identity.
+        sources.putIfAbsent(record.sourceMessageId, record.occurredAt)
+        return sources.map { (sourceMessageId, receivedAt) ->
+            TransactionAuditSmsSource(sourceMessageId, receivedAt)
+        }
+    }
+
+    private fun transactionAuditSmsSourcesToRestore(
+        payload: TransactionAuditPayload,
+    ): List<TransactionAuditSmsSource> {
+        val record = payload.record
+        if (record.source !in SMS_BACKED_TRANSACTION_SOURCES) return emptyList()
+        val sources = linkedMapOf<String, Long>()
+        payload.smsSources.forEach { source ->
+            if (source.sourceMessageId.isNotBlank()) {
+                sources.putIfAbsent(source.sourceMessageId, source.receivedAt)
+            }
+        }
+        // Legacy payloads have no source list, and a malformed/partial extension may omit its
+        // primary identity. In both cases the transaction record still carries that provenance.
+        sources.putIfAbsent(record.sourceMessageId, record.occurredAt)
+        return sources.map { (sourceMessageId, receivedAt) ->
+            TransactionAuditSmsSource(sourceMessageId, receivedAt)
+        }
+    }
+
+    private fun restoreTransactionAuditSmsSources(
+        db: SQLiteDatabase,
+        transactionId: Long,
+        sources: List<TransactionAuditSmsSource>,
+    ) {
+        sources
+            .asSequence()
+            .forEach { source ->
+                check(
+                    insertTransactionSmsSource(
+                        db = db,
+                        sourceMessageId = source.sourceMessageId,
+                        transactionId = transactionId,
+                        receivedAt = source.receivedAt,
+                    ),
+                ) {
+                    "Unable to restore SMS source for transaction $transactionId"
+                }
+            }
+    }
+
     /** Restores editable transaction fields while retaining encrypted source text and creation metadata. */
-    private fun transactionAuditRestoreValues(record: TransactionRecord) = ContentValues().apply {
+    private fun transactionAuditRestoreValues(
+        record: TransactionRecord,
+        restoreDedupeIdentity: Boolean,
+    ) = ContentValues().apply {
         put("source_message_id", record.sourceMessageId)
         put("amount_minor", record.amountMinor)
         put("merchant", record.merchant)
@@ -4924,6 +5869,10 @@ class PaisaLensDatabase(context: Context) :
         putNullableLong("original_amount_minor", record.originalAmountMinor)
         putNullableText("original_currency", record.originalCurrency)
         if (record.exchangeRate == null) putNull("exchange_rate") else put("exchange_rate", record.exchangeRate)
+        if (restoreDedupeIdentity) {
+            put("duplicate_count", record.duplicateCount.coerceAtLeast(1))
+            putNullableText("dedupe_fingerprint", record.dedupeFingerprint)
+        }
     }
 
     private fun decodeTransactionAuditPayload(payload: String): TransactionAuditPayload =
@@ -5129,8 +6078,16 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 10
+        const val DATABASE_VERSION = 12
         const val TAG_SEPARATOR = "\u001F"
         const val SMS_RULE_PHRASE_SEPARATOR = "\u001E"
+        val RAW_INBOX_SMS_SOURCE_ID_PATTERN = Regex("^sms-[0-9]+$")
+        val COLLISION_SAFE_INBOX_SMS_SOURCE_ID_PATTERN = Regex("^sms-[0-9]+-[0-9a-f]{64}-[0-9]+$")
+        val SMS_BACKED_TRANSACTION_SOURCES = setOf(
+            TransactionSource.BANK,
+            TransactionSource.CARD,
+            TransactionSource.UPI,
+            TransactionSource.WALLET,
+        )
     }
 }

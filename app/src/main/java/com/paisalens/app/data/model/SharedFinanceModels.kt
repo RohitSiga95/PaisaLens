@@ -385,14 +385,28 @@ data class PaymentCommitment(
     val notes: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** Raw storage identity retained when [accountId] is projected to a merged root. */
+    val physicalAccountId: Long? = null,
 )
+
+fun PaymentCommitment.accountIdentityId(): Long? = physicalAccountId ?: accountId
 
 fun paymentCommitmentIdentityKey(commitment: PaymentCommitment): Triple<String, Long?, PaymentCommitmentKind> =
     Triple(
         normalizedMerchantKey(commitment.merchantKey.ifBlank { commitment.name }),
-        commitment.accountId,
+        commitment.accountIdentityId(),
         commitment.kind,
     )
+
+fun recurringPaymentIdentityKey(
+    recurring: RecurringPayment,
+    accountIdsByNormalizedName: Map<String, Long> = emptyMap(),
+): Triple<String, Long?, PaymentCommitmentKind> = Triple(
+    normalizedMerchantKey(recurring.merchant),
+    recurring.accountIdentityId()
+        ?: recurring.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByNormalizedName::get),
+    PaymentCommitmentKind.SUBSCRIPTION,
+)
 
 /** Keeps the most recently updated row for each merchant/account/kind identity. */
 fun deduplicatedPaymentCommitments(commitments: List<PaymentCommitment>): List<PaymentCommitment> =
@@ -447,26 +461,13 @@ fun suggestPaymentCommitments(
     zoneId: ZoneId = ZoneId.systemDefault(),
     accounts: List<AccountProfile> = emptyList(),
 ): List<PaymentCommitment> {
-    fun accountKey(accountId: Long?, accountName: String?): String = accountId?.let { "id:$it" }
-        ?: accountName?.let(::normalizedMerchantKey)?.takeIf(String::isNotBlank)?.let { "name:$it" }
-        ?: "unscoped"
-    val seenKeys = existingCommitments.mapTo(mutableSetOf()) { commitment ->
-        Triple(
-            normalizedMerchantKey(commitment.merchantKey.ifBlank { commitment.name }),
-            accountKey(commitment.accountId, null),
-            commitment.kind,
-        )
-    }
+    val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
+    val seenKeys = existingCommitments.mapTo(mutableSetOf(), ::paymentCommitmentIdentityKey)
     return recurringPayments.mapNotNull { recurring ->
         val merchantKey = normalizedMerchantKey(recurring.merchant)
-        val accountId = accounts.firstOrNull { account ->
-            recurring.accountName != null && account.name.equals(recurring.accountName, ignoreCase = true)
-        }?.id
-        val suggestionKey = Triple(
-            merchantKey,
-            accountKey(accountId, recurring.accountName),
-            PaymentCommitmentKind.SUBSCRIPTION,
-        )
+        val accountId = recurring.accountId
+            ?: recurring.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByName::get)
+        val suggestionKey = recurringPaymentIdentityKey(recurring, accountIdsByName)
         if (merchantKey.isBlank() || !seenKeys.add(suggestionKey)) return@mapNotNull null
         val frequency = when (recurring.intervalDays) {
             in 5..9 -> PaymentFrequency.WEEKLY
@@ -481,6 +482,7 @@ fun suggestPaymentCommitments(
             amountMinor = recurring.typicalAmountMinor,
             nextDueEpochDay = Instant.ofEpochMilli(recurring.nextDueAt).atZone(zoneId).toLocalDate().toEpochDay(),
             accountId = accountId,
+            physicalAccountId = recurring.physicalAccountId,
             source = PaymentCommitmentSource.ON_DEVICE_SUGGESTION,
             categoryLabel = recurring.categoryLabel,
         )

@@ -12,8 +12,8 @@ android {
         applicationId = "com.paisalens.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.8.5"
+        versionCode = 12
+        versionName = "1.8.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -39,6 +39,9 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -69,6 +72,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

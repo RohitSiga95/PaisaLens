@@ -196,6 +196,7 @@ fun buildHomeMoneyTimeline(
     require(horizonDays in 1..90) { "Home timeline must cover between 1 and 90 days" }
     val endExclusive = today.plusDays(horizonDays.toLong())
     val accountNames = accounts.associate { it.id to it.name }
+    val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
     val commitmentItems = buildPaymentCommitmentDueItems(
         commitments = deduplicatedPaymentCommitments(paymentCommitments),
         today = today,
@@ -203,27 +204,29 @@ fun buildHomeMoneyTimeline(
         includeRepeatingOccurrences = true,
         accountNamesById = accountNames,
     ).map { due -> due.toHomeTimelineItem(HomeTimelineSource.PAYMENT_COMMITMENT) }
-    val reviewedCommitmentKeys = commitmentItems.mapTo(hashSetOf()) {
-        Triple(normalizedMerchantKey(it.title), it.date, normalizedMerchantKey(it.accountName.orEmpty()))
+    val reviewedCommitmentKeys = paymentCommitments
+        .asSequence()
+        .filter { it.status == PaymentCommitmentStatus.ACTIVE && it.amountMinor > 0 }
+        .mapTo(hashSetOf(), ::paymentCommitmentIdentityKey)
+    val unreviewedRecurringPayments = recurringPayments.filterNot { recurring ->
+        recurringPaymentIdentityKey(recurring, accountIdsByName) in reviewedCommitmentKeys
     }
     val scheduledItems = buildDueItems(
         manualBills = manualBills,
-        recurringPayments = recurringPayments,
+        recurringPayments = unreviewedRecurringPayments,
         loans = loans,
         today = today,
         zoneId = zoneId,
         horizonDays = horizonDays,
         includeRepeatingOccurrences = true,
-    ).mapNotNull { due ->
+    ).map { due ->
         val source = when (due.source) {
             DueItemSource.MANUAL_BILL -> HomeTimelineSource.BILL
             DueItemSource.RECURRING_PAYMENT -> HomeTimelineSource.RECURRING_PAYMENT
             DueItemSource.LOAN_EMI -> HomeTimelineSource.LOAN_EMI
             DueItemSource.PAYMENT_COMMITMENT -> HomeTimelineSource.PAYMENT_COMMITMENT
         }
-        val key = Triple(normalizedMerchantKey(due.title), due.dueDate, normalizedMerchantKey(due.accountName.orEmpty()))
-        if (source == HomeTimelineSource.RECURRING_PAYMENT && key in reviewedCommitmentKeys) null
-        else due.toHomeTimelineItem(source)
+        due.toHomeTimelineItem(source)
     }
     val cardItems = currentCreditCardBills(creditCardBills)
         .asSequence()
@@ -347,12 +350,19 @@ fun buildHomeCardHealth(
                 .maxWithOrNull(compareBy<CreditCardBill> { it.dueDateEpochDay }.thenBy { it.detectedAt })
                 ?: cardIdentityKey(account.institution, account.accountHint)?.let(billsByIdentity::get)
             bill?.let { matchedBillIds += it.id }
-            val utilization = calculateCreditUtilization(
-                account.id,
+            val partialMergedCredit = account.mergedMemberCount > 1 &&
+                account.availableCreditMinor != null && account.availabilityFetchedAt == null
+            val completeAvailableCredit = if (partialMergedCredit) {
+                null
+            } else {
                 account.availableCreditMinor
                     ?: matches.filter { it.availableCreditMinor != null }
                         .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
-                        ?.availableCreditMinor,
+                        ?.availableCreditMinor
+            }
+            val utilization = calculateCreditUtilization(
+                account.id,
+                completeAvailableCredit,
                 account.creditLimitMinor
                     ?: matches.filter { it.creditLimitMinor != null }
                         .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
@@ -432,6 +442,9 @@ private fun buildHomeFinancialPulse(
     val availableCash = availableAccounts.takeIf(List<AccountProfile>::isNotEmpty)
         ?.mapNotNull(AccountProfile::balanceMinor)
         ?.sumMoney { it }
+    val hasIncompleteMergedLiquidAccount = liquidAccounts.any {
+        it.mergedMemberCount > 1 && it.availabilityFetchedAt == null
+    }
     val expectedIncomeDate = timeline.items.firstOrNull { it.isIncoming }?.date
     val throughDate = expectedIncomeDate?.minusDays(1)?.coerceAtLeast(today) ?: timeline.endDateInclusive
     val obligations = timeline.items
@@ -448,7 +461,7 @@ private fun buildHomeFinancialPulse(
     val safetyBuffer = availableCash?.coerceAtLeast(0)?.let {
         (it.toDouble() * safetyBufferBasisPoints / 10_000.0).toLong()
     } ?: 0L
-    val safeToSpend = availableCash?.let { cash ->
+    val safeToSpend = availableCash?.takeUnless { hasIncompleteMergedLiquidAccount }?.let { cash ->
         saturatingSubtract(saturatingSubtract(saturatingSubtract(cash, obligations), goalReserve), safetyBuffer)
     }
     val timestamps = availableAccounts.mapNotNull(AccountProfile::availabilityFetchedAt)
@@ -471,6 +484,9 @@ private fun buildHomeFinancialPulse(
             add("Safe to spend needs at least one saved bank, wallet, or cash balance.")
         } else {
             add("Uses ${availableAccounts.size} of ${liquidAccounts.size} spendable account balances.")
+            if (hasIncompleteMergedLiquidAccount) {
+                add("Safe to spend is withheld until every merged account balance is available.")
+            }
             add("Subtracts scheduled payments through $throughDate; predicted income is not added.")
             if (goalReserve > 0) add("Sets aside a proportional reserve for active savings goals.")
             if (safetyBufferBasisPoints > 0) add("Keeps a ${safetyBufferBasisPoints / 100.0}% safety buffer.")
@@ -507,7 +523,7 @@ private fun inferExpectedIncomeItems(
 ): List<HomeTimelineItem> = transactions.asSequence()
     .filter { it.type == TransactionType.INCOME && it.reviewStatus == ReviewStatus.CONFIRMED }
     .filter { Instant.ofEpochMilli(it.occurredAt).atZone(zoneId).toLocalDate().isBefore(today) }
-    .groupBy { normalizedMerchantKey(it.merchant) to it.accountId }
+    .groupBy { normalizedMerchantKey(it.merchant) to it.accountIdentityId() }
     .mapNotNull { (identity, matches) ->
         if (identity.first.isBlank() || matches.size < 2) return@mapNotNull null
         val ordered = matches.sortedBy(TransactionRecord::occurredAt)

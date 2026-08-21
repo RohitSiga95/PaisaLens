@@ -196,6 +196,10 @@ object PaisaLensBackupCodec {
                     data.writeNullableLong(account.availabilityFetchedAt)
                     data.writeNullable(account.availabilitySender)
                     if (formatVersion >= 5) data.writeNullable(account.identityKey)
+                    if (formatVersion >= 8) {
+                        data.writeNullableLong(account.mergedIntoAccountId)
+                        data.writeInt(account.mergedMemberCount.coerceAtLeast(1))
+                    }
                 }
             }
             data.writeInt(snapshot.customCategories.size)
@@ -250,6 +254,7 @@ object PaisaLensBackupCodec {
                     data.writeNullableDouble(transaction.exchangeRate)
                 }
                 if (formatVersion >= 7) data.writeInt(transaction.duplicateCount.coerceAtLeast(1))
+                if (formatVersion >= 9) data.writeNullable(transaction.dedupeFingerprint)
             }
             if (formatVersion >= 2) {
                 data.writeInt(snapshot.loans.size)
@@ -517,6 +522,8 @@ object PaisaLensBackupCodec {
                     availabilityFetchedAt = if (formatVersion >= 3) data.readNullableLong() else null,
                     availabilitySender = if (formatVersion >= 3) data.readNullable() else null,
                     identityKey = if (formatVersion >= 5) data.readNullable() else null,
+                    mergedIntoAccountId = if (formatVersion >= 8) data.readNullableLong() else null,
+                    mergedMemberCount = if (formatVersion >= 8) data.readSafeCount().coerceAtLeast(1) else 1,
                 )
             }
             val customCategories = List(data.readSafeCount()) {
@@ -574,6 +581,7 @@ object PaisaLensBackupCodec {
                     originalCurrency = if (formatVersion >= 2) data.readNullable() else null,
                     exchangeRate = if (formatVersion >= 2) data.readNullableDouble() else null,
                     duplicateCount = if (formatVersion >= 7) data.readInt().coerceAtLeast(1) else 1,
+                    dedupeFingerprint = if (formatVersion >= 9) data.readNullable() else null,
                 )
             }
             val loans = if (formatVersion >= 2) {
@@ -1183,7 +1191,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 7
+    private const val FORMAT_VERSION = 9
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

@@ -108,6 +108,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.AccountMergeResult
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.AttentionAction
 import com.paisalens.app.data.model.AttentionItem
@@ -310,6 +311,9 @@ fun PaisaLensApp(
     var selectedMerchantGroup by remember { mutableStateOf<MerchantTransactionGroup?>(null) }
     var selectedAccount by remember { mutableStateOf<AccountProfile?>(null) }
     var showAccountManager by remember { mutableStateOf(false) }
+    var showAccountMerge by remember { mutableStateOf(false) }
+    var accountMergeSaving by remember { mutableStateOf(false) }
+    var accountMergeError by remember { mutableStateOf<String?>(null) }
     var showCategoryManager by remember { mutableStateOf(false) }
     var showMerchantCleanup by remember { mutableStateOf(false) }
     var showLoanManager by remember { mutableStateOf(false) }
@@ -912,7 +916,55 @@ fun PaisaLensApp(
                 onAdd = viewModel::addAccount,
                 onUpdate = viewModel::updateAccount,
                 onDelete = viewModel::deleteAccount,
+                onMerge = {
+                    accountMergeError = null
+                    showAccountManager = false
+                    showAccountMerge = true
+                },
                 onDismiss = { showAccountManager = false },
+            )
+        }
+
+        if (showAccountMerge) {
+            AccountMergeSheet(
+                accounts = accounts,
+                isSaving = accountMergeSaving,
+                errorMessage = accountMergeError,
+                onConfirm = { draft ->
+                    if (!accountMergeSaving) {
+                        accountMergeSaving = true
+                        accountMergeError = null
+                        viewModel.mergeAccounts(
+                            accountIds = draft.sourceAccountIds,
+                            mergedName = draft.mergedName,
+                        ) { outcome ->
+                            accountMergeSaving = false
+                            outcome.fold(
+                                onSuccess = { result ->
+                                    when (result) {
+                                        is AccountMergeResult.Success -> {
+                                            showAccountMerge = false
+                                            showAccountManager = true
+                                        }
+                                        is AccountMergeResult.Failure -> {
+                                            accountMergeError = result.message
+                                        }
+                                    }
+                                },
+                                onFailure = { error ->
+                                    accountMergeError = error.message ?: "Could not merge those accounts"
+                                },
+                            )
+                        }
+                    }
+                },
+                onDismiss = {
+                    if (!accountMergeSaving) {
+                        accountMergeError = null
+                        showAccountMerge = false
+                        showAccountManager = true
+                    }
+                },
             )
         }
 

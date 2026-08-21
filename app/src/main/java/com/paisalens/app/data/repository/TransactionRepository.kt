@@ -7,6 +7,7 @@ import com.paisalens.app.data.local.PaisaLensDatabase
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountBalanceWriteResult
+import com.paisalens.app.data.model.AccountMergeResult
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.AdvancedBudgetPlan
@@ -465,6 +466,15 @@ class TransactionRepository(
     suspend fun updateAccount(account: AccountProfile) = withContext(Dispatchers.IO) {
         database.updateAccountProfile(account)
         refresh()
+    }
+
+    suspend fun mergeAccounts(
+        accountIds: Collection<Long>,
+        mergedName: String,
+    ): AccountMergeResult = withContext(Dispatchers.IO) {
+        val result = database.mergeAccounts(accountIds, mergedName)
+        if (result is AccountMergeResult.Success) refresh()
+        result
     }
 
     suspend fun deleteAccount(id: Long) = withContext(Dispatchers.IO) {

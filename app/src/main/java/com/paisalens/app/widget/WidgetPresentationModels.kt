@@ -9,7 +9,6 @@ import com.paisalens.app.data.model.DueStatus
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.PaymentCommitment
-import com.paisalens.app.data.model.PaymentCommitmentKind
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionRecord
@@ -21,6 +20,8 @@ import com.paisalens.app.data.model.buildSpendingCategoryTotals
 import com.paisalens.app.data.model.currentCreditCardBills
 import com.paisalens.app.data.model.detectRecurringPayments
 import com.paisalens.app.data.model.normalizedMerchantKey
+import com.paisalens.app.data.model.paymentCommitmentIdentityKey
+import com.paisalens.app.data.model.recurringPaymentIdentityKey
 import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
 import java.time.Instant
 import java.time.LocalDate
@@ -125,15 +126,9 @@ internal fun buildDueBillsWidgetPresentation(
 ): DueBillsWidgetPresentation {
     val recurringPayments = detectRecurringPayments(transactions)
     val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
-    val reviewedSubscriptionKeys = commitments.mapTo(mutableSetOf()) {
-        Triple(normalizedMerchantKey(it.merchantKey.ifBlank { it.name }), it.accountId, it.kind)
-    }
+    val reviewedSubscriptionKeys = commitments.mapTo(mutableSetOf(), ::paymentCommitmentIdentityKey)
     val deduplicatedRecurring = recurringPayments.filterNot { recurring ->
-        Triple(
-            normalizedMerchantKey(recurring.merchant),
-            recurring.accountName?.let(::normalizedMerchantKey)?.let(accountIdsByName::get),
-            PaymentCommitmentKind.SUBSCRIPTION,
-        ) in reviewedSubscriptionKeys
+        recurringPaymentIdentityKey(recurring, accountIdsByName) in reviewedSubscriptionKeys
     }
     val dueItems = (
         buildDueItems(

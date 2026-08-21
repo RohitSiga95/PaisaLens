@@ -5,6 +5,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -233,6 +234,128 @@ class HomeDashboardModelsTest {
     }
 
     @Test
+    fun `expected income keeps same payer series separate across merged physical members`() {
+        val account = AccountProfile(id = 9, name = "Combined banks", type = AccountType.BANK_ACCOUNT)
+        val transactions = listOf(
+            income(3_000_000, LocalDate.of(2026, 6, 25)).copy(
+                accountId = account.id,
+                accountName = account.name,
+                physicalAccountId = 91,
+            ),
+            income(3_000_000, LocalDate.of(2026, 7, 25)).copy(
+                accountId = account.id,
+                accountName = account.name,
+                physicalAccountId = 91,
+            ),
+            income(1_000_000, LocalDate.of(2026, 6, 28)).copy(
+                accountId = account.id,
+                accountName = account.name,
+                physicalAccountId = 92,
+            ),
+            income(1_000_000, LocalDate.of(2026, 7, 28)).copy(
+                accountId = account.id,
+                accountName = account.name,
+                physicalAccountId = 92,
+            ),
+        )
+
+        val timeline = buildHomeMoneyTimeline(
+            transactions = transactions,
+            accounts = listOf(account),
+            manualBills = emptyList(),
+            recurringPayments = emptyList(),
+            loans = emptyList(),
+            creditCardBills = emptyList(),
+            paymentCommitments = emptyList(),
+            today = now.toLocalDate(),
+            zoneId = zoneId,
+        )
+
+        val expectedIncome = timeline.items.filter { it.source == HomeTimelineSource.EXPECTED_INCOME }
+        assertEquals(2, expectedIncome.size)
+        assertEquals(setOf(1_000_000L, 3_000_000L), expectedIncome.mapTo(mutableSetOf()) { it.amountMinor })
+        assertEquals(
+            setOf(LocalDate.of(2026, 8, 24), LocalDate.of(2026, 8, 27)),
+            expectedIncome.mapTo(mutableSetOf()) { it.date },
+        )
+    }
+
+    @Test
+    fun `reviewed commitment suppresses only matching merged physical recurrence`() {
+        val account = AccountProfile(id = 9, name = "Combined cards", type = AccountType.CREDIT_CARD)
+        val dueDate = now.toLocalDate().plusDays(5)
+        fun recurring(physicalAccountId: Long) = RecurringPayment(
+            merchant = "Stream Co",
+            accountName = account.name,
+            typicalAmountMinor = 49_900,
+            intervalDays = 30,
+            lastPaidAt = dueDate.minusDays(30).atStartOfDay(zoneId).toInstant().toEpochMilli(),
+            nextDueAt = dueDate.atStartOfDay(zoneId).toInstant().toEpochMilli(),
+            occurrences = 3,
+            categoryLabel = "Entertainment",
+            accountId = account.id,
+            physicalAccountId = physicalAccountId,
+        )
+
+        val timeline = buildHomeMoneyTimeline(
+            transactions = emptyList(),
+            accounts = listOf(account),
+            manualBills = emptyList(),
+            recurringPayments = listOf(recurring(91), recurring(92)),
+            loans = emptyList(),
+            creditCardBills = emptyList(),
+            paymentCommitments = listOf(
+                PaymentCommitment(
+                    id = 7,
+                    name = "Stream Co",
+                    merchantKey = "stream co",
+                    amountMinor = 49_900,
+                    nextDueEpochDay = dueDate.toEpochDay(),
+                    accountId = account.id,
+                    physicalAccountId = 91,
+                ),
+            ),
+            today = now.toLocalDate(),
+            zoneId = zoneId,
+        )
+
+        assertEquals(1, timeline.items.count { it.source == HomeTimelineSource.PAYMENT_COMMITMENT })
+        assertEquals(1, timeline.items.count { it.source == HomeTimelineSource.RECURRING_PAYMENT })
+    }
+
+    @Test
+    fun `safe to spend is withheld for incomplete merged liquid balance`() {
+        val snapshot = buildHomeDashboardSnapshot(
+            transactions = emptyList(),
+            effectiveExpenseTransactions = emptyList(),
+            accounts = listOf(
+                AccountProfile(
+                    id = 19,
+                    name = "Combined banks",
+                    type = AccountType.BANK_ACCOUNT,
+                    balanceMinor = 1_000_000,
+                    availabilityFetchedAt = null,
+                    mergedMemberCount = 2,
+                ),
+            ),
+            legacyBudgets = emptyList(),
+            advancedBudgets = emptyList(),
+            manualBills = emptyList(),
+            recurringPayments = emptyList(),
+            loans = emptyList(),
+            creditCardBills = emptyList(),
+            paymentCommitments = emptyList(),
+            savingsGoals = emptyList(),
+            savingsContributions = emptyList(),
+            now = now,
+        )
+
+        assertEquals(1_000_000L, snapshot.pulse.availableCashMinor)
+        assertNull(snapshot.pulse.safeToSpendMinor)
+        assertEquals(HomePulseConfidence.PARTIAL, snapshot.pulse.confidence)
+    }
+
+    @Test
     fun `budget pace compares spending against elapsed Budgeting 2 point 0 plan`() {
         val plan = AdvancedBudgetPlan(
             id = 11,
@@ -390,6 +513,33 @@ class HomeDashboardModelsTest {
             assertEquals(8_000, utilizationBasisPoints)
             assertEquals(CreditUtilizationBand.CRITICAL, utilizationBand)
         }
+    }
+
+    @Test
+    fun `card health does not treat a partial merged balance as complete utilization`() {
+        val health = buildHomeCardHealth(
+            accounts = listOf(
+                AccountProfile(
+                    id = 35,
+                    name = "Combined cards",
+                    type = AccountType.CREDIT_CARD,
+                    availableCreditMinor = 200_000,
+                    creditLimitMinor = 1_000_000,
+                    availabilityFetchedAt = null,
+                    mergedMemberCount = 2,
+                ),
+            ),
+            creditCardBills = emptyList(),
+        )
+
+        with(health.cards.single()) {
+            assertNull(availableCreditMinor)
+            assertNull(utilizationBasisPoints)
+            assertEquals(CreditUtilizationBand.UNKNOWN, utilizationBand)
+        }
+        assertNull(health.totalAvailableCreditMinor)
+        assertNull(health.highestUtilizationBasisPoints)
+        assertEquals(0, health.highUtilizationCount)
     }
 
     @Test

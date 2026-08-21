@@ -250,7 +250,7 @@ fun SettingsScreen(
                     subtitle = if (accountCount == 0) {
                         "Add an account or scan SMS to detect one automatically."
                     } else {
-                        "$accountCount account${if (accountCount == 1) "" else "s"} · rename, assign, and organize"
+                        "$accountCount account${if (accountCount == 1) "" else "s"} · rename, merge, assign, and organize"
                     },
                     onClick = onManageAccounts,
                     trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },

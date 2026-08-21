@@ -75,6 +75,19 @@ class TrustAccuracyModelsTest {
     }
 
     @Test
+    fun reconciliationDoesNotDeduplicateDifferentPhysicalMembersOfMergedAccount() {
+        val date = LocalDate.of(2026, 7, 10).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
+        val sms = transaction(1, 4, 75_000, TransactionType.EXPENSE, date, "ACME STORE")
+            .copy(physicalAccountId = 41)
+        val statement = transaction(2, 4, 75_000, TransactionType.EXPENSE, date, "Acme Store purchase")
+            .copy(source = TransactionSource.STATEMENT, physicalAccountId = 42)
+
+        val rows = deduplicateReconciliationTransactions(listOf(statement, sms))
+
+        assertEquals(listOf(1L, 2L), rows.map(TransactionRecord::id))
+    }
+
+    @Test
     fun laterLedgerChangeInvalidatesAReconciledMonth() {
         val date = LocalDate.of(2026, 7, 10).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
         val reconciliation = MonthlyReconciliation(
@@ -264,6 +277,32 @@ class TrustAccuracyModelsTest {
                 ZoneOffset.UTC,
             ).isEmpty(),
         )
+    }
+
+    @Test
+    fun mergedMemberTransferUsesPhysicalIdentityForValidationAndSuggestion() {
+        val date = LocalDate.of(2026, 7, 4).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
+        val debit = transaction(1, 10, 50_000, TransactionType.EXPENSE, date, "Transfer to savings")
+            .copy(physicalAccountId = 101)
+        val credit = transaction(2, 10, 50_000, TransactionType.INCOME, date, "Transfer received")
+            .copy(physicalAccountId = 102)
+        val candidate = TransactionLink(
+            sourceTransactionId = debit.id,
+            targetTransactionId = credit.id,
+            type = TransactionLinkType.TRANSFER,
+        )
+        val records = listOf(debit, credit).associateBy(TransactionRecord::id)
+
+        assertTrue(validateTransactionLink(candidate, emptyList(), records.keys, records).isValid)
+        assertEquals(1, suggestTransactionLinks(records.values.toList(), emptyList(), ZoneOffset.UTC).size)
+
+        val samePhysical = credit.copy(physicalAccountId = debit.physicalAccountId)
+        val samePhysicalRecords = listOf(debit, samePhysical).associateBy(TransactionRecord::id)
+        assertEquals(
+            TransactionLinkIssue.SAME_ACCOUNT_TRANSFER,
+            validateTransactionLink(candidate, emptyList(), samePhysicalRecords.keys, samePhysicalRecords).issue,
+        )
+        assertTrue(suggestTransactionLinks(samePhysicalRecords.values.toList(), emptyList(), ZoneOffset.UTC).isEmpty())
     }
 
     @Test

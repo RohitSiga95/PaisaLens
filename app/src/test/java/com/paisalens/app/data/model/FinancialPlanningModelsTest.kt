@@ -153,6 +153,33 @@ class FinancialPlanningModelsTest {
     }
 
     @Test
+    fun mergedCardWithPartialAvailabilityDoesNotProduceUtilization() {
+        val account = AccountProfile(
+            id = 21,
+            name = "Combined cards",
+            type = AccountType.CREDIT_CARD,
+            availableCreditMinor = 70_000,
+            creditLimitMinor = 200_000,
+            availabilityFetchedAt = null,
+            mergedMemberCount = 2,
+        )
+        val oneMemberSnapshot = AccountBalanceSnapshot(
+            id = 22,
+            accountId = account.id,
+            balanceMinor = null,
+            availableCreditMinor = 70_000,
+            creditLimitMinor = 100_000,
+            recordedAt = 1,
+        )
+
+        val utilization = buildCreditUtilizations(listOf(account), listOf(oneMemberSnapshot)).single()
+
+        assertNull(utilization.availableCreditMinor)
+        assertNull(utilization.utilizationBasisPoints)
+        assertEquals(CreditUtilizationBand.UNKNOWN, utilization.band)
+    }
+
+    @Test
     fun dueCentreCombinesManualRecurringAndLoanItems() {
         val today = LocalDate.of(2026, 8, 7)
         val items = buildDueItems(
@@ -394,6 +421,92 @@ class FinancialPlanningModelsTest {
         assertEquals(130_000L, summary.liabilitiesMinor)
         assertEquals(170_000L, summary.netWorthMinor)
         assertEquals(4, summary.items.size)
+    }
+
+    @Test
+    fun netWorthExcludesIncompleteMergedBankBalance() {
+        val summary = buildNetWorthSummary(
+            accounts = listOf(
+                AccountProfile(
+                    id = 20,
+                    name = "Combined banks",
+                    type = AccountType.BANK_ACCOUNT,
+                    balanceMinor = 250_000,
+                    availabilityFetchedAt = null,
+                    mergedMemberCount = 2,
+                ),
+            ),
+            loans = emptyList(),
+            manualItems = emptyList(),
+        )
+
+        assertEquals(0L, summary.assetsMinor)
+        assertTrue(summary.items.isEmpty())
+    }
+
+    @Test
+    fun netWorthExcludesMergedCardWithIncompleteAvailabilityOrLimit() {
+        val summary = buildNetWorthSummary(
+            accounts = listOf(
+                AccountProfile(
+                    id = 30,
+                    name = "Partial availability",
+                    type = AccountType.CREDIT_CARD,
+                    accountHint = "1111",
+                    availableCreditMinor = 40_000,
+                    creditLimitMinor = 100_000,
+                    availabilityFetchedAt = null,
+                    mergedMemberCount = 2,
+                ),
+                AccountProfile(
+                    id = 31,
+                    name = "Missing member limit",
+                    type = AccountType.CREDIT_CARD,
+                    accountHint = "2222",
+                    availableCreditMinor = 30_000,
+                    creditLimitMinor = null,
+                    availabilityFetchedAt = 100,
+                    mergedMemberCount = 2,
+                ),
+            ),
+            loans = emptyList(),
+            manualItems = emptyList(),
+            creditLimitsByAccountId = mapOf(31L to 200_000L),
+        )
+
+        assertEquals(0L, summary.liabilitiesMinor)
+        assertTrue(summary.items.isEmpty())
+    }
+
+    @Test
+    fun netWorthKeepsDifferentBanksWithSameLastFourSeparate() {
+        val summary = buildNetWorthSummary(
+            accounts = listOf(
+                AccountProfile(
+                    id = 40,
+                    name = "HDFC salary",
+                    type = AccountType.BANK_ACCOUNT,
+                    accountHint = "1234",
+                    institution = "HDFC Bank",
+                    balanceMinor = 100_000,
+                    availabilityFetchedAt = 100,
+                ),
+                AccountProfile(
+                    id = 41,
+                    name = "IDFC savings",
+                    type = AccountType.BANK_ACCOUNT,
+                    accountHint = "1234",
+                    institution = "IDFC FIRST Bank",
+                    balanceMinor = 200_000,
+                    availabilityFetchedAt = 200,
+                ),
+            ),
+            loans = emptyList(),
+            manualItems = emptyList(),
+        )
+
+        assertEquals(300_000L, summary.assetsMinor)
+        assertEquals(2, summary.items.size)
     }
 
     @Test

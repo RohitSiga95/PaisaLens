@@ -1,5 +1,6 @@
 package com.paisalens.app.data.model
 
+import com.paisalens.app.sms.BankSmsSupport
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -171,10 +172,16 @@ fun buildCreditUtilizations(
 ): List<CreditUtilization> = accounts
     .filter { it.type == AccountType.CREDIT_CARD }
     .map { account ->
-        val latest = snapshots.filter { it.accountId == account.id }.maxByOrNull { it.recordedAt }
+        val latest = snapshots
+            .takeIf { account.mergedMemberCount <= 1 }
+            ?.filter { it.accountId == account.id }
+            ?.maxByOrNull { it.recordedAt }
+        val completeMergedAvailable = account.availableCreditMinor.takeIf {
+            account.mergedMemberCount <= 1 || account.availabilityFetchedAt != null
+        }
         calculateCreditUtilization(
             accountId = account.id,
-            availableCreditMinor = latest?.availableCreditMinor ?: account.availableCreditMinor,
+            availableCreditMinor = latest?.availableCreditMinor ?: completeMergedAvailable,
             creditLimitMinor = account.creditLimitMinor ?: latest?.creditLimitMinor,
         )
     }
@@ -293,13 +300,16 @@ fun buildDueItems(
 
     recurringPayments.filter { it.typicalAmountMinor > 0 }.forEach { payment ->
         var dueDate = Instant.ofEpochMilli(payment.nextDueAt).atZone(zoneId).toLocalDate()
+        val accountIdentity = payment.accountIdentityId()?.toString()
+            ?: normalizedMerchantKey(payment.accountName.orEmpty()).ifBlank { "unscoped" }
         while (dueDate.isBefore(endDateExclusive)) {
             dueItems += DueItem(
-                stableId = "recurring:${normalizedMerchantKey(payment.merchant)}:${dueDate.toEpochDay()}",
+                stableId = "recurring:${normalizedMerchantKey(payment.merchant)}:$accountIdentity:${dueDate.toEpochDay()}",
                 source = DueItemSource.RECURRING_PAYMENT,
                 title = payment.merchant,
                 amountMinor = payment.typicalAmountMinor,
                 dueDate = dueDate,
+                accountId = payment.accountId,
                 accountName = payment.accountName,
                 status = classifyDueDate(dueDate, today),
             )
@@ -487,7 +497,12 @@ fun buildNetWorthSummary(
     val consolidatedAccounts = accounts
         .groupBy { account ->
             val hint = account.accountHint?.filter(Char::isDigit)?.takeLast(4).orEmpty()
-            if (hint.isNotBlank()) "${account.type}:$hint" else "${account.type}:id:${account.id}"
+            val institution = BankSmsSupport.accountBankKey(account.institution, account.name)
+            if (hint.isNotBlank() && institution != null) {
+                "${account.type}:institution:$institution:last4:$hint"
+            } else {
+                "${account.type}:id:${account.id}"
+            }
         }
         .values
         .map { matches ->
@@ -500,14 +515,24 @@ fun buildNetWorthSummary(
                 balanceMinor = latestWithValue(AccountProfile::balanceMinor),
                 availableCreditMinor = latestWithValue(AccountProfile::availableCreditMinor),
                 creditLimitMinor = latestWithValue(AccountProfile::creditLimitMinor)
-                    ?: matches.mapNotNull { creditLimitsByAccountId[it.id] }.firstOrNull(),
+                    ?: matches
+                        .takeIf { latest.mergedMemberCount <= 1 }
+                        ?.mapNotNull { creditLimitsByAccountId[it.id] }
+                        ?.firstOrNull(),
             )
         }
 
     val accountItems = consolidatedAccounts.mapNotNull { account ->
+        if (account.mergedMemberCount > 1 && account.availabilityFetchedAt == null) {
+            return@mapNotNull null
+        }
         when (account.type) {
             AccountType.CREDIT_CARD -> {
-                val limit = account.creditLimitMinor ?: creditLimitsByAccountId[account.id] ?: return@mapNotNull null
+                val limit = if (account.mergedMemberCount > 1) {
+                    account.creditLimitMinor
+                } else {
+                    account.creditLimitMinor ?: creditLimitsByAccountId[account.id]
+                } ?: return@mapNotNull null
                 val available = account.availableCreditMinor ?: return@mapNotNull null
                 val used = (limit - available.coerceIn(0, limit)).coerceAtLeast(0)
                 NetWorthItem(

@@ -235,14 +235,104 @@ class TransactionsScreenFilterTest {
     }
 
     @Test
-    fun dropsSelectionsWhoseAccountGroupWasRemoved() {
+    fun unavailableSelectionsAreRetainedAndNeverBroadenToAllAccounts() {
         val option = activityAccountFilterOptions(
             listOf(account(1, "Primary", AccountType.BANK_ACCOUNT, "SBI", "1234")),
         ).single()
+        val staleKey = "BANK_ACCOUNT|institution:closedbank|last4:9999"
+        val rows = listOf(
+            transaction(1, 1L, "Groceries", TransactionSource.BANK, AccountType.BANK_ACCOUNT, "1234", "State Bank of India"),
+        )
 
-        assertEquals(setOf(option.key), validActivityAccountSelections(setOf(option.key, "missing"), listOf(option)))
-        assertTrue(validActivityAccountSelections(setOf(option.key), emptyList()).isEmpty())
+        val mixed = resolveActivityAccountSelections(setOf(option.key, staleKey), listOf(option))
+        assertEquals(setOf(option.key), mixed.resolvedKeys)
+        assertEquals(setOf(staleKey), mixed.unavailableKeys)
+        assertEquals(setOf(option.key, staleKey), mixed.selectionKeys)
+        assertEquals(setOf(staleKey), validActivityAccountSelections(setOf(staleKey), emptyList()))
+        assertTrue(
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(staleKey), listOf(option),
+            ).isEmpty(),
+        )
         assertFalse(option.accessibilityLabel.isBlank())
+    }
+
+    @Test
+    fun savedMemberSelectionMapsToMergedRootUsingLinkedSmsIdentity() {
+        val before = activityAccountFilterOptions(
+            accounts = listOf(
+                account(1, "Salary", AccountType.BANK_ACCOUNT, "HDFC", "0801"),
+                account(2, "Savings", AccountType.BANK_ACCOUNT, "IDFC", "8004"),
+            ),
+        )
+        val oldIdfcKey = before.single { it.institutionName == "IDFC FIRST Bank" }.key
+        val mergedRoot = account(
+            id = 1,
+            name = "Everyday money",
+            type = AccountType.BANK_ACCOUNT,
+            institution = null,
+            hint = null,
+        ).copy(mergedMemberCount = 2)
+        val rows = listOf(
+            transaction(
+                id = 10,
+                accountId = 1L,
+                merchant = "IDFC purchase",
+                source = TransactionSource.BANK,
+                accountType = AccountType.BANK_ACCOUNT,
+                hint = "8004",
+                institutionName = "IDFC FIRST Bank",
+            ),
+            transaction(
+                id = 11,
+                accountId = 1L,
+                merchant = "HDFC purchase",
+                source = TransactionSource.BANK,
+                accountType = AccountType.BANK_ACCOUNT,
+                hint = "0801",
+                institutionName = "HDFC Bank",
+            ),
+        )
+        val after = activityAccountFilterOptions(listOf(mergedRoot), rows)
+
+        assertEquals(1, after.size)
+        val mergedOption = after.single()
+        assertTrue(oldIdfcKey in mergedOption.legacyKeys)
+        assertEquals(setOf("0801", "8004"), mergedOption.lastFourValues)
+        val resolution = resolveActivityAccountSelections(setOf(oldIdfcKey), after)
+        assertEquals(setOf(mergedOption.key), resolution.resolvedKeys)
+        assertTrue(resolution.unavailableKeys.isEmpty())
+        assertEquals(
+            listOf(10L, 11L),
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(oldIdfcKey), after,
+            ).map(TransactionRecord::id),
+        )
+    }
+
+    @Test
+    fun ambiguousPreInstitutionKeyRemainsUnavailableInsteadOfCrossBankMapping() {
+        val rows = listOf(
+            transaction(1, 1L, "HDFC", TransactionSource.BANK, AccountType.BANK_ACCOUNT, "0801", "HDFC Bank"),
+            transaction(2, 2L, "IDFC", TransactionSource.BANK, AccountType.BANK_ACCOUNT, "0801", "IDFC FIRST Bank"),
+        )
+        val options = activityAccountFilterOptions(
+            accounts = listOf(
+                account(1, "Salary", AccountType.BANK_ACCOUNT, "HDFC", "0801"),
+                account(2, "Savings", AccountType.BANK_ACCOUNT, "IDFC", "0801"),
+            ),
+            transactions = rows,
+        )
+        val legacyKey = "BANK_ACCOUNT|last4:0801"
+
+        val resolution = resolveActivityAccountSelections(setOf(legacyKey), options)
+        assertTrue(resolution.resolvedKeys.isEmpty())
+        assertEquals(setOf(legacyKey), resolution.unavailableKeys)
+        assertTrue(
+            filterActivityTransactions(
+                rows, "", TransactionFilter.ALL, setOf(legacyKey), options,
+            ).isEmpty(),
+        )
     }
 
     private fun account(

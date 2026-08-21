@@ -10,10 +10,18 @@ internal data class TransactionAuditPayload(
     val record: TransactionRecord,
     val rawMessageCipher: ByteArray?,
     val createdAt: Long,
+    val smsSources: List<TransactionAuditSmsSource> = emptyList(),
+)
+
+internal data class TransactionAuditSmsSource(
+    val sourceMessageId: String,
+    val receivedAt: Long,
 )
 
 internal object TransactionAuditPayloadCodec {
-    fun encode(payload: TransactionAuditPayload): String {
+    fun encode(payload: TransactionAuditPayload): String = encode(payload, includeExtension = true)
+
+    private fun encode(payload: TransactionAuditPayload, includeExtension: Boolean): String {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { data ->
             val item = payload.record
@@ -39,11 +47,50 @@ internal object TransactionAuditPayloadCodec {
             data.writeNullableDouble(item.exchangeRate)
             data.writeNullableBytes(payload.rawMessageCipher)
             data.writeLong(payload.createdAt)
+            if (includeExtension) {
+                // Keep extensions trailing so audit payloads written by older releases remain
+                // readable. These fields are required to faithfully restore a consolidated SMS
+                // transaction after a delete/undo cycle.
+                data.writeInt(item.duplicateCount.coerceAtLeast(1))
+                data.writeNullableString(item.dedupeFingerprint)
+                require(payload.smsSources.size <= MAX_SMS_SOURCES) {
+                    "Audit payload contains too many SMS sources"
+                }
+                data.writeInt(payload.smsSources.size)
+                payload.smsSources.forEach { source ->
+                    data.writeUTF(source.sourceMessageId)
+                    data.writeLong(source.receivedAt)
+                }
+            }
         }
         return Base64.getEncoder().encodeToString(bytes.toByteArray())
     }
 
-    fun decode(value: String): TransactionAuditPayload = DataInputStream(
+    fun decode(value: String): TransactionAuditPayload = decodeWithMetadata(value).payload
+
+    fun hasExtension(value: String): Boolean = decodeWithMetadata(value).hasExtension
+
+    /**
+     * Audit conflict detection historically compared the encoded payload verbatim. Once new
+     * trailing fields were added, that would make every still-valid legacy audit event appear
+     * stale. A legacy expected payload therefore compares only the state it was capable of
+     * recording; extended payloads continue to compare every field strictly.
+     */
+    fun equivalentForUndo(expectedValue: String, currentValue: String): Boolean {
+        val expected = decodeWithMetadata(expectedValue)
+        val current = decodeWithMetadata(currentValue)
+        if (!legacyFieldsEqual(expected.payload, current.payload)) return false
+        if (expected.hasExtension) return extendedFieldsEqual(expected.payload, current.payload)
+        // A legacy payload cannot prove whether extra SMS alerts were attached after the event.
+        // Only accept the unchanged single-alert shape; otherwise undo could erase newer data.
+        return current.payload.record.duplicateCount == 1 &&
+            current.payload.smsSources.size <= 1 &&
+            current.payload.smsSources.all {
+                it.sourceMessageId == current.payload.record.sourceMessageId
+            }
+    }
+
+    private fun decodeWithMetadata(value: String): DecodedPayload = DataInputStream(
         ByteArrayInputStream(Base64.getDecoder().decode(value)),
     ).use { data ->
         val record = TransactionRecord(
@@ -67,16 +114,46 @@ internal object TransactionAuditPayloadCodec {
             originalCurrency = data.readNullableString(),
             exchangeRate = data.readNullableDouble(),
         )
-        TransactionAuditPayload(
-            record = record,
-            rawMessageCipher = data.readNullableBytes(),
-            createdAt = data.readLong(),
-        ).also { require(data.available() == 0) { "Audit payload contains trailing data" } }
+        val rawMessageCipher = data.readNullableBytes()
+        val createdAt = data.readLong()
+        val hasExtension = data.available() > 0
+        val duplicateCount = if (data.available() > 0) data.readInt().coerceAtLeast(1) else 1
+        val dedupeFingerprint = if (data.available() > 0) data.readNullableString() else null
+        val smsSources = if (data.available() > 0) {
+            List(data.readCount(MAX_SMS_SOURCES)) {
+                TransactionAuditSmsSource(
+                    sourceMessageId = data.readUTF(),
+                    receivedAt = data.readLong(),
+                )
+            }
+        } else {
+            emptyList()
+        }
+        require(data.available() == 0) { "Audit payload contains trailing data" }
+        DecodedPayload(
+            payload = TransactionAuditPayload(
+                record = record.copy(
+                    duplicateCount = duplicateCount,
+                    dedupeFingerprint = dedupeFingerprint,
+                ),
+                rawMessageCipher = rawMessageCipher,
+                createdAt = createdAt,
+                smsSources = smsSources,
+            ),
+            hasExtension = hasExtension,
+        )
     }
 
     fun portable(value: String?): String? = value?.let { encoded ->
-        val decoded = decode(encoded)
-        encode(decoded.copy(rawMessageCipher = null))
+        rewritePreservingFormat(encoded) { decoded -> decoded.copy(rawMessageCipher = null) }
+    }
+
+    fun rewritePreservingFormat(
+        value: String,
+        transform: (TransactionAuditPayload) -> TransactionAuditPayload,
+    ): String {
+        val decoded = decodeWithMetadata(value)
+        return encode(transform(decoded.payload), includeExtension = decoded.hasExtension)
     }
 
     private fun DataOutputStream.writeNullableString(value: String?) {
@@ -124,5 +201,32 @@ internal object TransactionAuditPayloadCodec {
         return enumValues<T>().firstOrNull { it.name == value } ?: default
     }
 
+    private fun legacyFieldsEqual(
+        expected: TransactionAuditPayload,
+        current: TransactionAuditPayload,
+    ): Boolean = expected.record.copy(duplicateCount = 1, dedupeFingerprint = null) ==
+        current.record.copy(duplicateCount = 1, dedupeFingerprint = null) &&
+        expected.createdAt == current.createdAt &&
+        byteArraysEqual(expected.rawMessageCipher, current.rawMessageCipher)
+
+    private fun extendedFieldsEqual(
+        expected: TransactionAuditPayload,
+        current: TransactionAuditPayload,
+    ): Boolean = expected.record.duplicateCount == current.record.duplicateCount &&
+        expected.record.dedupeFingerprint == current.record.dedupeFingerprint &&
+        expected.smsSources == current.smsSources
+
+    private fun byteArraysEqual(first: ByteArray?, second: ByteArray?): Boolean = when {
+        first == null -> second == null
+        second == null -> false
+        else -> first.contentEquals(second)
+    }
+
+    private data class DecodedPayload(
+        val payload: TransactionAuditPayload,
+        val hasExtension: Boolean,
+    )
+
     private const val MAX_CIPHER_BYTES = 64 * 1024
+    private const val MAX_SMS_SOURCES = 10_000
 }
