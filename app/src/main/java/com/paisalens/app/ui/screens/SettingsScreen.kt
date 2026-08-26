@@ -100,6 +100,8 @@ fun SettingsScreen(
     accountCount: Int,
     customCategoryCount: Int,
     recurringCount: Int,
+    paymentReminderCount: Int,
+    paymentRemindersEnabled: Boolean,
     reviewCount: Int,
     smsCoverageCount: Int,
     loanCount: Int,
@@ -116,6 +118,7 @@ fun SettingsScreen(
     onMerchantCleanup: () -> Unit,
     onSmartCategoryRules: () -> Unit,
     onManageLoans: () -> Unit,
+    onPaymentReminders: () -> Unit,
     onTravelMode: () -> Unit,
     onImportStatement: () -> Unit,
     onAuditCardStatement: () -> Unit,
@@ -288,6 +291,18 @@ fun SettingsScreen(
                     icon = Icons.Rounded.Sync,
                     title = "Recurring payments",
                     subtitle = if (recurringCount == 0) "Detected after two consistent weekly or monthly payments." else "$recurringCount recurring payment${if (recurringCount == 1) "" else "s"} detected",
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.NotificationsActive,
+                    title = "Bill payment reminders",
+                    subtitle = when {
+                        paymentReminderCount == 0 -> "Add private, customizable alerts for card and utility bills."
+                        paymentRemindersEnabled -> "$paymentReminderCount reminder${if (paymentReminderCount == 1) "" else "s"} · scheduled locally"
+                        else -> "$paymentReminderCount reminder${if (paymentReminderCount == 1) "" else "s"} · delivery paused"
+                    },
+                    onClick = onPaymentReminders,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
             }
         }
@@ -519,7 +534,7 @@ fun SettingsScreen(
             title = { Text("Erase local financial data?") },
             text = {
                 Text(
-                    "This permanently deletes transactions, accounts, categories, merchant rules, loans, cached rates, and budgets. Scheduled backups will be disabled and their saved password removed. Your original SMS messages, exported files, and existing backup files are not changed.",
+                    "This permanently deletes transactions, accounts, bills, payment reminders, categories, merchant rules, loans, cached rates, and budgets. Scheduled backups will be disabled and their saved password removed. Your original SMS messages, exported files, and existing backup files are not changed.",
                 )
             },
             confirmButton = {

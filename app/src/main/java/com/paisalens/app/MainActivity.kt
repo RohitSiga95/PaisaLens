@@ -23,6 +23,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.paisalens.app.ui.PaisaLensApp
 import com.paisalens.app.ui.PaisaLensViewModel
 import com.paisalens.app.ui.AppLockScreen
@@ -32,11 +33,15 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.StatementAuditMetadata
 import com.paisalens.app.notification.PrivateDigestNotifier
 import com.paisalens.app.notification.ActionableAlertNotifier
+import com.paisalens.app.notification.PaymentReminderNotifier
+import com.paisalens.app.notification.PaymentReminderScheduler
 import com.paisalens.app.notification.AlertDestination
 import com.paisalens.app.sms.BankSmsSupport
 import com.paisalens.app.widget.WIDGET_DESTINATION_EXTRA
 import java.io.File
 import java.time.LocalDate
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
     private val viewModel: PaisaLensViewModel by viewModels {
@@ -46,6 +51,7 @@ class MainActivity : FragmentActivity() {
     private var hasSmsPermission by mutableStateOf(false)
     private var hasNotificationPermission by mutableStateOf(false)
     private var hasActionableAlertPermission by mutableStateOf(false)
+    private var hasPaymentReminderPermission by mutableStateOf(false)
     private var pendingNotificationPurpose: NotificationPermissionPurpose? = null
     private var pendingBackupPassphrase: CharArray? = null
     private var pendingRestorePassphrase: CharArray? = null
@@ -197,6 +203,7 @@ class MainActivity : FragmentActivity() {
                     hasSmsPermission = hasSmsPermission,
                     hasNotificationPermission = hasNotificationPermission,
                     hasActionableAlertPermission = hasActionableAlertPermission,
+                    hasPaymentReminderPermission = hasPaymentReminderPermission,
                     onRequestSmsPermission = {
                         smsPermissionLauncher.launch(
                             arrayOf(
@@ -213,6 +220,13 @@ class MainActivity : FragmentActivity() {
                     },
                     onOpenActionableAlertSettings = {
                         startActivity(ActionableAlertNotifier.settingsIntent(this))
+                    },
+                    onRequestPaymentReminderPermission = {
+                        requestNotificationPermission(NotificationPermissionPurpose.PAYMENT_REMINDERS)
+                    },
+                    onOpenPaymentReminderSettings = {
+                        pendingNotificationPurpose = NotificationPermissionPurpose.PAYMENT_REMINDERS
+                        startActivity(PaymentReminderNotifier.settingsIntent(this))
                     },
                     onExportData = {
                         workbookExportLauncher.launch("PaisaLens-${LocalDate.now()}.xlsx")
@@ -302,6 +316,9 @@ class MainActivity : FragmentActivity() {
         super.onResume()
         updatePermissionState()
         completePendingNotificationPermission()
+        lifecycleScope.launch(Dispatchers.IO) {
+            PaymentReminderScheduler.ensure(applicationContext)
+        }
         refreshAvailableUpiApps()
         if (!isUnlocked && (application as PaisaLensApplication).preferences.appLockEnabled) {
             window.decorView.post { authenticate(AuthenticationPurpose.UNLOCK) }
@@ -326,6 +343,7 @@ class MainActivity : FragmentActivity() {
     private fun updateNotificationPermissionState() {
         hasNotificationPermission = PrivateDigestNotifier.canPost(this)
         hasActionableAlertPermission = ActionableAlertNotifier.canPost(this)
+        hasPaymentReminderPermission = PaymentReminderNotifier.canPost(this)
     }
 
     private fun requestNotificationPermission(purpose: NotificationPermissionPurpose) {
@@ -342,6 +360,7 @@ class MainActivity : FragmentActivity() {
             val settingsIntent = when (purpose) {
                 NotificationPermissionPurpose.DIGEST -> PrivateDigestNotifier.settingsIntent(this)
                 NotificationPermissionPurpose.ACTIONABLE_ALERTS -> ActionableAlertNotifier.settingsIntent(this)
+                NotificationPermissionPurpose.PAYMENT_REMINDERS -> PaymentReminderNotifier.settingsIntent(this)
             }
             startActivity(settingsIntent)
             Toast.makeText(
@@ -360,11 +379,13 @@ class MainActivity : FragmentActivity() {
         val allowed = when (purpose) {
             NotificationPermissionPurpose.DIGEST -> hasNotificationPermission
             NotificationPermissionPurpose.ACTIONABLE_ALERTS -> hasActionableAlertPermission
+            NotificationPermissionPurpose.PAYMENT_REMINDERS -> hasPaymentReminderPermission
         }
         if (!allowed) return false
         when (purpose) {
             NotificationPermissionPurpose.DIGEST -> viewModel.setNotificationDigestEnabled(true)
             NotificationPermissionPurpose.ACTIONABLE_ALERTS -> viewModel.setActionableAlertsEnabled(true)
+            NotificationPermissionPurpose.PAYMENT_REMINDERS -> viewModel.setPaymentRemindersEnabled(true)
         }
         pendingNotificationPurpose = null
         return true
@@ -506,6 +527,7 @@ class MainActivity : FragmentActivity() {
     private enum class NotificationPermissionPurpose {
         DIGEST,
         ACTIONABLE_ALERTS,
+        PAYMENT_REMINDERS,
     }
 
     private companion object {

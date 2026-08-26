@@ -15,6 +15,8 @@ import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.ui.privacy.PrivacyModeRuntime
@@ -30,12 +32,14 @@ internal enum class PaisaLensWidgetKind(
     CATEGORY_BREAKDOWN(CategoryBreakdownWidgetProvider::class.java, WIDGET_DESTINATION_HOME),
     DUE_BILLS(DueBillsWidgetProvider::class.java, WIDGET_DESTINATION_DUE_BILLS),
     CREDIT_CARD_BILLS(CreditCardBillsWidgetProvider::class.java, WIDGET_DESTINATION_CARD_BILLS),
+    PAYMENT_REMINDERS(PaymentRemindersWidgetProvider::class.java, WIDGET_DESTINATION_PAYMENT_REMINDERS),
 }
 
 internal const val WIDGET_DESTINATION_EXTRA = "com.paisalens.app.extra.WIDGET_DESTINATION"
 internal const val WIDGET_DESTINATION_HOME = "home"
 internal const val WIDGET_DESTINATION_DUE_BILLS = "due_bills"
 internal const val WIDGET_DESTINATION_CARD_BILLS = "card_bills"
+internal const val WIDGET_DESTINATION_PAYMENT_REMINDERS = "payment_reminders"
 
 internal data class WidgetLedgerSnapshot(
     val transactions: List<TransactionRecord>,
@@ -46,12 +50,16 @@ internal data class WidgetLedgerSnapshot(
     val commitments: List<PaymentCommitment>,
     val creditCardBills: List<CreditCardBill>,
     val accounts: List<AccountProfile>,
+    val paymentReminderRules: List<PaymentReminderRule>,
+    val paymentReminderSettings: PaymentReminderSettings,
 )
 
 internal data class WidgetRenderSettings(
     val theme: AppThemeConfiguration,
     val appLockEnabled: Boolean,
     val amountsVisible: Boolean,
+    /** False while persisted or session privacy mode is active; all widget details must redact. */
+    val sensitiveDetailsVisible: Boolean,
     val currencyCode: String,
 )
 
@@ -173,6 +181,8 @@ internal object PaisaLensWidgetCoordinator {
             commitments = database.getPaymentCommitments(),
             creditCardBills = database.getCreditCardBills(),
             accounts = database.getAccounts(),
+            paymentReminderRules = database.getPaymentReminderRules(),
+            paymentReminderSettings = database.getPaymentReminderSettings(),
         )
     }
 
@@ -180,12 +190,13 @@ internal object PaisaLensWidgetCoordinator {
         val preferences = (context.applicationContext as? PaisaLensApplication)?.preferences
             ?: UserPreferences(context)
         return preferences.let {
+            val privacyModeActive = it.privacyModeConfiguration.value.defaultEnabled || PrivacyModeRuntime.active
             WidgetRenderSettings(
                 theme = it.themeConfiguration.value,
                 appLockEnabled = it.appLockEnabled,
                 amountsVisible = it.widgetAmountsVisible &&
-                    !it.privacyModeConfiguration.value.defaultEnabled &&
-                    !PrivacyModeRuntime.active,
+                    !privacyModeActive,
+                sensitiveDetailsVisible = !privacyModeActive,
                 currencyCode = it.baseCurrency,
             )
         }

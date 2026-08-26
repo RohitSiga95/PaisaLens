@@ -136,6 +136,7 @@ import com.paisalens.app.notification.AlertDestination
 import com.paisalens.app.widget.WIDGET_DESTINATION_CARD_BILLS
 import com.paisalens.app.widget.WIDGET_DESTINATION_DUE_BILLS
 import com.paisalens.app.widget.WIDGET_DESTINATION_HOME
+import com.paisalens.app.widget.WIDGET_DESTINATION_PAYMENT_REMINDERS
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.CustomCategoryIcon
 import com.paisalens.app.ui.components.MoneyText
@@ -217,10 +218,13 @@ fun PaisaLensApp(
     hasSmsPermission: Boolean,
     hasNotificationPermission: Boolean,
     hasActionableAlertPermission: Boolean,
+    hasPaymentReminderPermission: Boolean,
     onRequestSmsPermission: () -> Unit,
     onRequestDigestNotificationPermission: () -> Unit,
     onRequestActionableAlertPermission: () -> Unit,
     onOpenActionableAlertSettings: () -> Unit,
+    onRequestPaymentReminderPermission: () -> Unit,
+    onOpenPaymentReminderSettings: () -> Unit,
     onExportData: () -> Unit,
     onCreateBackup: (CharArray) -> Unit,
     onRestoreBackup: (CharArray) -> Unit,
@@ -280,6 +284,8 @@ fun PaisaLensApp(
     val homeLayout by viewModel.homeLayout.collectAsStateWithLifecycle()
     val notificationDigest by viewModel.notificationDigest.collectAsStateWithLifecycle()
     val actionableAlerts by viewModel.actionableAlerts.collectAsStateWithLifecycle()
+    val paymentReminderRules by viewModel.paymentReminderRules.collectAsStateWithLifecycle()
+    val paymentReminderSettings by viewModel.paymentReminderSettings.collectAsStateWithLifecycle()
     val privacyModeConfiguration by viewModel.privacyModeConfiguration.collectAsStateWithLifecycle()
     val privacyModeSessionOverride by viewModel.privacyModeSessionOverride.collectAsStateWithLifecycle()
     val privacyModeActive by viewModel.privacyModeActive.collectAsStateWithLifecycle()
@@ -361,6 +367,7 @@ fun PaisaLensApp(
             WIDGET_DESTINATION_HOME -> destination = AppDestination.HOME
             WIDGET_DESTINATION_DUE_BILLS -> openPlanSection(PlanSection.BILLS)
             WIDGET_DESTINATION_CARD_BILLS -> openPlanSection(PlanSection.CARD_BILLS)
+            WIDGET_DESTINATION_PAYMENT_REMINDERS -> openPlanSection(PlanSection.REMINDERS)
             null -> return@LaunchedEffect
         }
         onWidgetDestinationHandled()
@@ -694,6 +701,9 @@ fun PaisaLensApp(
                                 savingsContributions = savingsContributions,
                                 paymentCommitments = paymentCommitments,
                                 paymentCommitmentSuggestions = paymentCommitmentSuggestions,
+                                paymentReminderRules = paymentReminderRules,
+                                paymentReminderSettings = paymentReminderSettings,
+                                hasPaymentReminderPermission = hasPaymentReminderPermission,
                                 onSetBudget = viewModel::setBudget,
                                 onSaveAdvancedBudget = viewModel::saveAdvancedBudget,
                                 onDeleteAdvancedBudget = viewModel::deleteAdvancedBudget,
@@ -726,6 +736,14 @@ fun PaisaLensApp(
                                     showPaymentCommitments = false
                                     editingPaymentCommitment = it
                                 },
+                                onRequestPaymentReminderPermission = onRequestPaymentReminderPermission,
+                                onOpenPaymentReminderSettings = onOpenPaymentReminderSettings,
+                                onSavePaymentReminderRule = viewModel::savePaymentReminderRule,
+                                onDeletePaymentReminderRule = viewModel::deletePaymentReminderRule,
+                                onSnoozePaymentReminder = viewModel::snoozePaymentReminder,
+                                onClearPaymentReminderSnooze = viewModel::clearPaymentReminderSnooze,
+                                onSkipNextPaymentReminder = viewModel::skipNextPaymentReminder,
+                                onPaymentReminderSettingsChange = viewModel::setPaymentReminderSettings,
                                 creditCardBills = creditCardBills,
                                 onMarkCreditCardBillPaid = viewModel::markCreditCardBillPaid,
                                 onAssignCreditCardBill = viewModel::assignCreditCardBillToAccount,
@@ -773,6 +791,8 @@ fun PaisaLensApp(
                             accountCount = accounts.size,
                             customCategoryCount = customCategories.size,
                             recurringCount = recurringPayments.size,
+                            paymentReminderCount = paymentReminderRules.size,
+                            paymentRemindersEnabled = paymentReminderSettings.enabled,
                             reviewCount = transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW },
                             smsCoverageCount = smsCoverageMessages.count {
                                 it.status == com.paisalens.app.data.model.SmsCoverageStatus.NEEDS_REVIEW
@@ -791,6 +811,7 @@ fun PaisaLensApp(
                             onMerchantCleanup = { showMerchantCleanup = true },
                             onSmartCategoryRules = { showSmartCategoryRules = true },
                             onManageLoans = { showLoanManager = true },
+                            onPaymentReminders = { openPlanSection(PlanSection.REMINDERS) },
                             onTravelMode = { showTravelMode = true },
                             onImportStatement = { showStatementImport = true },
                             onAuditCardStatement = { showCardStatementAudit = true },

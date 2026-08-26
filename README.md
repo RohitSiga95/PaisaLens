@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6"><img alt="Release v1.8.6" src="https://img.shields.io/badge/release-v1.8.6-5965E8?style=for-the-badge"></a>
-  <img alt="Source v1.8.6" src="https://img.shields.io/badge/source-v1.8.6-1E88E5?style=for-the-badge">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7"><img alt="Release v1.8.7" src="https://img.shields.io/badge/release-v1.8.7-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.8.7" src="https://img.shields.io/badge/source-v1.8.7-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
   <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.6/PaisaLens-v1.8.6-debug.apk"><strong>⬇ Download PaisaLens v1.8.6 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.7/PaisaLens-v1.8.7-debug.apk"><strong>⬇ Download PaisaLens v1.8.7 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -26,10 +26,11 @@
 > [!IMPORTANT]
 > The downloadable file is the current **debug APK** for direct installation and testing. Android may ask you to allow installation from your browser or file manager. Requires Android 8.0 (API 26) or newer.
 
-## What's new in v1.8.6
+## What's new in v1.8.7
 
 | | Update | Highlights |
 |---|---|---|
+| ⏰ | **Custom bill-payment reminders & widget** | Create one-time or recurring reminders for detected credit-card statements and saved utility, EMI, subscription or other bills. Configure multiple advance alerts, local time and timezone, overdue repeats, snooze choices, skip-next, priority, quiet hours, a daily summary and private amount visibility; then keep upcoming bills visible in a responsive Android widget. |
 | 🧹 | **Reliable duplicate-SMS cleanup** | Live receiver and inbox-rescan copies now consolidate into one Activity row with a `×N` source count. A resync repairs existing timestamp-offset copies while exact identity, backup, restore, and undo safeguards keep genuine repeat purchases separate. |
 | 🏦 | **Account and card groups** | Merge two or more bank accounts—or two or more credit cards—under a custom name. Transactions keep their original source identity for future SMS matching while appearing together throughout the app. |
 | 💡 | **Financial Pulse & richer Home** | See an explainable safe-to-spend estimate, balance freshness, a 14-day money timeline, budget pace, card health, and configurable Everyday, Budget, Debt, or Minimal layouts. |
@@ -51,15 +52,15 @@
     <td align="center"><strong>Private digest</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens v1.8.6 customizable Home dashboard" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens v1.8.6 savings goals and sinking funds" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens v1.8.6 subscriptions and UPI AutoPay centre" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens v1.8.6 private notification digest settings" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens v1.8.7 customizable Home dashboard" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens v1.8.7 savings goals and sinking funds" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens v1.8.7 subscriptions and UPI AutoPay centre" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens v1.8.7 private notification digest settings" width="210"></td>
   </tr>
 </table>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6"><strong>Read the complete v1.8.6 release notes →</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7"><strong>Read the complete v1.8.7 release notes →</strong></a>
 </p>
 
 ## See PaisaLens in action
@@ -101,11 +102,11 @@
 | 🔄 | **Subscriptions & UPI AutoPay centre** | Manages recurring charges and mandate limits, pause/cancel states, accounts, due dates, and reviewed on-device suggestions without creating or changing a real bank or UPI mandate. |
 | 🧩 | **Colorful categories & tags** | Uses meaningful category colors and icons, creates personal categories directly from any category picker, and adds searchable tags. |
 | ✅ | **Review inbox** | Holds uncertain merchant or category matches for confirmation before they affect analytics. |
-| 🔐 | **Encrypted backup, restore & scheduling** | Creates password-protected portable backups, verifies them before rotation, and can save them on a daily, weekly or monthly schedule to a user-selected Android folder. |
+| 🔐 | **Encrypted backup, restore & scheduling** | Creates password-protected portable backups—including bill-reminder rules and defaults—verifies them before rotation, and can save them on a daily, weekly or monthly schedule to a user-selected Android folder. |
 | ✍️ | **Manual entry & bill OCR** | Records an expense, income, refund, or transfer, or prefills the form from a photographed/uploaded bill using a bundled on-device OCR model. |
 | 🎨 | **Theme Studio** | Customizes the full app and home-screen widget with Material, AMOLED pure black, or layered gradients; System/Light/Dark appearance; and 14 accessible color variations. |
 | 🧹 | **Merchant cleanup** | Renames or merges inconsistent merchants and applies the cleanup rule to future SMS and statement imports. |
-| 🏠 | **Colorful Android widgets** | Offers current-month snapshot, category breakdown, due-bills and credit-card-bills widgets, with privacy-aware amount hiding and responsive layouts. |
+| 🏠 | **Colorful Android widgets** | Offers current-month snapshot, category breakdown, due-bills, credit-card-bills and bill-reminder agenda widgets, with privacy-aware amount hiding and responsive layouts. |
 | 🔔 | **Private notification digest** | Optionally delivers a daily or weekly on-device summary; amounts are hidden by default and the lock-screen public version is always generic. |
 | 🚨 | **Private actionable alerts** | Optionally checks once daily for urgent dues, budget pressure, high card use, low forecast cash and overdue reimbursements, with configurable thresholds, local-only evaluation and generic lock-screen text by default. |
 | 👁️ | **One-tap privacy mode** | Hides monetary values throughout the open app and widgets from the Home eye button, supports a private-by-default preference, and can ask Android to block screenshots and Recents previews. |
@@ -119,6 +120,7 @@
 | 📉 | **Balance history** | Saves each distinct bank-balance and available-credit SMS snapshot and shows accessible 7-day, 30-day, 3-month, or all-time trends. |
 | 💳 | **Credit utilisation tracker** | Combines the real available credit with a detected or manually entered total limit, then highlights healthy, moderate, high, and critical usage. |
 | 🗓️ | **Bills & due-date centre** | Brings manual reminders, locally detected recurring payments, card bills, subscriptions and loan EMIs into one overdue and upcoming timeline. |
+| ⏰ | **Custom bill-payment reminders** | Adds one-time or recurring reminders to saved utility bills and detected credit-card statements, with multiple advance alerts, local time and timezone, snooze choices, overdue repeats, skip-next, priority, private amount controls, categories, colors, notes, search, grouped views, quiet hours and an optional daily summary. |
 | 🔮 | **Cash-flow forecast** | Projects 30, 60, or 90 days from known bank balances, recent income/spending pace, scheduled bills, and EMIs, with assumptions shown beside the chart. |
 | 🧮 | **Net-worth dashboard** | Combines known account balances, utilised card credit, amortised loan principal, and manually added assets or liabilities. |
 | ⚙️ | **Smart category rules** | Applies prioritized merchant, amount, and account conditions to future expenses, with a preview and optional historical update. |
@@ -147,7 +149,7 @@ The workbook is generated entirely offline and saved only where you choose throu
 SMS / statement  →  on-device parser  →  encrypted local ledger  →  dashboard / Excel export
           │                │                       │              ↘ encrypted manual backup
           └──── local statement audit             ├──── reconciliation / undo / health checks
-                                                  ├──── optional private digest / actionable alerts
+                                                  ├──── optional private digest / actionable alerts / bill reminders
                                                   └──── scheduled encrypted backup to chosen folder
 currency pair only  →  HTTPS reference-rate API  →  cached rate ↗
                                        ✕ no account
@@ -157,7 +159,7 @@ currency pair only  →  HTTPS reference-rate API  →  cached rate ↗
 
 - No account, ads, third-party analytics, telemetry or cloud SDKs.
 - `INTERNET` is used only after the user taps a Travel-mode rate refresh; the HTTPS request contains only the currency pair.
-- SMS, receipt images and OCR, statements, transactions, balances, merchants, loans, categories, notes, tags, budgets, participant shares, savings goals, payment commitments, card-bill history, and insights stay on the device.
+- SMS, receipt images and OCR, statements, transactions, balances, merchants, loans, categories, notes, tags, budgets, participant shares, savings goals, payment commitments, card-bill history, reminder rules, and insights stay on the device.
 - Account refresh opens a prefilled system SMS composer; PaisaLens never sends an SMS automatically and requests no `SEND_SMS` permission.
 - UPI balance check only opens the selected app's normal home screen. No PIN, account identifier or balance is returned to PaisaLens; the user chooses whether to type and save the displayed amount locally.
 - Automatic cloud backup and device-transfer backup are disabled.
@@ -173,17 +175,17 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.8.6-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.6/PaisaLens-v1.8.6-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.8.7-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.7/PaisaLens-v1.8.7-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.8.6 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.6).
+You can also browse the [v1.8.7 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7).
 
 **APK SHA-256**
 
 ```text
-0185b59e6bbd9920600b3b35f94bfdf17f0a82eb31b966f9c7f124f405f420dc
+a43046c718f4dc8b4455b0093be353f2728df54223038f3106239f203cce5a6a
 ```
 
 ## Build it yourself
@@ -194,7 +196,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated v1.8.6 APK will be available at:
+The generated v1.8.7 APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk

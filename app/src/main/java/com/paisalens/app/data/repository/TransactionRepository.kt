@@ -33,6 +33,9 @@ import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.model.ParsedCreditCardBill
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PaymentReminderOccurrence
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
 import com.paisalens.app.data.model.RecurringPayment
 import com.paisalens.app.data.model.ReconciliationMetrics
 import com.paisalens.app.data.model.ReviewStatus
@@ -64,9 +67,17 @@ import com.paisalens.app.data.model.findReconciliationsInvalidatedByLedger
 import com.paisalens.app.data.model.suggestTransactionLinks
 import com.paisalens.app.data.model.suggestPaymentCommitments
 import com.paisalens.app.data.model.matches
+import com.paisalens.app.data.model.buildPaymentReminderTargets
+import com.paisalens.app.data.model.resolvePaymentReminderOccurrences
+import com.paisalens.app.data.model.creditCardBillGroupKey
+import com.paisalens.app.data.model.creditCardReminderTargetKey
+import com.paisalens.app.data.model.currentCreditCardBills
+import com.paisalens.app.data.model.manualBillReminderTargetKey
 import com.paisalens.app.data.model.validateTransactionLink as validateLinkCandidate
 import com.paisalens.app.data.network.FrankfurterRateService
 import com.paisalens.app.security.SensitiveDataCipher
+import com.paisalens.app.notification.PaymentReminderScheduler
+import com.paisalens.app.notification.PaymentReminderNotifier
 import com.paisalens.app.widget.PaisaLensWidgetProvider
 import java.io.InputStream
 import java.io.OutputStream
@@ -181,6 +192,16 @@ class TransactionRepository(
     val paymentCommitmentSuggestions: StateFlow<List<PaymentCommitment>> =
         _paymentCommitmentSuggestions.asStateFlow()
 
+    private val _paymentReminderRules = MutableStateFlow<List<PaymentReminderRule>>(emptyList())
+    val paymentReminderRules: StateFlow<List<PaymentReminderRule>> = _paymentReminderRules.asStateFlow()
+
+    private val _paymentReminderSettings = MutableStateFlow(PaymentReminderSettings())
+    val paymentReminderSettings: StateFlow<PaymentReminderSettings> = _paymentReminderSettings.asStateFlow()
+
+    private val _paymentReminderOccurrences = MutableStateFlow<List<PaymentReminderOccurrence>>(emptyList())
+    val paymentReminderOccurrences: StateFlow<List<PaymentReminderOccurrence>> =
+        _paymentReminderOccurrences.asStateFlow()
+
     suspend fun load() = withContext(Dispatchers.IO) { refresh() }
 
     suspend fun ingestSms(
@@ -189,20 +210,44 @@ class TransactionRepository(
         coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
         creditCardBills: List<ParsedCreditCardBill> = emptyList(),
     ): SmsIngestResult = withContext(Dispatchers.IO) {
-        val encrypted = items.map { it to cipher.encrypt(it.rawMessage) }
-        val transactionResult = database.insertAll(encrypted)
-        val encryptedCoverage = coverageCandidates.map { it to cipher.encrypt(it.body) }
-        val coverageCount = database.insertSmsCoverage(encryptedCoverage)
-        val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
-        val creditCardBillCount = database.upsertCreditCardBills(creditCardBills)
-        refresh()
-        SmsIngestResult(
-            insertedTransactions = transactionResult.inserted,
-            updatedAccounts = availabilityCount,
-            mergedDuplicateTransactions = transactionResult.duplicatesMerged,
-            coverageMessagesAdded = coverageCount,
-            updatedCreditCardBills = creditCardBillCount,
-        )
+        val reminderSchedulingFenced = creditCardBills.isNotEmpty()
+        if (reminderSchedulingFenced) PaymentReminderScheduler.cancel(context)
+        try {
+            val cardBillsBefore = if (creditCardBills.isEmpty()) {
+                emptyMap()
+            } else {
+                currentCreditCardBills(database.getCreditCardBills())
+                    .associateBy(CreditCardBill::creditCardBillGroupKey)
+            }
+            val encrypted = items.map { it to cipher.encrypt(it.rawMessage) }
+            val transactionResult = database.insertAll(encrypted)
+            val encryptedCoverage = coverageCandidates.map { it to cipher.encrypt(it.body) }
+            val coverageCount = database.insertSmsCoverage(encryptedCoverage)
+            val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
+            val creditCardBillCount = database.upsertCreditCardBills(creditCardBills)
+            if (creditCardBillCount > 0) {
+                val cardBillsAfter = currentCreditCardBills(database.getCreditCardBills())
+                    .associateBy(CreditCardBill::creditCardBillGroupKey)
+                val changedTargets = (cardBillsBefore.keys + cardBillsAfter.keys).asSequence()
+                    .filter { cardBillsBefore[it] != cardBillsAfter[it] }
+                    .map(::creditCardReminderTargetKey)
+                    .toSet()
+                database.getPaymentReminderRules()
+                    .filter { it.targetKey in changedTargets }
+                    .forEach { PaymentReminderNotifier.cancelForRule(context, it.id) }
+            }
+            refresh()
+            SmsIngestResult(
+                insertedTransactions = transactionResult.inserted,
+                updatedAccounts = availabilityCount,
+                mergedDuplicateTransactions = transactionResult.duplicatesMerged,
+                coverageMessagesAdded = coverageCount,
+                updatedCreditCardBills = creditCardBillCount,
+            )
+        } catch (error: Throwable) {
+            if (reminderSchedulingFenced) PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun insertParsed(items: List<ParsedTransaction>): Int =
@@ -278,15 +323,37 @@ class TransactionRepository(
         confirmed: Boolean,
         paidAt: Long = System.currentTimeMillis(),
     ): CreditCardBillPaymentResult = withContext(Dispatchers.IO) {
-        val result = database.markCreditCardBillPaid(id, confirmed, paidAt)
-        if (result == CreditCardBillPaymentResult.MARKED_PAID) refresh()
-        result
+        val reminderRuleIds = database.getCreditCardBills().firstOrNull { it.id == id }?.let { bill ->
+            val targetKey = creditCardReminderTargetKey(bill.creditCardBillGroupKey)
+            database.getPaymentReminderRules().filter { it.targetKey == targetKey }.map { it.id }
+        }.orEmpty()
+        val fenced = confirmed && reminderRuleIds.isNotEmpty()
+        if (fenced) PaymentReminderScheduler.cancel(context)
+        try {
+            val result = database.markCreditCardBillPaid(id, confirmed, paidAt)
+            if (result == CreditCardBillPaymentResult.MARKED_PAID) {
+                reminderRuleIds.forEach { PaymentReminderNotifier.cancelForRule(context, it) }
+                refresh()
+            } else if (fenced) {
+                PaymentReminderScheduler.sync(context)
+            }
+            result
+        } catch (error: Throwable) {
+            if (fenced) PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun assignCreditCardBillToAccount(id: Long, accountId: Long): Boolean = withContext(Dispatchers.IO) {
-        val assigned = database.assignCreditCardBillToAccount(id, accountId)
-        if (assigned) refresh()
-        assigned
+        PaymentReminderScheduler.cancel(context)
+        try {
+            val assigned = database.assignCreditCardBillToAccount(id, accountId)
+            if (assigned) refresh() else PaymentReminderScheduler.sync(context)
+            assigned
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun recordUserEnteredUpiBalance(
@@ -464,31 +531,74 @@ class TransactionRepository(
     }
 
     suspend fun updateAccount(account: AccountProfile) = withContext(Dispatchers.IO) {
-        database.updateAccountProfile(account)
-        refresh()
+        val affectedTargets = database.getCreditCardBills()
+            .filter { it.accountId == account.id }
+            .map { creditCardReminderTargetKey(it.creditCardBillGroupKey) }
+            .toSet()
+        val affectedRuleIds = database.getPaymentReminderRules()
+            .filter { it.targetKey in affectedTargets }
+            .map(PaymentReminderRule::id)
+        PaymentReminderScheduler.cancel(context)
+        try {
+            database.updateAccountProfile(account)
+            affectedRuleIds.forEach { PaymentReminderNotifier.cancelForRule(context, it) }
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun mergeAccounts(
         accountIds: Collection<Long>,
         mergedName: String,
     ): AccountMergeResult = withContext(Dispatchers.IO) {
-        val result = database.mergeAccounts(accountIds, mergedName)
-        if (result is AccountMergeResult.Success) refresh()
-        result
+        PaymentReminderScheduler.cancel(context)
+        try {
+            val result = database.mergeAccounts(accountIds, mergedName)
+            if (result is AccountMergeResult.Success) refresh() else PaymentReminderScheduler.sync(context)
+            result
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun deleteAccount(id: Long) = withContext(Dispatchers.IO) {
-        database.deleteAccount(id)
-        refresh()
+        PaymentReminderScheduler.cancel(context)
+        try {
+            database.deleteAccount(id)
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun saveBill(bill: BillReminder) = withContext(Dispatchers.IO) {
-        database.upsertBill(bill)
-        refresh()
+        val reminderRuleIds = if (bill.id > 0L) {
+            database.getPaymentReminderRules()
+                .filter { it.targetKey == manualBillReminderTargetKey(bill.id) }
+                .map(PaymentReminderRule::id)
+        } else {
+            emptyList()
+        }
+        PaymentReminderScheduler.cancel(context)
+        try {
+            database.upsertBill(bill)
+            reminderRuleIds.forEach { PaymentReminderNotifier.cancelForRule(context, it) }
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun markBillPaid(id: Long, paidOn: LocalDate = LocalDate.now()) = withContext(Dispatchers.IO) {
         val bill = database.getBills().firstOrNull { it.id == id } ?: return@withContext
+        val reminderRuleIds = database.getPaymentReminderRules()
+            .filter { it.targetKey == manualBillReminderTargetKey(id) }
+            .map { it.id }
         val next = if (bill.recurrenceMonths > 0) {
             val anchor = LocalDate.ofEpochDay(bill.dueDateEpochDay)
             var occurrence = 0L
@@ -506,13 +616,155 @@ class TransactionRepository(
         } else {
             bill.copy(lastPaidEpochDay = paidOn.toEpochDay(), isActive = false)
         }
-        database.upsertBill(next)
-        refresh()
+        PaymentReminderScheduler.cancel(context)
+        try {
+            database.upsertBill(next)
+            reminderRuleIds.forEach { PaymentReminderNotifier.cancelForRule(context, it) }
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun deleteBill(id: Long) = withContext(Dispatchers.IO) {
-        database.deleteBill(id)
-        refresh()
+        val reminderRuleIds = if (id > 0L) {
+            database.getPaymentReminderRules()
+                .filter { it.targetKey == manualBillReminderTargetKey(id) }
+                .map { it.id }
+        } else {
+            emptyList()
+        }
+        PaymentReminderScheduler.cancel(context)
+        try {
+            database.deleteBill(id)
+            reminderRuleIds.forEach { PaymentReminderNotifier.cancelForRule(context, it) }
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
+    }
+
+    suspend fun savePaymentReminderRule(rule: PaymentReminderRule): Long = withContext(Dispatchers.IO) {
+        PaymentReminderScheduler.cancel(context)
+        try {
+            val id = database.upsertPaymentReminderRule(rule)
+            PaymentReminderNotifier.cancelForRule(context, id)
+            refresh()
+            id
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
+    }
+
+    suspend fun deletePaymentReminderRule(id: Long): Boolean = withContext(Dispatchers.IO) {
+        PaymentReminderScheduler.cancel(context)
+        try {
+            val deleted = database.deletePaymentReminderRule(id)
+            if (deleted) {
+                PaymentReminderNotifier.cancelForRule(context, id)
+                refresh()
+            } else {
+                PaymentReminderScheduler.sync(context)
+            }
+            deleted
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
+    }
+
+    suspend fun setPaymentReminderSettings(settings: PaymentReminderSettings) = withContext(Dispatchers.IO) {
+        PaymentReminderScheduler.cancel(context)
+        try {
+            database.setPaymentReminderSettings(settings)
+            if (!settings.enabled) PaymentReminderNotifier.cancelAll(context)
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
+    }
+
+    suspend fun snoozePaymentReminder(
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        minutes: Int,
+        expectedGeneration: Long? = null,
+    ): Boolean = withContext(Dispatchers.IO) {
+        PaymentReminderScheduler.cancel(context)
+        try {
+            val generation = expectedGeneration ?: database.getPaymentReminderRule(ruleId)?.generation
+            if (generation == null) {
+                PaymentReminderScheduler.sync(context)
+                return@withContext false
+            }
+            val changed = database.snoozePaymentReminder(
+                ruleId,
+                occurrenceEpochDay,
+                minutes,
+                expectedGeneration = generation,
+            )
+            if (changed) {
+                PaymentReminderNotifier.cancelForRule(context, ruleId)
+                refresh()
+            } else {
+                PaymentReminderScheduler.sync(context)
+            }
+            changed
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
+    }
+
+    suspend fun skipNextPaymentReminder(
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        expectedGeneration: Long? = null,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            PaymentReminderScheduler.cancel(context)
+            try {
+                val generation = expectedGeneration ?: database.getPaymentReminderRule(ruleId)?.generation
+                if (generation == null) {
+                    PaymentReminderScheduler.sync(context)
+                    return@withContext false
+                }
+                val changed = database.skipNextPaymentReminder(ruleId, occurrenceEpochDay, generation)
+                if (changed) {
+                    PaymentReminderNotifier.cancelForRule(context, ruleId)
+                    refresh()
+                } else {
+                    PaymentReminderScheduler.sync(context)
+                }
+                changed
+            } catch (error: Throwable) {
+                PaymentReminderScheduler.sync(context)
+                throw error
+            }
+        }
+
+    suspend fun clearPaymentReminderSnooze(
+        ruleId: Long,
+        expectedGeneration: Long? = null,
+    ): Boolean = withContext(Dispatchers.IO) {
+        PaymentReminderScheduler.cancel(context)
+        try {
+            val generation = expectedGeneration ?: database.getPaymentReminderRule(ruleId)?.generation
+            if (generation == null) {
+                PaymentReminderScheduler.sync(context)
+                return@withContext false
+            }
+            val changed = database.clearPaymentReminderSnooze(ruleId, generation)
+            if (changed) refresh() else PaymentReminderScheduler.sync(context)
+            changed
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     suspend fun saveNetWorthItem(item: NetWorthItem) = withContext(Dispatchers.IO) {
@@ -672,7 +924,16 @@ class TransactionRepository(
     suspend fun restoreBackup(input: InputStream, passphrase: CharArray): Int = withContext(Dispatchers.IO) {
         try {
             val snapshot = PaisaLensBackupCodec.read(passphrase, input)
-            database.restore(snapshot)
+            // Fence any receiver that claimed an alarm for the old dataset before mutating the DB.
+            PaymentReminderScheduler.cancel(context)
+            PaymentReminderNotifier.cancelAll(context)
+            try {
+                database.restore(snapshot)
+            } catch (error: Throwable) {
+                // Database.restore is transactional. Replan the intact old dataset on rollback.
+                PaymentReminderScheduler.sync(context)
+                throw error
+            }
             refresh()
             snapshot.transactions.size
         } finally {
@@ -692,8 +953,17 @@ class TransactionRepository(
     }
 
     suspend fun clearAll() = withContext(Dispatchers.IO) {
-        database.clearAll()
-        refresh()
+        PaymentReminderScheduler.cancel(context)
+        PaymentReminderNotifier.cancelAll(context)
+        try {
+            database.clearAll()
+            // Also remove a card posted by a worker that finished immediately before the fence.
+            PaymentReminderNotifier.cancelAll(context)
+            refresh()
+        } catch (error: Throwable) {
+            PaymentReminderScheduler.sync(context)
+            throw error
+        }
     }
 
     private fun refresh() {
@@ -782,6 +1052,20 @@ class TransactionRepository(
             existingCommitments = _paymentCommitments.value,
             accounts = _accounts.value,
         )
+        _paymentReminderRules.value = database.getPaymentReminderRules()
+        _paymentReminderSettings.value = database.getPaymentReminderSettings()
+        _paymentReminderOccurrences.value = resolvePaymentReminderOccurrences(
+            rules = _paymentReminderRules.value,
+            targets = buildPaymentReminderTargets(
+                manualBills = _bills.value,
+                creditCardBills = _creditCardBills.value,
+                today = LocalDate.now(),
+                accountNamesById = _accounts.value.associate { it.id to it.name },
+            ),
+            manualBills = _bills.value,
+            nowMillis = System.currentTimeMillis(),
+        )
+        PaymentReminderScheduler.sync(context)
         PaisaLensWidgetProvider.updateAll(context)
     }
 }

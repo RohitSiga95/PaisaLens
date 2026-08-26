@@ -31,6 +31,8 @@ import com.paisalens.app.data.model.MonthlyReconciliation
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.NotificationDigestConfiguration
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
 import com.paisalens.app.data.model.PrivacyModeConfiguration
 import com.paisalens.app.data.model.ReceiptOcrDraft
 import com.paisalens.app.data.model.SavingsContribution
@@ -54,6 +56,8 @@ import com.paisalens.app.data.ocr.ReceiptOcrProcessor
 import com.paisalens.app.data.parser.ReceiptTextParser
 import com.paisalens.app.sms.SmsInboxScanner
 import com.paisalens.app.notification.ActionableAlertDeliveryStore
+import com.paisalens.app.notification.PaymentReminderNotifier
+import com.paisalens.app.notification.PaymentReminderScheduler
 import com.paisalens.app.ui.screens.ActivitySavedViewStore
 import com.paisalens.app.widget.PaisaLensWidgetProvider
 import kotlinx.coroutines.CancellationException
@@ -98,6 +102,8 @@ class PaisaLensViewModel(
     val savingsContributions = app.repository.savingsContributions
     val paymentCommitments = app.repository.paymentCommitments
     val paymentCommitmentSuggestions = app.repository.paymentCommitmentSuggestions
+    val paymentReminderRules = app.repository.paymentReminderRules
+    val paymentReminderSettings = app.repository.paymentReminderSettings
     val themeConfiguration = app.preferences.themeConfiguration
     val homeLayout = app.preferences.homeLayout
     val notificationDigest = app.preferences.notificationDigest
@@ -214,21 +220,146 @@ class PaisaLensViewModel(
         app.preferences.setActionableAlertsEnabled(enabled)
     }
 
+    suspend fun savePaymentReminderRule(rule: PaymentReminderRule) {
+        try {
+            app.repository.savePaymentReminderRule(rule)
+            _events.emit("Bill reminder saved")
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _events.emit(error.message ?: "Could not save that bill reminder")
+            throw error
+        }
+    }
+
+    suspend fun deletePaymentReminderRule(id: Long) {
+        try {
+            check(app.repository.deletePaymentReminderRule(id)) { "That bill reminder no longer exists" }
+            _events.emit("Bill reminder removed")
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _events.emit(error.message ?: "Could not remove that bill reminder")
+            throw error
+        }
+    }
+
+    suspend fun snoozePaymentReminder(
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        minutes: Int,
+        expectedGeneration: Long,
+    ) {
+        try {
+            check(
+                app.repository.snoozePaymentReminder(
+                    ruleId,
+                    occurrenceEpochDay,
+                    minutes,
+                    expectedGeneration,
+                ),
+            ) {
+                "That bill reminder changed before it could be snoozed"
+            }
+            _events.emit("Reminder snoozed")
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _events.emit(error.message ?: "Could not snooze that reminder")
+            throw error
+        }
+    }
+
+    suspend fun clearPaymentReminderSnooze(ruleId: Long, expectedGeneration: Long) {
+        try {
+            check(app.repository.clearPaymentReminderSnooze(ruleId, expectedGeneration)) {
+                "That bill reminder is no longer snoozed"
+            }
+            _events.emit("Reminder snooze cleared")
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _events.emit(error.message ?: "Could not clear that snooze")
+            throw error
+        }
+    }
+
+    suspend fun skipNextPaymentReminder(
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        expectedGeneration: Long,
+    ) {
+        try {
+            check(app.repository.skipNextPaymentReminder(ruleId, occurrenceEpochDay, expectedGeneration)) {
+                "That bill reminder changed before it could be skipped"
+            }
+            _events.emit("Next reminder skipped")
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _events.emit(error.message ?: "Could not skip that reminder")
+            throw error
+        }
+    }
+
+    suspend fun setPaymentReminderSettings(settings: PaymentReminderSettings) {
+        try {
+            app.repository.setPaymentReminderSettings(settings)
+            _events.emit("Bill reminder settings saved")
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _events.emit(error.message ?: "Could not update bill reminder settings")
+            throw error
+        }
+    }
+
+    fun setPaymentRemindersEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                setPaymentReminderSettings(paymentReminderSettings.value.copy(enabled = enabled))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                // setPaymentReminderSettings already emitted the user-facing failure.
+            }
+        }
+    }
+
     fun setPrivacyModeConfiguration(configuration: PrivacyModeConfiguration) {
         app.preferences.setPrivacyModeConfiguration(configuration)
+        if (configuration.defaultEnabled || app.preferences.privacyModeActive.value) {
+            enforcePrivateReminderSurface()
+        }
         PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 250L)
     }
 
     fun toggleSessionPrivacy(): Boolean = app.preferences.toggleSessionPrivacy().also {
+        if (it) enforcePrivateReminderSurface()
         PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 100L)
     }
 
     fun setSessionPrivacy(enabled: Boolean): Boolean = app.preferences.setSessionPrivacy(enabled).also {
+        if (it) enforcePrivateReminderSurface()
         PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 100L)
     }
 
     fun clearSessionPrivacyOverride(): Boolean = app.preferences.clearSessionPrivacyOverride().also {
+        if (it) enforcePrivateReminderSurface()
         PaisaLensWidgetProvider.scheduleUpdateAll(app, delayMillis = 100L)
+    }
+
+    /**
+     * Preference state is written first, then this synchronous scheduler barrier waits out any
+     * notification that already read the old privacy state. Canceling visible cards afterward
+     * closes the read-before-privacy/post-after-cancel race; future alerts are replanned on IO.
+     */
+    private fun enforcePrivateReminderSurface() {
+        PaymentReminderScheduler.cancel(app)
+        PaymentReminderNotifier.cancelAll(app)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                PaymentReminderScheduler.sync(app)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                _events.emit("Could not refresh the private bill reminder schedule")
+            }
+        }
     }
 
     fun setScheduledBackup(
@@ -425,6 +556,7 @@ class PaisaLensViewModel(
         app.preferences.appLockEnabled = enabled
         _appLockEnabled.value = enabled
         if (enabled) {
+            enforcePrivateReminderSurface()
             app.preferences.widgetAmountsVisible = false
             _widgetAmountsVisible.value = false
         }
@@ -483,13 +615,25 @@ class PaisaLensViewModel(
                     _events.emit(
                         when {
                             result.insertedTransactions > 0 || result.mergedDuplicateTransactions > 0 ||
-                                result.coverageMessagesAdded > 0 || result.updatedCreditCardBills > 0 -> buildList {
-                                if (result.insertedTransactions > 0) add("${result.insertedTransactions} new transaction${if (result.insertedTransactions == 1) "" else "s"}")
-                                if (result.mergedDuplicateTransactions > 0) add("${result.mergedDuplicateTransactions} duplicate SMS merged")
-                                if (result.coverageMessagesAdded > 0) add("${result.coverageMessagesAdded} unsupported alert${if (result.coverageMessagesAdded == 1) "" else "s"} to review")
-                                if (result.updatedCreditCardBills > 0) add("card bills updated")
-                                if (result.updatedAccounts > 0) add("balances updated")
-                            }.joinToString(" · ")
+                                result.coverageMessagesAdded > 0 || result.updatedCreditCardBills > 0 -> {
+                                buildList {
+                                    if (result.insertedTransactions > 0) {
+                                        add("${result.insertedTransactions} new transaction${if (result.insertedTransactions == 1) "" else "s"}")
+                                    }
+                                    if (result.mergedDuplicateTransactions > 0) {
+                                        add("${result.mergedDuplicateTransactions} duplicate SMS merged")
+                                    }
+                                    if (result.coverageMessagesAdded > 0) {
+                                        add("${result.coverageMessagesAdded} unsupported alert${if (result.coverageMessagesAdded == 1) "" else "s"} to review")
+                                    }
+                                    if (result.updatedCreditCardBills > 0) {
+                                        add("card bills updated")
+                                    }
+                                    if (result.updatedAccounts > 0) {
+                                        add("balances updated")
+                                    }
+                                }.joinToString(" · ")
+                            }
                             result.updatedAccounts > 0 -> "Account balances updated"
                             else -> "You're up to date"
                         },
@@ -975,16 +1119,19 @@ class PaisaLensViewModel(
         if (_undoInProgressBatchId.value != null) return
         viewModelScope.launch {
             _undoInProgressBatchId.value = batchId
-            runCatching { app.repository.undoAuditBatch(batchId) }
-                .onSuccess { result ->
-                    _lastUndoResult.value = result
-                    _events.emit(
-                        "Change undone · ${result.insertedEntities + result.updatedEntities + result.deletedEntities} record" +
-                            if (result.insertedEntities + result.updatedEntities + result.deletedEntities == 1) " restored" else "s restored",
-                    )
-                }
-                .onFailure { _events.emit(it.message ?: "Could not undo that change") }
-            _undoInProgressBatchId.value = null
+            try {
+                runCatching { app.repository.undoAuditBatch(batchId) }
+                    .onSuccess { result ->
+                        _lastUndoResult.value = result
+                        _events.emit(
+                            "Change undone · ${result.insertedEntities + result.updatedEntities + result.deletedEntities} record" +
+                                if (result.insertedEntities + result.updatedEntities + result.deletedEntities == 1) " restored" else "s restored",
+                        )
+                    }
+                    .onFailure { _events.emit(it.message ?: "Could not undo that change") }
+            } finally {
+                _undoInProgressBatchId.value = null
+            }
         }
     }
 

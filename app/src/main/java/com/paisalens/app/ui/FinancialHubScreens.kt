@@ -73,6 +73,10 @@ import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.NetWorthItem
 import com.paisalens.app.data.model.NetWorthKind
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
+import com.paisalens.app.data.model.PaymentReminderTarget
+import com.paisalens.app.data.model.PaymentReminderTargetType
 import com.paisalens.app.data.model.RecurringPayment
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
@@ -110,6 +114,7 @@ import kotlin.math.abs
 enum class PlanSection(val label: String) {
     BUDGETS("Budgets"),
     BILLS("Bills & dues"),
+    REMINDERS("Reminders"),
     CARD_BILLS("Card bills"),
     GOALS("Goals"),
     AUTOPAY("AutoPay"),
@@ -139,6 +144,9 @@ fun PlanningScreen(
     savingsContributions: List<SavingsContribution>,
     paymentCommitments: List<PaymentCommitment>,
     paymentCommitmentSuggestions: List<PaymentCommitment>,
+    paymentReminderRules: List<PaymentReminderRule> = emptyList(),
+    paymentReminderSettings: PaymentReminderSettings = PaymentReminderSettings(),
+    hasPaymentReminderPermission: Boolean = false,
     onSetBudget: (ExpenseCategory, Long) -> Unit,
     onSaveAdvancedBudget: (AdvancedBudgetPlan) -> Unit,
     onDeleteAdvancedBudget: (Long) -> Unit,
@@ -156,6 +164,23 @@ fun PlanningScreen(
     onUpdatePaymentCommitment: (PaymentCommitment) -> Unit,
     onDeletePaymentCommitment: (PaymentCommitment) -> Unit,
     onAcceptPaymentSuggestion: (PaymentCommitment) -> Unit,
+    onRequestPaymentReminderPermission: () -> Unit = {},
+    onOpenPaymentReminderSettings: () -> Unit = {},
+    onSavePaymentReminderRule: suspend (PaymentReminderRule) -> Unit = {},
+    onDeletePaymentReminderRule: suspend (Long) -> Unit = {},
+    onSnoozePaymentReminder: suspend (
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        minutes: Int,
+        expectedGeneration: Long,
+    ) -> Unit = { _, _, _, _ -> },
+    onClearPaymentReminderSnooze: suspend (ruleId: Long, expectedGeneration: Long) -> Unit = { _, _ -> },
+    onSkipNextPaymentReminder: suspend (
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        expectedGeneration: Long,
+    ) -> Unit = { _, _, _ -> },
+    onPaymentReminderSettingsChange: suspend (PaymentReminderSettings) -> Unit = {},
     creditCardBills: List<CreditCardBill> = emptyList(),
     onMarkCreditCardBillPaid: (Long) -> Unit = {},
     onAssignCreditCardBill: (billId: Long, accountId: Long) -> Unit = { _, _ -> },
@@ -200,6 +225,30 @@ fun PlanningScreen(
                     onEdit = { editingBill = it },
                     onMarkPaid = onMarkBillPaid,
                     onDelete = onDeleteBill,
+                )
+                PlanSection.REMINDERS -> PaymentReminderCenterContent(
+                    rules = paymentReminderRules,
+                    settings = paymentReminderSettings,
+                    manualBills = bills,
+                    creditCardBills = creditCardBills,
+                    accounts = accounts,
+                    hasNotificationPermission = hasPaymentReminderPermission,
+                    onRequestNotificationPermission = onRequestPaymentReminderPermission,
+                    onOpenSystemNotificationSettings = onOpenPaymentReminderSettings,
+                    onAddManualBill = { addingBill = true },
+                    onOpenTarget = { target: PaymentReminderTarget ->
+                        sectionName = when (target.targetType) {
+                            PaymentReminderTargetType.MANUAL_BILL -> PlanSection.BILLS.name
+                            PaymentReminderTargetType.CREDIT_CARD -> PlanSection.CARD_BILLS.name
+                        }
+                    },
+                    onSaveRule = onSavePaymentReminderRule,
+                    onDeleteRule = onDeletePaymentReminderRule,
+                    onSnooze = onSnoozePaymentReminder,
+                    onClearSnooze = onClearPaymentReminderSnooze,
+                    onSkipNext = onSkipNextPaymentReminder,
+                    onSettingsChange = onPaymentReminderSettingsChange,
+                    modifier = Modifier.fillMaxSize(),
                 )
                 PlanSection.CARD_BILLS -> CreditCardBillsDashboardContent(
                     bills = creditCardBills,
@@ -312,7 +361,7 @@ private fun BillsContent(
             Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                 Icon(Icons.Rounded.Add, contentDescription = null)
                 Spacer(Modifier.size(8.dp))
-                Text("Add bill reminder")
+                Text("Add bill")
             }
         }
         if (dueItems.isEmpty()) {
@@ -449,7 +498,7 @@ private fun BillEditorDialog(
     val parsedDate = runCatching { LocalDate.parse(dueDate) }.getOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (existing == null) "Add bill reminder" else "Edit bill reminder") },
+        title = { Text(if (existing == null) "Add bill" else "Edit bill") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(title, { title = it.take(64) }, label = { Text("Bill name") }, singleLine = true)

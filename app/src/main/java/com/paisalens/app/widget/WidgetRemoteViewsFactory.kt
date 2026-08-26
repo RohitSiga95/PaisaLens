@@ -20,6 +20,7 @@ import com.paisalens.app.MainActivity
 import com.paisalens.app.R
 import com.paisalens.app.data.model.AppThemeStyle
 import com.paisalens.app.data.model.DueStatus
+import com.paisalens.app.data.model.PaymentReminderStatus
 import com.paisalens.app.ui.theme.colorSchemeFor
 import com.paisalens.app.ui.theme.gradientBackgroundColorsFor
 import java.text.NumberFormat
@@ -46,6 +47,7 @@ internal object WidgetRemoteViewsFactory {
         val privacy = widgetPrivacyState(
             appLockEnabled = settings.appLockEnabled,
             amountsVisible = settings.amountsVisible,
+            privacyModeActive = !settings.sensitiveDetailsVisible,
         )
         val theme = settings.theme
         val systemDark = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
@@ -64,6 +66,7 @@ internal object WidgetRemoteViewsFactory {
             PaisaLensWidgetKind.CATEGORY_BREAKDOWN -> scheme.secondary.toArgb()
             PaisaLensWidgetKind.DUE_BILLS -> scheme.tertiary.toArgb()
             PaisaLensWidgetKind.CREDIT_CARD_BILLS -> scheme.primary.toArgb()
+            PaisaLensWidgetKind.PAYMENT_REMINDERS -> scheme.tertiary.toArgb()
         }
         val colors = WidgetColors(
             foreground = foreground.toArgb(),
@@ -114,6 +117,14 @@ internal object WidgetRemoteViewsFactory {
                 colors = colors,
                 maxRows = maxRows,
             )
+            PaisaLensWidgetKind.PAYMENT_REMINDERS -> paymentRemindersViews(
+                context = context,
+                snapshot = snapshot,
+                privacy = privacy,
+                currencyCode = settings.currencyCode,
+                colors = colors,
+                size = paymentReminderWidgetSize(minHeightDp),
+            )
         }
         views.setImageViewBitmap(
             R.id.widget_background_image,
@@ -128,6 +139,7 @@ internal object WidgetRemoteViewsFactory {
                     PaisaLensWidgetKind.CATEGORY_BREAKDOWN -> theme.palette.primaryArgb.toInt()
                     PaisaLensWidgetKind.DUE_BILLS -> theme.palette.secondaryArgb.toInt()
                     PaisaLensWidgetKind.CREDIT_CARD_BILLS -> theme.palette.tertiaryArgb.toInt()
+                    PaisaLensWidgetKind.PAYMENT_REMINDERS -> theme.palette.primaryArgb.toInt()
                 },
             ),
         )
@@ -351,6 +363,69 @@ internal object WidgetRemoteViewsFactory {
         }
     }
 
+    private fun paymentRemindersViews(
+        context: Context,
+        snapshot: WidgetLedgerSnapshot,
+        privacy: WidgetPrivacyState,
+        currencyCode: String,
+        colors: WidgetColors,
+        size: PaymentReminderWidgetSize,
+    ): RemoteViews {
+        val nowMillis = System.currentTimeMillis()
+        val presentation = buildPaymentReminderWidgetPresentation(
+            rules = snapshot.paymentReminderRules,
+            settings = snapshot.paymentReminderSettings,
+            manualBills = snapshot.bills,
+            creditCardBills = snapshot.creditCardBills,
+            accounts = snapshot.accounts,
+            nowMillis = nowMillis,
+            size = size,
+            systemZone = ZoneId.systemDefault(),
+        )
+        val disclosure = disclosePaymentReminderWidget(presentation, privacy)
+        val summary = when {
+            !privacy.showDetails -> "Private"
+            !snapshot.paymentReminderSettings.enabled -> "Paused"
+            disclosure.reminderCount == 0 -> "All clear"
+            else -> "${disclosure.reminderCount} reminder${pluralSuffix(disclosure.reminderCount ?: 0)}"
+        }
+        val supporting = when {
+            !privacy.showDetails -> "Open PaisaLens to view reminders"
+            !snapshot.paymentReminderSettings.enabled -> "Payment reminders are paused"
+            disclosure.reminderCount == 0 -> "Nothing due in ${size.periodLabel.lowercase(Locale.ROOT)}"
+            (disclosure.overdueCount ?: 0) > 0 ->
+                "${disclosure.overdueCount} overdue · action needed"
+            else -> "Upcoming bills are on track"
+        }
+        val contentDescription = when {
+            !privacy.showDetails -> "PaisaLens payment reminders widget. Private. Open PaisaLens to view."
+            else -> buildString {
+                append("Payment reminders, ${size.periodLabel.lowercase(Locale.ROOT)}. $summary. $supporting. ")
+                disclosure.rows.forEach { row ->
+                    append("${row.title}, ${paymentReminderDueLabel(row)}")
+                    if (privacy.showAmounts && row.showAmount) append(", ${formatMoney(row.amountMinor, currencyCode)}")
+                    append(". ")
+                }
+                append("Open PaisaLens.")
+            }
+        }
+        return RemoteViews(context.packageName, R.layout.paisalens_due_bills_widget).apply {
+            setTextViewText(R.id.widget_title, "Payment reminders")
+            setTextViewText(R.id.widget_period, size.periodLabel)
+            setTextViewText(R.id.widget_summary_amount, summary)
+            setTextViewText(R.id.widget_summary_label, supporting)
+            setTextColor(R.id.widget_title, colors.foreground)
+            setTextColor(R.id.widget_period, colors.secondary)
+            setTextColor(R.id.widget_summary_amount, colors.foreground)
+            setTextColor(
+                R.id.widget_summary_label,
+                if ((disclosure.overdueCount ?: 0) > 0) colors.alert else colors.secondary,
+            )
+            bindPaymentReminderRows(this, disclosure.rows, privacy, currencyCode, colors)
+            setContentDescription(R.id.widget_root, contentDescription)
+        }
+    }
+
     private fun bindSpendingRows(
         views: RemoteViews,
         rows: List<SpendingWidgetRow>,
@@ -441,6 +516,43 @@ internal object WidgetRemoteViewsFactory {
                 views.setTextColor(amountIds[index], colors.secondary)
             }
         }
+    }
+
+    private fun bindPaymentReminderRows(
+        views: RemoteViews,
+        rows: List<PaymentReminderWidgetRow>,
+        privacy: WidgetPrivacyState,
+        currencyCode: String,
+        colors: WidgetColors,
+    ) {
+        val rowIds = intArrayOf(R.id.widget_bill_row_1, R.id.widget_bill_row_2, R.id.widget_bill_row_3)
+        val titleIds = intArrayOf(R.id.widget_bill_row_1_title, R.id.widget_bill_row_2_title, R.id.widget_bill_row_3_title)
+        val dueIds = intArrayOf(R.id.widget_bill_row_1_due, R.id.widget_bill_row_2_due, R.id.widget_bill_row_3_due)
+        val amountIds = intArrayOf(R.id.widget_bill_row_1_amount, R.id.widget_bill_row_2_amount, R.id.widget_bill_row_3_amount)
+        rowIds.indices.forEach { index ->
+            val row = rows.getOrNull(index)
+            views.setViewVisibility(rowIds[index], if (row == null) View.GONE else View.VISIBLE)
+            if (row != null) {
+                val overdue = row.status == PaymentReminderStatus.OVERDUE
+                views.setTextViewText(titleIds[index], row.title)
+                views.setTextViewText(dueIds[index], paymentReminderDueLabel(row))
+                views.setTextViewText(
+                    amountIds[index],
+                    if (privacy.showAmounts && row.showAmount) formatMoney(row.amountMinor, currencyCode) else "Hidden",
+                )
+                views.setTextColor(titleIds[index], colors.foreground)
+                views.setTextColor(dueIds[index], if (overdue) colors.alert else colors.secondary)
+                views.setTextColor(amountIds[index], colors.secondary)
+            }
+        }
+    }
+
+    private fun paymentReminderDueLabel(row: PaymentReminderWidgetRow): String = when (row.status) {
+        PaymentReminderStatus.OVERDUE -> "OVERDUE · ${row.dueDate.format(dueDateFormatter)}"
+        PaymentReminderStatus.DUE_TODAY -> "Due today"
+        PaymentReminderStatus.SNOOZED -> "Snoozed · due ${row.dueDate.format(dueDateFormatter)}"
+        PaymentReminderStatus.SKIPPED -> "Skipped once"
+        PaymentReminderStatus.UPCOMING -> "Due ${row.dueDate.format(dueDateFormatter)}"
     }
 
     private fun dueLabel(dueDate: LocalDate, today: LocalDate, overdue: Boolean): String = when {

@@ -59,6 +59,7 @@ class ActionableAlertReceiver : BroadcastReceiver() {
                 val bills = database.getBills()
                 val creditCardBills = database.getCreditCardBills()
                 val paymentCommitments = database.getPaymentCommitments()
+                val paymentReminderRules = database.getPaymentReminderRules()
                 val savingsGoals = database.getSavingsGoals()
                 val savingsContributions = database.getSavingsContributions()
                 val loans = database.getLoans()
@@ -138,7 +139,12 @@ class ActionableAlertReceiver : BroadcastReceiver() {
                 }
                 buildActionableAlertCandidates(
                     input = ActionableAlertInput(
-                        attentionItems = attention.items,
+                        attentionItems = suppressGenericBillAlertsWithCustomRules(
+                            items = attention.items,
+                            rules = paymentReminderRules,
+                            creditCardBills = creditCardBills,
+                            settings = database.getPaymentReminderSettings(),
+                        ),
                         budgetPeriods = budgetPeriods,
                         creditUtilizations = creditUtilizations,
                         cashFlowForecast = cashFlowForecast,

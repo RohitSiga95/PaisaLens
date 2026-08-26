@@ -26,6 +26,7 @@ import com.paisalens.app.notification.ActionableAlertScheduler
 import com.paisalens.app.notification.ActionableAlertDeliveryStore
 import com.paisalens.app.notification.PrivateDigestScheduler
 import com.paisalens.app.notification.PrivateDigestNotifier
+import com.paisalens.app.notification.PaymentReminderNotifier
 import com.paisalens.app.ui.privacy.PrivacyModeRuntime
 import java.time.DayOfWeek
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -101,7 +102,10 @@ class UserPreferences(context: Context) {
 
     var appLockEnabled: Boolean
         get() = preferences.getBoolean(KEY_APP_LOCK, false)
-        set(value) = preferences.edit().putBoolean(KEY_APP_LOCK, value).apply()
+        set(value) {
+            preferences.edit().putBoolean(KEY_APP_LOCK, value).apply()
+            if (value) PaymentReminderNotifier.cancelAll(applicationContext)
+        }
 
     var widgetAmountsVisible: Boolean
         get() = preferences.getBoolean(KEY_WIDGET_AMOUNTS, false)
@@ -390,6 +394,7 @@ class UserPreferences(context: Context) {
         ActionableAlertScheduler.cancel(applicationContext)
         ActionableAlertNotifier.cancel(applicationContext)
         ActionableAlertDeliveryStore(applicationContext).clear()
+        PaymentReminderNotifier.cancelAll(applicationContext)
         ScheduledBackupScheduler.cancel(applicationContext)
         ScheduledBackupSecretStore(applicationContext).clear()
     }
@@ -472,6 +477,7 @@ class UserPreferences(context: Context) {
     private fun updateEffectivePrivacy(enabled: Boolean) {
         _privacyModeActive.value = enabled
         PrivacyModeRuntime.update(enabled)
+        if (enabled) PaymentReminderNotifier.cancelAll(applicationContext)
     }
 
     private fun readScheduledBackup(): ScheduledBackupConfiguration = ScheduledBackupConfiguration(

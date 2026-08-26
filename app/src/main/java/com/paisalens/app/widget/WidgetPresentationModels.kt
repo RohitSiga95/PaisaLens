@@ -9,6 +9,11 @@ import com.paisalens.app.data.model.DueStatus
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.PaymentCommitment
+import com.paisalens.app.data.model.PaymentReminderKind
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
+import com.paisalens.app.data.model.PaymentReminderStatus
+import com.paisalens.app.data.model.PaymentReminderTargetType
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionRecord
@@ -16,12 +21,14 @@ import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.buildDueItems
 import com.paisalens.app.data.model.buildEffectiveExpenseTransactions
 import com.paisalens.app.data.model.buildPaymentCommitmentDueItems
+import com.paisalens.app.data.model.buildPaymentReminderTargets
 import com.paisalens.app.data.model.buildSpendingCategoryTotals
 import com.paisalens.app.data.model.currentCreditCardBills
 import com.paisalens.app.data.model.detectRecurringPayments
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.paymentCommitmentIdentityKey
 import com.paisalens.app.data.model.recurringPaymentIdentityKey
+import com.paisalens.app.data.model.resolvePaymentReminderOccurrences
 import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
 import java.time.Instant
 import java.time.LocalDate
@@ -38,8 +45,12 @@ internal enum class WidgetPrivacyState {
     val showAmounts: Boolean get() = this == VISIBLE
 }
 
-internal fun widgetPrivacyState(appLockEnabled: Boolean, amountsVisible: Boolean): WidgetPrivacyState = when {
-    appLockEnabled -> WidgetPrivacyState.LOCKED
+internal fun widgetPrivacyState(
+    appLockEnabled: Boolean,
+    amountsVisible: Boolean,
+    privacyModeActive: Boolean = false,
+): WidgetPrivacyState = when {
+    appLockEnabled || privacyModeActive -> WidgetPrivacyState.LOCKED
     amountsVisible -> WidgetPrivacyState.VISIBLE
     else -> WidgetPrivacyState.AMOUNTS_HIDDEN
 }
@@ -205,5 +216,142 @@ internal fun buildCreditCardBillsWidgetPresentation(
             )
         },
         totalDueMinor = dueBills.sumOf(CreditCardBill::totalDueMinor),
+    )
+}
+
+internal enum class PaymentReminderWidgetSize(
+    val horizonDays: Int,
+    val maxRows: Int,
+    val periodLabel: String,
+) {
+    SMALL(horizonDays = 0, maxRows = 1, periodLabel = "Today"),
+    MEDIUM(horizonDays = 7, maxRows = 2, periodLabel = "Next 7 days"),
+    LARGE(horizonDays = 30, maxRows = 3, periodLabel = "Next 30 days"),
+}
+
+internal fun paymentReminderWidgetSize(minHeightDp: Int): PaymentReminderWidgetSize = when {
+    minHeightDp >= 180 -> PaymentReminderWidgetSize.LARGE
+    minHeightDp >= 140 -> PaymentReminderWidgetSize.MEDIUM
+    else -> PaymentReminderWidgetSize.SMALL
+}
+
+internal data class PaymentReminderWidgetRow(
+    val ruleId: Long,
+    val title: String,
+    val amountMinor: Long,
+    val dueDate: LocalDate,
+    val status: PaymentReminderStatus,
+    val kind: PaymentReminderKind,
+    val showAmount: Boolean,
+)
+
+internal data class PaymentReminderWidgetPresentation(
+    val size: PaymentReminderWidgetSize,
+    val rows: List<PaymentReminderWidgetRow>,
+    val reminderCount: Int,
+    val totalAmountMinor: Long,
+    val overdueCount: Int,
+)
+
+internal fun buildPaymentReminderWidgetPresentation(
+    rules: List<PaymentReminderRule>,
+    settings: PaymentReminderSettings,
+    manualBills: List<BillReminder>,
+    creditCardBills: List<CreditCardBill>,
+    accounts: List<AccountProfile>,
+    nowMillis: Long,
+    size: PaymentReminderWidgetSize,
+    systemZone: ZoneId = ZoneId.systemDefault(),
+): PaymentReminderWidgetPresentation {
+    if (!settings.normalized().enabled) {
+        return PaymentReminderWidgetPresentation(size, emptyList(), 0, 0L, 0)
+    }
+    val systemToday = Instant.ofEpochMilli(nowMillis).atZone(systemZone).toLocalDate()
+    val accountNames = accounts.associate { it.id to it.name }
+    val targets = buildPaymentReminderTargets(manualBills, creditCardBills, systemToday).map { target ->
+        val renamedAccount = target.accountId?.let(accountNames::get)?.takeIf(String::isNotBlank)
+        target.copy(
+            title = if (target.targetType == PaymentReminderTargetType.CREDIT_CARD) {
+                renamedAccount ?: target.title
+            } else {
+                target.title
+            },
+            accountName = renamedAccount ?: target.accountName,
+        )
+    }
+    val occurrences = resolvePaymentReminderOccurrences(rules, targets, manualBills, nowMillis, systemZone)
+    val rulesById = rules.associateBy(PaymentReminderRule::id)
+    val rows = occurrences.asSequence()
+        .filter { occurrence -> occurrence.status != PaymentReminderStatus.SKIPPED }
+        .filter { occurrence ->
+            val rule = rulesById[occurrence.ruleId] ?: return@filter false
+            val zone = runCatching { ZoneId.of(rule.zoneId) }.getOrDefault(systemZone)
+            val ruleToday = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
+            val dueDate = LocalDate.ofEpochDay(occurrence.dueDateEpochDay)
+            occurrence.status == PaymentReminderStatus.OVERDUE ||
+                occurrence.status == PaymentReminderStatus.SNOOZED ||
+                !dueDate.isBefore(ruleToday) && !dueDate.isAfter(ruleToday.plusDays(size.horizonDays.toLong()))
+        }
+        .map { occurrence ->
+            PaymentReminderWidgetRow(
+                ruleId = occurrence.ruleId,
+                title = occurrence.title,
+                amountMinor = occurrence.amountMinor,
+                dueDate = LocalDate.ofEpochDay(occurrence.dueDateEpochDay),
+                status = occurrence.status,
+                kind = occurrence.kind,
+                showAmount = occurrence.showAmount,
+            )
+        }
+        .sortedWith(
+            compareBy<PaymentReminderWidgetRow> { row ->
+                when (row.status) {
+                    PaymentReminderStatus.OVERDUE -> 0
+                    PaymentReminderStatus.DUE_TODAY -> 1
+                    PaymentReminderStatus.SNOOZED -> 2
+                    PaymentReminderStatus.UPCOMING -> 3
+                    PaymentReminderStatus.SKIPPED -> 4
+                }
+            }.thenBy(PaymentReminderWidgetRow::dueDate).thenBy { it.title.lowercase() },
+        )
+        .toList()
+    return PaymentReminderWidgetPresentation(
+        size = size,
+        rows = rows.take(size.maxRows),
+        reminderCount = rows.size,
+        totalAmountMinor = rows.sumOf(PaymentReminderWidgetRow::amountMinor),
+        overdueCount = rows.count { it.status == PaymentReminderStatus.OVERDUE },
+    )
+}
+
+/** The renderer consumes only this disclosure-safe projection. Locked/privacy-mode widgets get no details. */
+internal data class PaymentReminderWidgetDisclosure(
+    val rows: List<PaymentReminderWidgetRow>,
+    val reminderCount: Int?,
+    val overdueCount: Int?,
+    val totalAmountMinor: Long?,
+)
+
+internal fun disclosePaymentReminderWidget(
+    presentation: PaymentReminderWidgetPresentation,
+    privacy: WidgetPrivacyState,
+): PaymentReminderWidgetDisclosure = when (privacy) {
+    WidgetPrivacyState.LOCKED -> PaymentReminderWidgetDisclosure(
+        rows = emptyList(),
+        reminderCount = null,
+        overdueCount = null,
+        totalAmountMinor = null,
+    )
+    WidgetPrivacyState.AMOUNTS_HIDDEN -> PaymentReminderWidgetDisclosure(
+        rows = presentation.rows,
+        reminderCount = presentation.reminderCount,
+        overdueCount = presentation.overdueCount,
+        totalAmountMinor = null,
+    )
+    WidgetPrivacyState.VISIBLE -> PaymentReminderWidgetDisclosure(
+        rows = presentation.rows,
+        reminderCount = presentation.reminderCount,
+        overdueCount = presentation.overdueCount,
+        totalAmountMinor = presentation.totalAmountMinor,
     )
 }

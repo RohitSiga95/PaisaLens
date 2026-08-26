@@ -4,8 +4,10 @@
     <string name="category_widget_name">PaisaLens · Categories</string>
     <string name="due_bills_widget_name">PaisaLens · Bills due</string>
     <string name="card_bills_widget_name">PaisaLens · Card bills</string>
+    <string name="payment_reminders_widget_name">PaisaLens · Payment reminders</string>
     <string name="widget_description">Current month spending snapshot</string>
     <string name="category_widget_description">Monthly category spending breakdown</string>
     <string name="due_bills_widget_description">Bills, subscriptions, AutoPay, and EMIs due soon</string>
     <string name="card_bills_widget_description">Latest unpaid credit card statements</string>
+    <string name="payment_reminders_widget_description">Resizable utility and credit-card reminder agenda</string>
 </resources>

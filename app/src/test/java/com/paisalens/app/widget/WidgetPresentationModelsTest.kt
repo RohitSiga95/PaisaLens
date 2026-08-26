@@ -6,9 +6,16 @@ import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.CreditCardBillStatus
 import com.paisalens.app.data.model.ExpenseCategory
+import com.paisalens.app.data.model.PaymentReminderKind
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
+import com.paisalens.app.data.model.PaymentReminderTargetType
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.creditCardReminderTargetKey
+import com.paisalens.app.data.model.creditCardBillGroupKey
+import com.paisalens.app.data.model.manualBillReminderTargetKey
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -30,6 +37,10 @@ class WidgetPresentationModelsTest {
             widgetPrivacyState(appLockEnabled = false, amountsVisible = false),
         )
         assertEquals(WidgetPrivacyState.VISIBLE, widgetPrivacyState(appLockEnabled = false, amountsVisible = true))
+        assertEquals(
+            WidgetPrivacyState.LOCKED,
+            widgetPrivacyState(appLockEnabled = false, amountsVisible = true, privacyModeActive = true),
+        )
     }
 
     @Test
@@ -145,6 +156,106 @@ class WidgetPresentationModelsTest {
         assertEquals("IDFC ••4567", row.cardName)
     }
 
+    @Test
+    fun `payment reminder widget adapts horizon and combines manual and card bills`() {
+        val today = LocalDate.of(2026, 8, 26)
+        val manual = BillReminder(
+            id = 7,
+            title = "Electricity",
+            amountMinor = 125_000,
+            dueDateEpochDay = today.toEpochDay(),
+        )
+        val card = cardBill(
+            id = 8,
+            key = "hdfc:aug",
+            cardIdentity = "hdfc:0801",
+            amountMinor = 220_000,
+            dueDate = today.plusDays(4),
+        )
+        val rules = listOf(
+            reminderRule(
+                id = 1,
+                targetType = PaymentReminderTargetType.MANUAL_BILL,
+                targetKey = manualBillReminderTargetKey(manual.id),
+                kind = PaymentReminderKind.UTILITY,
+            ),
+            reminderRule(
+                id = 2,
+                targetType = PaymentReminderTargetType.CREDIT_CARD,
+                targetKey = creditCardReminderTargetKey(card.creditCardBillGroupKey),
+                kind = PaymentReminderKind.CREDIT_CARD,
+            ),
+        )
+        val nowMillis = today.atTime(8, 0).atZone(utc).toInstant().toEpochMilli()
+
+        val small = buildPaymentReminderWidgetPresentation(
+            rules = rules,
+            settings = PaymentReminderSettings(),
+            manualBills = listOf(manual),
+            creditCardBills = listOf(card),
+            accounts = emptyList(),
+            nowMillis = nowMillis,
+            size = PaymentReminderWidgetSize.SMALL,
+            systemZone = utc,
+        )
+        val medium = buildPaymentReminderWidgetPresentation(
+            rules = rules,
+            settings = PaymentReminderSettings(),
+            manualBills = listOf(manual),
+            creditCardBills = listOf(card),
+            accounts = emptyList(),
+            nowMillis = nowMillis,
+            size = PaymentReminderWidgetSize.MEDIUM,
+            systemZone = utc,
+        )
+
+        assertEquals(listOf("Electricity"), small.rows.map { it.title })
+        assertEquals(listOf("Electricity", "HDFC"), medium.rows.map { it.title })
+        assertEquals(2, medium.reminderCount)
+        assertEquals(345_000L, medium.totalAmountMinor)
+    }
+
+    @Test
+    fun `payment reminder widget disclosure fully redacts lock and privacy mode`() {
+        val presentation = PaymentReminderWidgetPresentation(
+            size = PaymentReminderWidgetSize.MEDIUM,
+            rows = listOf(
+                PaymentReminderWidgetRow(
+                    ruleId = 1,
+                    title = "Private card name",
+                    amountMinor = 123_400,
+                    dueDate = LocalDate.of(2026, 8, 27),
+                    status = com.paisalens.app.data.model.PaymentReminderStatus.UPCOMING,
+                    kind = PaymentReminderKind.CREDIT_CARD,
+                    showAmount = true,
+                ),
+            ),
+            reminderCount = 1,
+            totalAmountMinor = 123_400,
+            overdueCount = 0,
+        )
+
+        val locked = disclosePaymentReminderWidget(presentation, WidgetPrivacyState.LOCKED)
+        assertTrue(locked.rows.isEmpty())
+        assertEquals(null, locked.reminderCount)
+        assertEquals(null, locked.overdueCount)
+        assertEquals(null, locked.totalAmountMinor)
+
+        val amountsHidden = disclosePaymentReminderWidget(presentation, WidgetPrivacyState.AMOUNTS_HIDDEN)
+        assertEquals("Private card name", amountsHidden.rows.single().title)
+        assertEquals(null, amountsHidden.totalAmountMinor)
+
+        val visible = disclosePaymentReminderWidget(presentation, WidgetPrivacyState.VISIBLE)
+        assertEquals(123_400L, visible.totalAmountMinor)
+    }
+
+    @Test
+    fun `payment reminder widget size maps to small medium and large agendas`() {
+        assertEquals(PaymentReminderWidgetSize.SMALL, paymentReminderWidgetSize(110))
+        assertEquals(PaymentReminderWidgetSize.MEDIUM, paymentReminderWidgetSize(140))
+        assertEquals(PaymentReminderWidgetSize.LARGE, paymentReminderWidgetSize(180))
+    }
+
     private fun expense(
         id: Long,
         amountMinor: Long,
@@ -187,5 +298,18 @@ class WidgetPresentationModelsTest {
         detectedAt = dueDate.minusDays(10).atStartOfDay(utc).toInstant().toEpochMilli(),
         sender = "BANK",
         status = status,
+    )
+
+    private fun reminderRule(
+        id: Long,
+        targetType: PaymentReminderTargetType,
+        targetKey: String,
+        kind: PaymentReminderKind,
+    ) = PaymentReminderRule(
+        id = id,
+        targetType = targetType,
+        targetKey = targetKey,
+        kind = kind,
+        zoneId = utc.id,
     )
 }

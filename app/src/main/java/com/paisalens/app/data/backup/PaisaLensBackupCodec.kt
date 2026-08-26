@@ -32,6 +32,12 @@ import com.paisalens.app.data.model.PaymentCommitmentKind
 import com.paisalens.app.data.model.PaymentCommitmentSource
 import com.paisalens.app.data.model.PaymentCommitmentStatus
 import com.paisalens.app.data.model.PaymentFrequency
+import com.paisalens.app.data.model.PaymentReminderKind
+import com.paisalens.app.data.model.PaymentReminderNotificationStyle
+import com.paisalens.app.data.model.PaymentReminderPriority
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
+import com.paisalens.app.data.model.PaymentReminderTargetType
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.ReconciliationStatus
 import com.paisalens.app.data.model.SmartCategoryRule
@@ -502,6 +508,49 @@ object PaisaLensBackupCodec {
                     data.writeNullableLong(bill.paidAt)
                 }
             }
+            if (formatVersion >= 10) {
+                data.writeInt(snapshot.paymentReminderRules.size)
+                snapshot.paymentReminderRules.forEach { rawRule ->
+                    val rule = rawRule.normalized()
+                    data.writeLong(rule.id)
+                    data.writeUTF(rule.targetType.name)
+                    data.writeUTF(rule.targetKey)
+                    data.writeUTF(rule.kind.name)
+                    data.writeBoolean(rule.enabled)
+                    data.writeInt(rule.alertTimeMinutes)
+                    data.writeUTF(rule.zoneId)
+                    data.writeInt(rule.advanceDays.size)
+                    rule.advanceDays.forEach(data::writeInt)
+                    data.writeInt(rule.overdueRepeatDays)
+                    data.writeInt(rule.snoozeMinutes.size)
+                    rule.snoozeMinutes.forEach(data::writeInt)
+                    data.writeUTF(rule.priority.name)
+                    data.writeUTF(rule.notificationStyle.name)
+                    data.writeBoolean(rule.showAmount)
+                    data.writeBoolean(rule.vibrate)
+                    data.writeNullable(rule.categoryLabel)
+                    data.writeUTF(rule.colorHex)
+                    data.writeNullable(rule.notes)
+                    data.writeNullableLong(rule.skippedOccurrenceEpochDay)
+                    data.writeNullableLong(rule.snoozedOccurrenceEpochDay)
+                    data.writeNullableLong(rule.snoozedUntilMillis)
+                    data.writeLong(rule.generation.coerceAtLeast(1L))
+                    data.writeLong(rule.createdAt)
+                    data.writeLong(rule.updatedAt)
+                }
+                val settings = snapshot.paymentReminderSettings.normalized()
+                data.writeBoolean(settings.enabled)
+                data.writeBoolean(settings.quietHoursEnabled)
+                data.writeInt(settings.quietHoursStartMinutes)
+                data.writeInt(settings.quietHoursEndMinutes)
+                data.writeBoolean(settings.dailySummaryEnabled)
+                data.writeInt(settings.summaryTimeMinutes)
+                data.writeInt(settings.defaultAdvanceDays.size)
+                settings.defaultAdvanceDays.forEach(data::writeInt)
+                data.writeInt(settings.defaultSnoozeMinutes.size)
+                settings.defaultSnoozeMinutes.forEach(data::writeInt)
+                data.writeBoolean(settings.overdueHighlightEnabled)
+            }
         }
         return bytes.toByteArray()
     }
@@ -895,6 +944,52 @@ object PaisaLensBackupCodec {
             } else {
                 emptyList()
             }
+            val paymentReminderRules = if (formatVersion >= 10) {
+                List(data.readSafeCount()) {
+                    PaymentReminderRule(
+                        id = data.readLong(),
+                        targetType = data.readEnum(PaymentReminderTargetType.MANUAL_BILL),
+                        targetKey = data.readUTF(),
+                        kind = data.readEnum(PaymentReminderKind.UTILITY),
+                        enabled = data.readBoolean(),
+                        alertTimeMinutes = data.readInt(),
+                        zoneId = data.readUTF(),
+                        advanceDays = List(data.readSafeCount(max = 16)) { data.readInt() },
+                        overdueRepeatDays = data.readInt(),
+                        snoozeMinutes = List(data.readSafeCount(max = 16)) { data.readInt() },
+                        priority = data.readEnum(PaymentReminderPriority.HIGH),
+                        notificationStyle = data.readEnum(PaymentReminderNotificationStyle.STANDARD),
+                        showAmount = data.readBoolean(),
+                        vibrate = data.readBoolean(),
+                        categoryLabel = data.readNullable(),
+                        colorHex = data.readUTF(),
+                        notes = data.readNullable(),
+                        skippedOccurrenceEpochDay = data.readNullableLong(),
+                        snoozedOccurrenceEpochDay = data.readNullableLong(),
+                        snoozedUntilMillis = data.readNullableLong(),
+                        generation = data.readLong(),
+                        createdAt = data.readLong(),
+                        updatedAt = data.readLong(),
+                    ).normalized()
+                }
+            } else {
+                emptyList()
+            }
+            val paymentReminderSettings = if (formatVersion >= 10) {
+                PaymentReminderSettings(
+                    enabled = data.readBoolean(),
+                    quietHoursEnabled = data.readBoolean(),
+                    quietHoursStartMinutes = data.readInt(),
+                    quietHoursEndMinutes = data.readInt(),
+                    dailySummaryEnabled = data.readBoolean(),
+                    summaryTimeMinutes = data.readInt(),
+                    defaultAdvanceDays = List(data.readSafeCount(max = 16)) { data.readInt() },
+                    defaultSnoozeMinutes = List(data.readSafeCount(max = 16)) { data.readInt() },
+                    overdueHighlightEnabled = data.readBoolean(),
+                ).normalized()
+            } else {
+                PaymentReminderSettings()
+            }
             require(data.available() == 0) { "Backup contains unexpected trailing data" }
             return PaisaLensBackupSnapshot(
                 createdAt = createdAt,
@@ -921,6 +1016,8 @@ object PaisaLensBackupCodec {
                 smsCoverageRules = smsCoverageRules,
                 advancedBudgets = advancedBudgets,
                 creditCardBills = creditCardBills,
+                paymentReminderRules = paymentReminderRules,
+                paymentReminderSettings = paymentReminderSettings,
             )
         }
     }
@@ -964,6 +1061,7 @@ object PaisaLensBackupCodec {
                 data.writeInt(metadata.advancedBudgetCount)
                 data.writeInt(metadata.creditCardBillCount)
             }
+            if (formatVersion >= 10) data.writeInt(metadata.paymentReminderRuleCount)
             data.writeUTF(metadata.contentSha256)
         }
         return bytes.toByteArray()
@@ -1004,6 +1102,7 @@ object PaisaLensBackupCodec {
             smsCoverageRuleCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
             advancedBudgetCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
             creditCardBillCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
+            paymentReminderRuleCount = if (expectedFormatVersion >= 10) data.readSafeCount() else 0,
             contentSha256 = data.readUTF(),
         )
         require(data.available() == 0) { "Backup contains unexpected verification data" }
@@ -1068,6 +1167,9 @@ object PaisaLensBackupCodec {
         require(metadata.creditCardBillCount == snapshot.creditCardBills.size) {
             "Backup credit-card-bill count verification failed"
         }
+        require(metadata.paymentReminderRuleCount == snapshot.paymentReminderRules.size) {
+            "Backup payment-reminder count verification failed"
+        }
     }
 
     private fun buildMetadata(
@@ -1101,6 +1203,7 @@ object PaisaLensBackupCodec {
         smsCoverageRuleCount = if (formatVersion >= 7) snapshot.smsCoverageRules.size else 0,
         advancedBudgetCount = if (formatVersion >= 7) snapshot.advancedBudgets.size else 0,
         creditCardBillCount = if (formatVersion >= 7) snapshot.creditCardBills.size else 0,
+        paymentReminderRuleCount = if (formatVersion >= 10) snapshot.paymentReminderRules.size else 0,
         contentSha256 = sha256(snapshotPayload),
     )
 
@@ -1191,7 +1294,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 9
+    private const val FORMAT_VERSION = 10
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

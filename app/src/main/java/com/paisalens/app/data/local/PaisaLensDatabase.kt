@@ -43,6 +43,13 @@ import com.paisalens.app.data.model.PaymentCommitmentKind
 import com.paisalens.app.data.model.PaymentCommitmentSource
 import com.paisalens.app.data.model.PaymentCommitmentStatus
 import com.paisalens.app.data.model.PaymentFrequency
+import com.paisalens.app.data.model.PaymentReminderDelivery
+import com.paisalens.app.data.model.PaymentReminderKind
+import com.paisalens.app.data.model.PaymentReminderNotificationStyle
+import com.paisalens.app.data.model.PaymentReminderPriority
+import com.paisalens.app.data.model.PaymentReminderRule
+import com.paisalens.app.data.model.PaymentReminderSettings
+import com.paisalens.app.data.model.PaymentReminderTargetType
 import com.paisalens.app.data.model.ParsedCreditCardBill
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.model.ReviewStatus
@@ -59,6 +66,9 @@ import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.normalizedAccountMergeName
 import com.paisalens.app.data.model.canonicalAccountId
 import com.paisalens.app.data.model.consolidatedAccountProfiles
+import com.paisalens.app.data.model.creditCardBillGroupKey
+import com.paisalens.app.data.model.creditCardReminderTargetKey
+import com.paisalens.app.data.model.manualBillReminderTargetKey
 import com.paisalens.app.data.model.orderAuditEventsForUndo
 import com.paisalens.app.data.model.StatementImportResult
 import com.paisalens.app.data.model.SmartCategoryRule
@@ -91,6 +101,9 @@ import com.paisalens.app.data.model.validateUserEnteredUpiBalance
 import com.paisalens.app.data.model.validateAdvancedBudgetPlan
 import com.paisalens.app.data.model.validateAccountMergeSelection
 import com.paisalens.app.data.model.matches
+import com.paisalens.app.data.model.buildPaymentReminderAlerts
+import com.paisalens.app.data.model.buildPaymentReminderTargets
+import com.paisalens.app.data.model.resolvePaymentReminderOccurrences
 import com.paisalens.app.data.model.normalized
 import com.paisalens.app.data.model.normalizedSmsSender
 import com.paisalens.app.data.model.smsCoverageFingerprint
@@ -106,6 +119,8 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.Base64
+import java.time.Instant
+import java.time.ZoneId
 
 class PaisaLensDatabase(context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
@@ -155,6 +170,7 @@ class PaisaLensDatabase(context: Context) :
         createTrustAccuracyTables(db)
         createSharedFinanceTables(db)
         createV10Tables(db)
+        createPaymentReminderTables(db)
         createTransactionIndexes(db)
         createMerchantCategoriesTable(db)
         db.execSQL(
@@ -236,6 +252,9 @@ class PaisaLensDatabase(context: Context) :
         }
         if (oldVersion < 12) {
             repairCrossProvenanceSmsDuplicates(db)
+        }
+        if (oldVersion < 13) {
+            createPaymentReminderTables(db)
         }
     }
 
@@ -839,6 +858,7 @@ class PaisaLensDatabase(context: Context) :
         require(billId > 0 && accountId > 0) { "A card bill and credit-card account are required" }
         val bills = getCreditCardBills()
         val bill = bills.firstOrNull { it.id == billId } ?: return false
+        val oldReminderTargetKey = creditCardReminderTargetKey(bill.creditCardBillGroupKey)
         val db = writableDatabase
         db.beginTransaction()
         return try {
@@ -866,6 +886,12 @@ class PaisaLensDatabase(context: Context) :
             val assignedHint = if (mergedLogicalAccount) bill.accountHint else account.second ?: bill.accountHint
             val existing = bills.firstOrNull { it.id != bill.id && it.billKey == billKey }
             val now = System.currentTimeMillis()
+            val newest = existing?.let { listOf(it, bill).maxBy(CreditCardBill::detectedAt) } ?: bill
+            val finalAssignedHint = if (mergedLogicalAccount) {
+                newest.accountHint
+            } else {
+                account.second ?: newest.accountHint
+            }
             if (existing == null) {
                 check(
                     db.update(
@@ -882,7 +908,6 @@ class PaisaLensDatabase(context: Context) :
                     ) == 1,
                 ) { "The card bill changed before it could be assigned" }
             } else {
-                val newest = listOf(existing, bill).maxBy(CreditCardBill::detectedAt)
                 val paid = listOf(existing, bill).firstOrNull { it.status == CreditCardBillStatus.PAID }
                 db.delete("credit_card_bills", "id = ?", arrayOf(bill.id.toString()))
                 check(
@@ -895,7 +920,7 @@ class PaisaLensDatabase(context: Context) :
                             put("bill_key", billKey)
                             putNullableText(
                                 "account_hint",
-                                if (mergedLogicalAccount) newest.accountHint else account.second ?: newest.accountHint,
+                                finalAssignedHint,
                             )
                             put("institution_name", newest.institutionName)
                             put("total_due_minor", newest.totalDueMinor)
@@ -909,8 +934,20 @@ class PaisaLensDatabase(context: Context) :
                         "id = ?",
                         arrayOf(existing.id.toString()),
                     ) == 1,
-                ) { "The existing card cycle could not be updated" }
+                    ) { "The existing card cycle could not be updated" }
             }
+            val newReminderTargetKey = creditCardReminderTargetKey(
+                newest.copy(
+                    accountId = accountId,
+                    cardIdentityKey = cardIdentityKey,
+                    accountHint = finalAssignedHint,
+                ).creditCardBillGroupKey,
+            )
+            migrateCreditCardPaymentReminderTarget(
+                db = db,
+                fromTargetKey = oldReminderTargetKey,
+                toTargetKey = newReminderTargetKey,
+            )
             db.setTransactionSuccessful()
             true
         } finally {
@@ -1662,6 +1699,9 @@ class PaisaLensDatabase(context: Context) :
                     ) == 1,
                 ) { "A selected account changed before it could be merged" }
             }
+            if (canonical.type == AccountType.CREDIT_CARD) {
+                mergeCreditCardPaymentReminderRules(db, memberIds, canonicalId)
+            }
 
             db.setTransactionSuccessful()
             AccountMergeResult.Success(
@@ -1674,6 +1714,66 @@ class PaisaLensDatabase(context: Context) :
         } finally {
             db.endTransaction()
         }
+    }
+
+    private fun mergeCreditCardPaymentReminderRules(
+        db: SQLiteDatabase,
+        memberIds: Set<Long>,
+        canonicalId: Long,
+    ) {
+        val destinationTargetKey = creditCardReminderTargetKey("card-account:$canonicalId")
+        val sourceTargetKeys = memberIds.mapTo(linkedSetOf()) {
+            creditCardReminderTargetKey("card-account:$it")
+        }.apply { remove(destinationTargetKey) }
+        mergeCreditCardPaymentReminderTargets(db, sourceTargetKeys, destinationTargetKey)
+    }
+
+    private fun migrateCreditCardPaymentReminderTarget(
+        db: SQLiteDatabase,
+        fromTargetKey: String,
+        toTargetKey: String,
+    ) {
+        if (fromTargetKey == toTargetKey) return
+        mergeCreditCardPaymentReminderTargets(db, setOf(fromTargetKey), toTargetKey)
+    }
+
+    private fun mergeCreditCardPaymentReminderTargets(
+        db: SQLiteDatabase,
+        sourceTargetKeys: Set<String>,
+        destinationTargetKey: String,
+    ) {
+        if (sourceTargetKeys.isEmpty()) return
+        val allRules = getPaymentReminderRules(db)
+        val sourceRules = allRules.filter {
+            it.targetType == PaymentReminderTargetType.CREDIT_CARD && it.targetKey in sourceTargetKeys
+        }
+        if (sourceRules.isEmpty()) return
+        val rules = allRules.filter {
+            it.targetType == PaymentReminderTargetType.CREDIT_CARD &&
+                (it.targetKey in sourceTargetKeys || it.targetKey == destinationTargetKey)
+        }
+        val retained = rules.maxWith(compareBy<PaymentReminderRule> { it.updatedAt }.thenBy { it.id })
+        rules.asSequence().filter { it.id != retained.id }.forEach { duplicate ->
+            db.delete("payment_reminder_rules", "id = ?", arrayOf(duplicate.id.toString()))
+        }
+        val merged = retained.copy(
+            targetKey = destinationTargetKey,
+            enabled = rules.any(PaymentReminderRule::enabled),
+            advanceDays = rules.flatMap(PaymentReminderRule::advanceDays),
+            snoozeMinutes = rules.flatMap(PaymentReminderRule::snoozeMinutes),
+            showAmount = rules.all(PaymentReminderRule::showAmount),
+            generation = rules.maxOf(PaymentReminderRule::generation) + 1L,
+            createdAt = rules.minOf(PaymentReminderRule::createdAt),
+            updatedAt = System.currentTimeMillis(),
+        ).normalized()
+        check(
+            db.update(
+                "payment_reminder_rules",
+                paymentReminderRuleValues(merged),
+                "id = ?",
+                arrayOf(retained.id.toString()),
+            ) == 1,
+        ) { "Merged credit-card reminder could not be preserved" }
     }
 
     fun applyAccountAvailability(updates: List<AccountAvailabilityUpdate>): Int {
@@ -1765,25 +1865,43 @@ class PaisaLensDatabase(context: Context) :
 
     fun deleteAccount(id: Long) {
         val db = writableDatabase
-        val mergeState = db.query(
-            "accounts",
-            arrayOf(
-                "merged_into_account_id",
-                "(SELECT COUNT(*) FROM accounts members WHERE members.merged_into_account_id = accounts.id)",
-            ),
-            "id = ?",
-            arrayOf(id.toString()),
-            null,
-            null,
-            null,
-            "1",
-        ).use { cursor ->
-            if (cursor.moveToFirst()) cursor.longOrNull(0) to cursor.getInt(1) else null
-        } ?: return
-        require(mergeState.first == null && mergeState.second == 0) {
-            "Merged accounts cannot be deleted"
+        db.beginTransaction()
+        try {
+            val mergeState = db.query(
+                "accounts",
+                arrayOf(
+                    "merged_into_account_id",
+                    "(SELECT COUNT(*) FROM accounts members WHERE members.merged_into_account_id = accounts.id)",
+                ),
+                "id = ?",
+                arrayOf(id.toString()),
+                null,
+                null,
+                null,
+                "1",
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.longOrNull(0) to cursor.getInt(1) else null
+            } ?: return
+            require(mergeState.first == null && mergeState.second == 0) {
+                "Merged accounts cannot be deleted"
+            }
+            val affectedCardTargets = getCreditCardBills(db, canonicalizeAccounts = false)
+                .filter { it.accountId == id }
+                .map { bill ->
+                    creditCardReminderTargetKey(bill.creditCardBillGroupKey) to
+                        creditCardReminderTargetKey(bill.copy(accountId = null).creditCardBillGroupKey)
+                }
+                .distinct()
+            check(db.delete("accounts", "id = ?", arrayOf(id.toString())) == 1) {
+                "The account changed before it could be deleted"
+            }
+            affectedCardTargets.forEach { (oldTargetKey, newTargetKey) ->
+                migrateCreditCardPaymentReminderTarget(db, oldTargetKey, newTargetKey)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        db.delete("accounts", "id = ?", arrayOf(id.toString()))
     }
 
     fun getBalanceHistory(accountId: Long? = null): List<AccountBalanceSnapshot> =
@@ -2569,7 +2687,328 @@ class PaisaLensDatabase(context: Context) :
     }
 
     fun deleteBill(id: Long) {
-        writableDatabase.delete("bills", "id = ?", arrayOf(id.toString()))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete(
+                "payment_reminder_rules",
+                "target_type = ? AND target_key = ?",
+                arrayOf(PaymentReminderTargetType.MANUAL_BILL.name, "manual-bill:$id"),
+            )
+            db.delete("bills", "id = ?", arrayOf(id.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getPaymentReminderRules(): List<PaymentReminderRule> = getPaymentReminderRules(readableDatabase)
+
+    private fun getPaymentReminderRules(db: SQLiteDatabase): List<PaymentReminderRule> {
+        val result = mutableListOf<PaymentReminderRule>()
+        db.query(
+            "payment_reminder_rules",
+            arrayOf(
+                "id", "target_type", "target_key", "kind", "enabled", "alert_time_minutes",
+                "zone_id", "advance_days", "overdue_repeat_days", "snooze_minutes", "priority",
+                "notification_style", "show_amount", "vibrate", "category_label", "color_hex",
+                "notes", "skipped_occurrence_epoch_day", "snoozed_occurrence_epoch_day",
+                "snoozed_until_millis", "generation", "created_at", "updated_at",
+            ),
+            null, null, null, null,
+            "enabled DESC, updated_at DESC, id DESC",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                result += PaymentReminderRule(
+                    id = cursor.getLong(0),
+                    targetType = enumValueOrDefault(cursor.getString(1), PaymentReminderTargetType.MANUAL_BILL),
+                    targetKey = cursor.getString(2),
+                    kind = enumValueOrDefault(cursor.getString(3), PaymentReminderKind.UTILITY),
+                    enabled = cursor.getInt(4) != 0,
+                    alertTimeMinutes = cursor.getInt(5),
+                    zoneId = cursor.getString(6),
+                    advanceDays = decodeReminderIntList(cursor.getString(7)),
+                    overdueRepeatDays = cursor.getInt(8),
+                    snoozeMinutes = decodeReminderIntList(cursor.getString(9)),
+                    priority = enumValueOrDefault(cursor.getString(10), PaymentReminderPriority.HIGH),
+                    notificationStyle = enumValueOrDefault(
+                        cursor.getString(11),
+                        PaymentReminderNotificationStyle.STANDARD,
+                    ),
+                    showAmount = cursor.getInt(12) != 0,
+                    vibrate = cursor.getInt(13) != 0,
+                    categoryLabel = cursor.getString(14),
+                    colorHex = cursor.getString(15),
+                    notes = cursor.getString(16),
+                    skippedOccurrenceEpochDay = cursor.longOrNull(17),
+                    snoozedOccurrenceEpochDay = cursor.longOrNull(18),
+                    snoozedUntilMillis = cursor.longOrNull(19),
+                    generation = cursor.getLong(20),
+                    createdAt = cursor.getLong(21),
+                    updatedAt = cursor.getLong(22),
+                ).normalized()
+            }
+        }
+        return result
+    }
+
+    fun getPaymentReminderRule(id: Long): PaymentReminderRule? =
+        getPaymentReminderRules().firstOrNull { it.id == id }
+
+    fun upsertPaymentReminderRule(rule: PaymentReminderRule): Long {
+        val clean = rule.normalized()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val existingId = when {
+                clean.id > 0L -> clean.id.takeIf {
+                    db.rawQuery(
+                        "SELECT 1 FROM payment_reminder_rules WHERE id = ? LIMIT 1",
+                        arrayOf(clean.id.toString()),
+                    ).use(android.database.Cursor::moveToFirst)
+                }
+                else -> db.rawQuery(
+                    "SELECT id FROM payment_reminder_rules WHERE target_type = ? AND target_key = ? LIMIT 1",
+                    arrayOf(clean.targetType.name, clean.targetKey),
+                ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+            }
+            val existing = existingId?.let { id -> getPaymentReminderRules(db).firstOrNull { it.id == id } }
+            if (clean.id > 0L) require(existing != null) { "Payment reminder does not exist" }
+            if (existing != null) {
+                require(clean.generation == existing.generation) {
+                    "Payment reminder changed while it was being edited"
+                }
+            }
+            if (existing != null && (existing.targetType != clean.targetType || existing.targetKey != clean.targetKey)) {
+                val conflict = db.rawQuery(
+                    "SELECT id FROM payment_reminder_rules WHERE target_type = ? AND target_key = ? AND id != ? LIMIT 1",
+                    arrayOf(clean.targetType.name, clean.targetKey, existing.id.toString()),
+                ).use(android.database.Cursor::moveToFirst)
+                require(!conflict) { "This bill already has a reminder" }
+            }
+            val now = System.currentTimeMillis()
+            val saved = clean.copy(
+                id = existing?.id ?: 0L,
+                generation = (existing?.generation ?: clean.generation).coerceAtLeast(0L) + 1L,
+                createdAt = existing?.createdAt?.takeIf { it > 0L } ?: clean.createdAt.takeIf { it > 0L } ?: now,
+                updatedAt = now,
+            )
+            val id = if (existing == null) {
+                db.insertOrThrow("payment_reminder_rules", null, paymentReminderRuleValues(saved))
+            } else {
+                check(
+                    db.update(
+                        "payment_reminder_rules",
+                        paymentReminderRuleValues(saved),
+                        "id = ? AND generation = ?",
+                        arrayOf(existing.id.toString(), existing.generation.toString()),
+                    ) == 1,
+                ) { "Payment reminder changed while it was being saved" }
+                existing.id
+            }
+            db.setTransactionSuccessful()
+            return id
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun deletePaymentReminderRule(id: Long): Boolean =
+        writableDatabase.delete("payment_reminder_rules", "id = ?", arrayOf(id.toString())) > 0
+
+    fun snoozePaymentReminder(
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        minutes: Int,
+        expectedGeneration: Long,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): Boolean {
+        val rule = getPaymentReminderRule(ruleId)?.takeIf { it.generation == expectedGeneration } ?: return false
+        val safeMinutes = minutes.coerceIn(1, 30 * 24 * 60)
+        require(safeMinutes in rule.snoozeMinutes) { "Choose one of this reminder's snooze options" }
+        val until = Math.addExact(nowMillis, safeMinutes * 60_000L)
+        return updatePaymentReminderState(
+            rule = rule,
+            values = ContentValues().apply {
+                put("snoozed_occurrence_epoch_day", occurrenceEpochDay)
+                put("snoozed_until_millis", until)
+            },
+        )
+    }
+
+    fun clearPaymentReminderSnooze(ruleId: Long, expectedGeneration: Long): Boolean {
+        val rule = getPaymentReminderRule(ruleId)?.takeIf { it.generation == expectedGeneration } ?: return false
+        return updatePaymentReminderState(
+            rule = rule,
+            values = ContentValues().apply {
+                putNull("snoozed_occurrence_epoch_day")
+                putNull("snoozed_until_millis")
+            },
+        )
+    }
+
+    /** Scheduler-only state transition after a snooze notification was accepted by Android. */
+    fun consumePaymentReminderSnooze(
+        ruleId: Long,
+        generation: Long,
+        occurrenceEpochDay: Long,
+    ): Boolean = writableDatabase.update(
+        "payment_reminder_rules",
+        ContentValues().apply {
+            putNull("snoozed_occurrence_epoch_day")
+            putNull("snoozed_until_millis")
+            put("updated_at", System.currentTimeMillis())
+        },
+        "id = ? AND generation = ? AND snoozed_occurrence_epoch_day = ?",
+        arrayOf(ruleId.toString(), generation.toString(), occurrenceEpochDay.toString()),
+    ) == 1
+
+    fun skipNextPaymentReminder(
+        ruleId: Long,
+        occurrenceEpochDay: Long,
+        expectedGeneration: Long,
+    ): Boolean {
+        val rule = getPaymentReminderRule(ruleId)?.takeIf { it.generation == expectedGeneration } ?: return false
+        return updatePaymentReminderState(
+            rule = rule,
+            values = ContentValues().apply {
+                put("skipped_occurrence_epoch_day", occurrenceEpochDay)
+                putNull("snoozed_occurrence_epoch_day")
+                putNull("snoozed_until_millis")
+            },
+        )
+    }
+
+    private fun updatePaymentReminderState(rule: PaymentReminderRule, values: ContentValues): Boolean {
+        val now = System.currentTimeMillis()
+        values.put("generation", rule.generation + 1L)
+        values.put("updated_at", now)
+        return writableDatabase.update(
+            "payment_reminder_rules",
+            values,
+            "id = ? AND generation = ?",
+            arrayOf(rule.id.toString(), rule.generation.toString()),
+        ) == 1
+    }
+
+    fun getPaymentReminderSettings(): PaymentReminderSettings = readableDatabase.query(
+        "payment_reminder_settings",
+        arrayOf(
+            "enabled", "quiet_hours_enabled", "quiet_start_minutes", "quiet_end_minutes",
+            "daily_summary_enabled", "summary_time_minutes", "default_advance_days",
+            "default_snooze_minutes", "overdue_highlight_enabled",
+        ),
+        "id = 1", null, null, null, null,
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) return@use PaymentReminderSettings()
+        PaymentReminderSettings(
+            enabled = cursor.getInt(0) != 0,
+            quietHoursEnabled = cursor.getInt(1) != 0,
+            quietHoursStartMinutes = cursor.getInt(2),
+            quietHoursEndMinutes = cursor.getInt(3),
+            dailySummaryEnabled = cursor.getInt(4) != 0,
+            summaryTimeMinutes = cursor.getInt(5),
+            defaultAdvanceDays = decodeReminderIntList(cursor.getString(6)),
+            defaultSnoozeMinutes = decodeReminderIntList(cursor.getString(7)),
+            overdueHighlightEnabled = cursor.getInt(8) != 0,
+        ).normalized()
+    }
+
+    fun setPaymentReminderSettings(settings: PaymentReminderSettings) {
+        val safe = settings.normalized()
+        writableDatabase.insertWithOnConflict(
+            "payment_reminder_settings",
+            null,
+            paymentReminderSettingsValues(safe),
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    fun getPaymentReminderDeliveryKeys(ruleId: Long? = null): Set<String> {
+        val result = linkedSetOf<String>()
+        readableDatabase.query(
+            "payment_reminder_deliveries",
+            arrayOf("stable_key"),
+            ruleId?.let { "rule_id = ?" },
+            ruleId?.let { arrayOf(it.toString()) },
+            null, null, null,
+        ).use { cursor -> while (cursor.moveToNext()) result += cursor.getString(0) }
+        return result
+    }
+
+    fun recordPaymentReminderDeliveries(deliveries: List<PaymentReminderDelivery>) {
+        if (deliveries.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            deliveries.forEach { delivery ->
+                db.insertWithOnConflict(
+                    "payment_reminder_deliveries",
+                    null,
+                    ContentValues().apply {
+                        put("stable_key", delivery.stableKey.take(512))
+                        put("rule_id", delivery.ruleId)
+                        put("occurrence_epoch_day", delivery.occurrenceEpochDay)
+                        put("scheduled_at", delivery.scheduledAtMillis)
+                        put("delivered_at", delivery.deliveredAtMillis)
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE,
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun prunePaymentReminderDeliveries(beforeMillis: Long) {
+        writableDatabase.delete(
+            "payment_reminder_deliveries",
+            "delivered_at < ?",
+            arrayOf(beforeMillis.toString()),
+        )
+    }
+
+    private fun paymentReminderRuleValues(
+        rule: PaymentReminderRule,
+        includeId: Boolean = false,
+    ) = ContentValues().apply {
+        if (includeId) put("id", rule.id)
+        put("target_type", rule.targetType.name)
+        put("target_key", rule.targetKey)
+        put("kind", rule.kind.name)
+        put("enabled", if (rule.enabled) 1 else 0)
+        put("alert_time_minutes", rule.alertTimeMinutes)
+        put("zone_id", rule.zoneId)
+        put("advance_days", encodeReminderIntList(rule.advanceDays))
+        put("overdue_repeat_days", rule.overdueRepeatDays)
+        put("snooze_minutes", encodeReminderIntList(rule.snoozeMinutes))
+        put("priority", rule.priority.name)
+        put("notification_style", rule.notificationStyle.name)
+        put("show_amount", if (rule.showAmount) 1 else 0)
+        put("vibrate", if (rule.vibrate) 1 else 0)
+        putNullableText("category_label", rule.categoryLabel)
+        put("color_hex", rule.colorHex)
+        putNullableText("notes", rule.notes)
+        putNullableLong("skipped_occurrence_epoch_day", rule.skippedOccurrenceEpochDay)
+        putNullableLong("snoozed_occurrence_epoch_day", rule.snoozedOccurrenceEpochDay)
+        putNullableLong("snoozed_until_millis", rule.snoozedUntilMillis)
+        put("generation", rule.generation)
+        put("created_at", rule.createdAt)
+        put("updated_at", rule.updatedAt)
+    }
+
+    private fun paymentReminderSettingsValues(settings: PaymentReminderSettings) = ContentValues().apply {
+        put("id", 1)
+        put("enabled", if (settings.enabled) 1 else 0)
+        put("quiet_hours_enabled", if (settings.quietHoursEnabled) 1 else 0)
+        put("quiet_start_minutes", settings.quietHoursStartMinutes)
+        put("quiet_end_minutes", settings.quietHoursEndMinutes)
+        put("daily_summary_enabled", if (settings.dailySummaryEnabled) 1 else 0)
+        put("summary_time_minutes", settings.summaryTimeMinutes)
+        put("default_advance_days", encodeReminderIntList(settings.defaultAdvanceDays))
+        put("default_snooze_minutes", encodeReminderIntList(settings.defaultSnoozeMinutes))
+        put("overdue_highlight_enabled", if (settings.overdueHighlightEnabled) 1 else 0)
     }
 
     fun getNetWorthItems(): List<NetWorthItem> {
@@ -3495,6 +3934,8 @@ class PaisaLensDatabase(context: Context) :
                 smsCoverageRules = getSmsCoverageRules(),
                 advancedBudgets = getAdvancedBudgetPlans(),
                 creditCardBills = getCreditCardBills(db, canonicalizeAccounts = false),
+                paymentReminderRules = getPaymentReminderRules(db),
+                paymentReminderSettings = getPaymentReminderSettings(),
             ).also { db.setTransactionSuccessful() }
         } finally {
             db.endTransaction()
@@ -3503,6 +3944,7 @@ class PaisaLensDatabase(context: Context) :
 
     fun restore(snapshot: PaisaLensBackupSnapshot) {
         val db = writableDatabase
+        val restoreStartedAt = System.currentTimeMillis()
         db.beginTransaction()
         try {
             // Coverage candidates are device-only by design and absent from portable backups.
@@ -3785,6 +4227,131 @@ class PaisaLensDatabase(context: Context) :
                         put("updated_at", snapshot.createdAt)
                     },
                 )
+            }
+            val canonicalReminderCardBills = snapshot.creditCardBills.map { bill ->
+                bill.copy(
+                    accountId = bill.accountId?.let { accountId ->
+                        canonicalAccountId(restoredAccountsById, accountId)
+                    },
+                )
+            }
+            val restoredCardTargetRemaps = buildMap {
+                snapshot.creditCardBills.zip(canonicalReminderCardBills).forEach { (raw, canonical) ->
+                    put(
+                        creditCardReminderTargetKey(raw.creditCardBillGroupKey),
+                        creditCardReminderTargetKey(canonical.creditCardBillGroupKey),
+                    )
+                }
+                snapshot.accounts.filter { it.type == AccountType.CREDIT_CARD }.forEach { account ->
+                    put(
+                        creditCardReminderTargetKey("card-account:${account.id}"),
+                        creditCardReminderTargetKey(
+                            "card-account:${canonicalAccountId(restoredAccountsById, account.id)}",
+                        ),
+                    )
+                }
+            }
+            val validReminderTargets = buildSet {
+                snapshot.bills.filter { it.id > 0L }.forEach { add(manualBillReminderTargetKey(it.id)) }
+                canonicalReminderCardBills.forEach { bill ->
+                    add(creditCardReminderTargetKey(bill.creditCardBillGroupKey))
+                }
+            }
+            val normalizedRestoredRules = snapshot.paymentReminderRules.map { reminder ->
+                val snoozeIsFuture = (reminder.snoozedUntilMillis ?: 0L) > restoreStartedAt
+                val normalized = reminder.normalized()
+                val remappedTargetKey = if (normalized.targetType == PaymentReminderTargetType.CREDIT_CARD) {
+                    restoredCardTargetRemaps[normalized.targetKey] ?: normalized.targetKey
+                } else {
+                    normalized.targetKey
+                }
+                normalized.copy(
+                    targetKey = remappedTargetKey,
+                    snoozedOccurrenceEpochDay = reminder.snoozedOccurrenceEpochDay.takeIf { snoozeIsFuture },
+                    snoozedUntilMillis = reminder.snoozedUntilMillis.takeIf { snoozeIsFuture },
+                    generation = reminder.generation.coerceAtLeast(1L) +
+                        if (remappedTargetKey != normalized.targetKey) 1L else 0L,
+                )
+            }
+            val restoredReminderRules = normalizedRestoredRules
+                .groupBy { it.targetType to it.targetKey }
+                .values
+                .map { matchingRules ->
+                    val retained = matchingRules.maxWith(
+                        compareBy<PaymentReminderRule> { it.updatedAt }.thenBy { it.id },
+                    )
+                    if (matchingRules.size == 1) {
+                        retained
+                    } else {
+                        retained.copy(
+                            enabled = matchingRules.any(PaymentReminderRule::enabled),
+                            advanceDays = matchingRules.flatMap(PaymentReminderRule::advanceDays),
+                            snoozeMinutes = matchingRules.flatMap(PaymentReminderRule::snoozeMinutes),
+                            showAmount = matchingRules.all(PaymentReminderRule::showAmount),
+                            generation = matchingRules.maxOf(PaymentReminderRule::generation) + 1L,
+                            createdAt = matchingRules.minOf(PaymentReminderRule::createdAt),
+                            updatedAt = matchingRules.maxOf(PaymentReminderRule::updatedAt),
+                        ).normalized()
+                    }
+                }
+            restoredReminderRules.forEach { clean ->
+                require(clean.targetKey in validReminderTargets) {
+                    "Backup payment reminder references a missing bill"
+                }
+                db.insertOrThrow(
+                    "payment_reminder_rules",
+                    null,
+                    paymentReminderRuleValues(clean, includeId = true),
+                )
+            }
+            db.insertWithOnConflict(
+                "payment_reminder_settings",
+                null,
+                paymentReminderSettingsValues(snapshot.paymentReminderSettings.normalized()),
+                SQLiteDatabase.CONFLICT_REPLACE,
+            )
+            // A restore is not a new reminder event. Suppress only alerts already due at restore
+            // time; future leads and future snoozes remain eligible and are replanned post-commit.
+            val restoreZone = ZoneId.systemDefault()
+            val restoreToday = Instant.ofEpochMilli(restoreStartedAt).atZone(restoreZone).toLocalDate()
+            val restoredOccurrences = resolvePaymentReminderOccurrences(
+                rules = restoredReminderRules,
+                targets = buildPaymentReminderTargets(
+                    manualBills = snapshot.bills,
+                    creditCardBills = canonicalReminderCardBills,
+                    today = restoreToday,
+                ),
+                manualBills = snapshot.bills,
+                nowMillis = restoreStartedAt,
+                systemZone = restoreZone,
+            )
+            val restoredRulesById = restoredReminderRules.associateBy(PaymentReminderRule::id)
+            restoredOccurrences.forEach { occurrence ->
+                val rule = restoredRulesById[occurrence.ruleId] ?: return@forEach
+                buildPaymentReminderAlerts(
+                    rule = rule,
+                    occurrence = occurrence,
+                    // Restoring while globally paused must not turn old leads into a catch-up
+                    // storm when the user later enables reminders. Persisted settings remain off;
+                    // this enabled copy is used only to watermark alerts already in the past.
+                    settings = snapshot.paymentReminderSettings.copy(enabled = true),
+                    nowMillis = (restoreStartedAt - PAYMENT_REMINDER_RESTORE_LOOKBACK_MILLIS).coerceAtLeast(0L),
+                    throughMillis = restoreStartedAt,
+                    systemZone = restoreZone,
+                ).filter { it.scheduledAtMillis <= restoreStartedAt }.forEach { alert ->
+                    db.insertWithOnConflict(
+                        "payment_reminder_deliveries",
+                        null,
+                        ContentValues().apply {
+                            put("stable_key", alert.stableKey)
+                            put("rule_id", occurrence.ruleId)
+                            put("occurrence_epoch_day", occurrence.dueDateEpochDay)
+                            put("scheduled_at", alert.scheduledAtMillis)
+                            put("delivered_at", restoreStartedAt)
+                        },
+                        SQLiteDatabase.CONFLICT_IGNORE,
+                    )
+                }
             }
             snapshot.netWorthItems.forEach { item ->
                 db.insertOrThrow(
@@ -4653,6 +5220,77 @@ class PaisaLensDatabase(context: Context) :
                     "ON transactions(dedupe_fingerprint, occurred_at)",
             )
         }
+    }
+
+    private fun createPaymentReminderTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS payment_reminder_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_type TEXT NOT NULL,
+                target_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                alert_time_minutes INTEGER NOT NULL CHECK(alert_time_minutes BETWEEN 0 AND 1439),
+                zone_id TEXT NOT NULL,
+                advance_days TEXT NOT NULL,
+                overdue_repeat_days INTEGER NOT NULL DEFAULT 1 CHECK(overdue_repeat_days BETWEEN 0 AND 30),
+                snooze_minutes TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                notification_style TEXT NOT NULL,
+                show_amount INTEGER NOT NULL DEFAULT 0,
+                vibrate INTEGER NOT NULL DEFAULT 1,
+                category_label TEXT,
+                color_hex TEXT NOT NULL,
+                notes TEXT,
+                skipped_occurrence_epoch_day INTEGER,
+                snoozed_occurrence_epoch_day INTEGER,
+                snoozed_until_millis INTEGER,
+                generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(target_type, target_key)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_payment_reminder_rules_enabled " +
+                "ON payment_reminder_rules(enabled, updated_at DESC)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS payment_reminder_deliveries (
+                stable_key TEXT PRIMARY KEY NOT NULL,
+                rule_id INTEGER NOT NULL REFERENCES payment_reminder_rules(id) ON DELETE CASCADE,
+                occurrence_epoch_day INTEGER NOT NULL,
+                scheduled_at INTEGER NOT NULL,
+                delivered_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_payment_reminder_deliveries_rule " +
+                "ON payment_reminder_deliveries(rule_id, occurrence_epoch_day, delivered_at)",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS payment_reminder_settings (
+                id INTEGER PRIMARY KEY NOT NULL CHECK(id = 1),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                quiet_hours_enabled INTEGER NOT NULL DEFAULT 0,
+                quiet_start_minutes INTEGER NOT NULL DEFAULT 1320 CHECK(quiet_start_minutes BETWEEN 0 AND 1439),
+                quiet_end_minutes INTEGER NOT NULL DEFAULT 420 CHECK(quiet_end_minutes BETWEEN 0 AND 1439),
+                daily_summary_enabled INTEGER NOT NULL DEFAULT 0,
+                summary_time_minutes INTEGER NOT NULL DEFAULT 480 CHECK(summary_time_minutes BETWEEN 0 AND 1439),
+                default_advance_days TEXT NOT NULL DEFAULT '7,3,1,0',
+                default_snooze_minutes TEXT NOT NULL DEFAULT '10,60,1440',
+                overdue_highlight_enabled INTEGER NOT NULL DEFAULT 1
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            "INSERT OR IGNORE INTO payment_reminder_settings(id) VALUES (1)",
+        )
     }
 
     private fun createV10Tables(db: SQLiteDatabase) {
@@ -5975,6 +6613,9 @@ class PaisaLensDatabase(context: Context) :
         db: SQLiteDatabase,
         preserveSmsCoverageMessages: Boolean = false,
     ) {
+        db.delete("payment_reminder_deliveries", null, null)
+        db.delete("payment_reminder_rules", null, null)
+        db.delete("payment_reminder_settings", null, null)
         if (!preserveSmsCoverageMessages) db.delete("sms_coverage_messages", null, null)
         db.delete("sms_coverage_rules", null, null)
         db.delete("transaction_sms_sources", null, null)
@@ -5999,6 +6640,11 @@ class PaisaLensDatabase(context: Context) :
         db.delete("custom_categories", null, null)
         db.delete("accounts", null, null)
         db.delete("exchange_rates", null, null)
+        db.insertOrThrow(
+            "payment_reminder_settings",
+            null,
+            paymentReminderSettingsValues(PaymentReminderSettings()),
+        )
     }
 
     private fun restoredAccountIdentityKey(account: AccountProfile): String = buildString {
@@ -6049,6 +6695,13 @@ class PaisaLensDatabase(context: Context) :
         ?.filter(String::isNotBlank)
         .orEmpty()
 
+    private fun encodeReminderIntList(values: List<Int>): String = values.joinToString(",")
+
+    private fun decodeReminderIntList(value: String?): List<Int> = value
+        ?.split(',')
+        ?.mapNotNull { it.toIntOrNull() }
+        .orEmpty()
+
     private fun normalizeColor(value: String): String =
         value.trim().uppercase(Locale.ROOT).takeIf { it.matches(Regex("#[0-9A-F]{6}")) } ?: "#7784FF"
 
@@ -6078,9 +6731,10 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 12
+        const val DATABASE_VERSION = 13
         const val TAG_SEPARATOR = "\u001F"
         const val SMS_RULE_PHRASE_SEPARATOR = "\u001E"
+        const val PAYMENT_REMINDER_RESTORE_LOOKBACK_MILLIS = 31L * 24L * 60L * 60L * 1_000L
         val RAW_INBOX_SMS_SOURCE_ID_PATTERN = Regex("^sms-[0-9]+$")
         val COLLISION_SAFE_INBOX_SMS_SOURCE_ID_PATTERN = Regex("^sms-[0-9]+-[0-9a-f]{64}-[0-9]+$")
         val SMS_BACKED_TRANSACTION_SOURCES = setOf(
