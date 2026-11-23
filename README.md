@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7"><img alt="Release v1.8.7" src="https://img.shields.io/badge/release-v1.8.7-5965E8?style=for-the-badge"></a>
-  <img alt="Source v1.8.7" src="https://img.shields.io/badge/source-v1.8.7-1E88E5?style=for-the-badge">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8"><img alt="Release v1.8.8" src="https://img.shields.io/badge/release-v1.8.8-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.8.8" src="https://img.shields.io/badge/source-v1.8.8-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
   <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.7/PaisaLens-v1.8.7-debug.apk"><strong>⬇ Download PaisaLens v1.8.7 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.8/PaisaLens-v1.8.8-debug.apk"><strong>⬇ Download PaisaLens v1.8.8 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -26,7 +26,17 @@
 > [!IMPORTANT]
 > The downloadable file is the current **debug APK** for direct installation and testing. Android may ask you to allow installation from your browser or file manager. Requires Android 8.0 (API 26) or newer.
 
-## What's new in v1.8.7
+## What's new in v1.8.8
+
+| | Update | Highlights |
+|---|---|---|
+| 💳 | **Card payment matching** | Review matches from supported issuer SMS. Confirm partial payments to update the remaining balance. Confirm full payment to settle the statement and stop reminders for that cycle. |
+| 🏠 | **Home daily check-in** | See spending since your last visit, bills due in the next seven days, and items to review. Tap each row to see the details. |
+| 🔔 | **Test bill reminders** | See the next planned alert and its Android notification channel in reminder settings. Send a sample to check delivery. |
+| 📝 | **Financial form scrolling** | Subscription, AutoPay, savings, split expense, and reminder editors keep drafts open while you scroll. The form fits above the keyboard and confirms before discarding edits. |
+
+<details>
+<summary><strong>Earlier v1.8 updates</strong></summary>
 
 | | Update | Highlights |
 |---|---|---|
@@ -44,6 +54,8 @@
 | 💳 | **Credit-card bills & colorful widgets** | Track current statement dues, paid history and per-card trends, plus add snapshot, category, due-bills, and card-bills widgets. |
 | 👥 | **More flexible shared expenses** | Split by amount or percentage across named people, link reimbursements safely, and inspect shared-spend category statistics. |
 
+</details>
+
 <table>
   <tr>
     <td align="center"><strong>Custom Home</strong></td>
@@ -52,15 +64,15 @@
     <td align="center"><strong>Private digest</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens v1.8.7 customizable Home dashboard" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens v1.8.7 savings goals and sinking funds" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens v1.8.7 subscriptions and UPI AutoPay centre" width="210"></td>
-    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens v1.8.7 private notification digest settings" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-home.png" alt="PaisaLens customizable Home dashboard" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-goals.png" alt="PaisaLens savings goals and sinking funds" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-autopay.png" alt="PaisaLens subscriptions and UPI AutoPay centre" width="210"></td>
+    <td><img src="docs/screenshots/v1.8-digest.png" alt="PaisaLens private notification digest settings" width="210"></td>
   </tr>
 </table>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7"><strong>Read the complete v1.8.7 release notes →</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8"><strong>Read the complete v1.8.8 release notes →</strong></a>
 </p>
 
 ## See PaisaLens in action
@@ -128,7 +140,7 @@
 | 🧾 | **Monthly reconciliation** | Compares an account's confirmed activity with reviewed opening and closing balances, surfaces the exact difference, and saves a month as balanced or reconciled. |
 | 🔗 | **Transaction linking** | Suggests likely transfers, card payments, refunds, reversals, and reimbursements by amount, date, account and flow, then prevents confirmed links from inflating dashboards, budgets, forecasts, the widget, or Excel analysis. |
 | 🕵️ | **Credit-card statement auditor** | Audits reviewed CSV/XLSX statement rows against locally detected SMS transactions, separates purchases, fees, interest, GST, refunds and payments, and flags missing or duplicate charges. |
-| 💳 | **Credit-card bill dashboard** | Reads supported statement/due alerts, totals the latest unpaid cycle per card, confirms paid status, keeps bill history, and shows per-card spending trends. |
+| 💳 | **Credit-card bill dashboard** | Reads supported statement alerts, suggests payments to review, tracks the remaining balance per card, keeps bill history, and shows per-card spending trends. |
 | 📡 | **SMS Coverage Centre** | Keeps unsupported likely-financial alerts encrypted on-device for review, then lets the user add narrow literal sender-and-phrase rules without uploading message text. |
 | 🧬 | **Duplicate-SMS consolidation** | Merges repeat copies of the same alert into one ledger row and displays the number of source messages on that activity item. |
 | 🩺 | **Data Health Centre** | Brings review backlog, uncategorized spending, stale balances, reconciliation differences, unlinked transfers, scan freshness, and backup readiness into one private health check. |
@@ -175,17 +187,17 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.8.7-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.7/PaisaLens-v1.8.7-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.8.8-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.8/PaisaLens-v1.8.8-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.8.7 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.7).
+You can also browse the [v1.8.8 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8).
 
 **APK SHA-256**
 
 ```text
-a43046c718f4dc8b4455b0093be353f2728df54223038f3106239f203cce5a6a
+a017ca47b77f8bbc67a897ce554d6eabcc1e47e3f75c5463368bd761437c545e
 ```
 
 ## Build it yourself
@@ -196,7 +208,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated v1.8.7 APK will be available at:
+The generated v1.8.8 APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk

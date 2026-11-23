@@ -3,7 +3,6 @@ package com.paisalens.app.widget
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.CreditCardBill
-import com.paisalens.app.data.model.CreditCardBillStatus
 import com.paisalens.app.data.model.DueItem
 import com.paisalens.app.data.model.DueStatus
 import com.paisalens.app.data.model.ExpenseSplit
@@ -194,7 +193,7 @@ internal fun buildCreditCardBillsWidgetPresentation(
 ): CreditCardBillsWidgetPresentation {
     val accountNamesById = accounts.associate { it.id to it.name }
     val dueBills = currentCreditCardBills(bills)
-        .filter { it.status == CreditCardBillStatus.DUE }
+        .filter(CreditCardBill::hasOutstandingBalance)
         .sortedWith(compareBy<CreditCardBill> { it.dueDateEpochDay }.thenBy { it.institutionName })
     return CreditCardBillsWidgetPresentation(
         rows = dueBills.map { bill ->
@@ -210,12 +209,12 @@ internal fun buildCreditCardBillsWidgetPresentation(
             CreditCardBillWidgetRow(
                 id = bill.id,
                 cardName = accountName?.takeIf(String::isNotBlank) ?: fallbackName,
-                amountMinor = bill.totalDueMinor,
+                amountMinor = bill.remainingDueMinor,
                 dueDate = dueDate,
                 overdue = dueDate.isBefore(today),
             )
         },
-        totalDueMinor = dueBills.sumOf(CreditCardBill::totalDueMinor),
+        totalDueMinor = dueBills.sumOf(CreditCardBill::remainingDueMinor),
     )
 }
 

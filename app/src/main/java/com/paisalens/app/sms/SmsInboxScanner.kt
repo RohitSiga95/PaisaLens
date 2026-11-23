@@ -3,10 +3,12 @@ package com.paisalens.app.sms
 import android.content.Context
 import android.provider.Telephony
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
+import com.paisalens.app.data.model.CreditCardPayment
 import com.paisalens.app.data.model.ParsedTransaction
 import com.paisalens.app.data.model.ParsedCreditCardBill
 import com.paisalens.app.data.model.SmsCoverageCandidate
 import com.paisalens.app.data.model.SmsCoverageRule
+import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.smsCoverageReasonOrNull
 import com.paisalens.app.data.parser.TransactionSmsParser
 
@@ -24,6 +26,7 @@ class SmsInboxScanner(
         val availability = mutableListOf<AccountAvailabilityUpdate>()
         val coverageCandidates = mutableListOf<SmsCoverageCandidate>()
         val creditCardBills = mutableListOf<ParsedCreditCardBill>()
+        val creditCardPayments = mutableListOf<CreditCardPayment>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
@@ -56,19 +59,23 @@ class SmsInboxScanner(
                     receivedAt = receivedAt,
                 )
                 val sourceMessageId = "sms-" + cursor.getLong(idIndex)
+                val creditCardPayment = CreditCardPaymentSmsParser.parse(sender, body, timestamp)
                 val transaction = parser.parse(
                     sender = sender,
                     body = body,
                     timestamp = timestamp,
                     messageId = sourceMessageId,
                     coverageRules = coverageRules,
-                )
+                )?.takeIf { creditCardPayment == null || it.type == TransactionType.TRANSFER }
                 val availabilityUpdate = availabilityParser.parse(sender, body, timestamp)
-                val creditCardBill = creditCardBillParser.parse(sender, body, timestamp, sourceMessageId)
+                val creditCardBill = if (creditCardPayment == null) {
+                    creditCardBillParser.parse(sender, body, timestamp, sourceMessageId)
+                } else null
                 transaction?.let(parsed::add)
                 availabilityUpdate?.let(availability::add)
                 creditCardBill?.let(creditCardBills::add)
-                if (transaction == null && availabilityUpdate == null && creditCardBill == null) {
+                creditCardPayment?.let(creditCardPayments::add)
+                if (transaction == null && availabilityUpdate == null && creditCardBill == null && creditCardPayment == null) {
                     smsCoverageReasonOrNull(sender, body)?.let { reason ->
                         coverageCandidates += SmsCoverageCandidate(
                             sourceMessageId = sourceMessageId,
@@ -81,7 +88,7 @@ class SmsInboxScanner(
                 }
             }
         }
-        return SmsScanBatch(parsed, availability, coverageCandidates, creditCardBills)
+        return SmsScanBatch(parsed, availability, coverageCandidates, creditCardBills, creditCardPayments)
     }
 }
 
@@ -105,4 +112,5 @@ data class SmsScanBatch(
     val availabilityUpdates: List<AccountAvailabilityUpdate>,
     val coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
     val creditCardBills: List<ParsedCreditCardBill> = emptyList(),
+    val creditCardPayments: List<CreditCardPayment> = emptyList(),
 )

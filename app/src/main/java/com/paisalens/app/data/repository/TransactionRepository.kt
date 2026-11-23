@@ -22,6 +22,9 @@ import com.paisalens.app.data.model.DataHealthSummary
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.CreditCardBillPaymentResult
+import com.paisalens.app.data.model.CreditCardPayment
+import com.paisalens.app.data.model.CreditCardPaymentSuggestion
+import com.paisalens.app.data.model.suggestCreditCardPayments
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.ExpenseSplit
@@ -130,6 +133,9 @@ class TransactionRepository(
     private val _creditCardBills = MutableStateFlow<List<CreditCardBill>>(emptyList())
     val creditCardBills: StateFlow<List<CreditCardBill>> = _creditCardBills.asStateFlow()
 
+    private val _creditCardPaymentSuggestions = MutableStateFlow<List<CreditCardPaymentSuggestion>>(emptyList())
+    val creditCardPaymentSuggestions = _creditCardPaymentSuggestions.asStateFlow()
+
     private val _netWorthItems = MutableStateFlow<List<NetWorthItem>>(emptyList())
     val netWorthItems: StateFlow<List<NetWorthItem>> = _netWorthItems.asStateFlow()
 
@@ -209,6 +215,7 @@ class TransactionRepository(
         availabilityUpdates: List<AccountAvailabilityUpdate>,
         coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
         creditCardBills: List<ParsedCreditCardBill> = emptyList(),
+        creditCardPayments: List<CreditCardPayment> = emptyList(),
     ): SmsIngestResult = withContext(Dispatchers.IO) {
         val reminderSchedulingFenced = creditCardBills.isNotEmpty()
         if (reminderSchedulingFenced) PaymentReminderScheduler.cancel(context)
@@ -225,6 +232,7 @@ class TransactionRepository(
             val coverageCount = database.insertSmsCoverage(encryptedCoverage)
             val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
             val creditCardBillCount = database.upsertCreditCardBills(creditCardBills)
+            val creditCardPaymentCount = database.insertCreditCardPayments(creditCardPayments)
             if (creditCardBillCount > 0) {
                 val cardBillsAfter = currentCreditCardBills(database.getCreditCardBills())
                     .associateBy(CreditCardBill::creditCardBillGroupKey)
@@ -243,6 +251,7 @@ class TransactionRepository(
                 mergedDuplicateTransactions = transactionResult.duplicatesMerged,
                 coverageMessagesAdded = coverageCount,
                 updatedCreditCardBills = creditCardBillCount,
+                addedCreditCardPayments = creditCardPaymentCount,
             )
         } catch (error: Throwable) {
             if (reminderSchedulingFenced) PaymentReminderScheduler.sync(context)
@@ -352,6 +361,41 @@ class TransactionRepository(
             assigned
         } catch (error: Throwable) {
             PaymentReminderScheduler.sync(context)
+            throw error
+        }
+    }
+
+    suspend fun confirmCreditCardPayment(suggestion: CreditCardPaymentSuggestion): Boolean =
+        withContext(Dispatchers.IO) {
+            changeCreditCardPaymentMatch(suggestion.bill.id) { database.confirmCreditCardPayment(suggestion) }
+        }
+
+    suspend fun dismissCreditCardPayment(key: String): Boolean = withContext(Dispatchers.IO) {
+        database.dismissCreditCardPayment(key).also { if (it) refresh() }
+    }
+
+    suspend fun removeCreditCardPaymentMatch(key: String, billId: Long): Boolean = withContext(Dispatchers.IO) {
+        changeCreditCardPaymentMatch(billId) { database.removeCreditCardPaymentMatch(key, billId) }
+    }
+
+    private fun changeCreditCardPaymentMatch(billId: Long, change: () -> Boolean): Boolean {
+        val ruleIds = currentCreditCardBills(database.getCreditCardBills()).firstOrNull { it.id == billId }
+            ?.let { current ->
+                val target = creditCardReminderTargetKey(current.creditCardBillGroupKey)
+                database.getPaymentReminderRules().filter { it.targetKey == target }.map(PaymentReminderRule::id)
+            }.orEmpty()
+        if (ruleIds.isNotEmpty()) PaymentReminderScheduler.cancel(context)
+        try {
+            val changed = change()
+            if (changed) {
+                ruleIds.forEach { PaymentReminderNotifier.cancelForRule(context, it) }
+                refresh()
+            } else if (ruleIds.isNotEmpty()) {
+                PaymentReminderScheduler.sync(context)
+            }
+            return changed
+        } catch (error: Throwable) {
+            if (ruleIds.isNotEmpty()) PaymentReminderScheduler.sync(context)
             throw error
         }
     }
@@ -1003,7 +1047,12 @@ class TransactionRepository(
         _accounts.value = currentAccounts
         _balanceHistory.value = database.getBalanceHistory()
         _bills.value = database.getBills()
-        _creditCardBills.value = database.getCreditCardBills()
+        val currentCardBills = database.getCreditCardBills()
+        _creditCardBills.value = currentCardBills
+        _creditCardPaymentSuggestions.value = suggestCreditCardPayments(
+            database.getPendingCreditCardPayments(),
+            currentCardBills,
+        )
         _netWorthItems.value = database.getNetWorthItems()
         _smartCategoryRules.value = database.getSmartCategoryRules()
         _reconciliations.value = currentReconciliations
@@ -1085,4 +1134,5 @@ data class SmsIngestResult(
     val mergedDuplicateTransactions: Int = 0,
     val coverageMessagesAdded: Int = 0,
     val updatedCreditCardBills: Int = 0,
+    val addedCreditCardPayments: Int = 0,
 )

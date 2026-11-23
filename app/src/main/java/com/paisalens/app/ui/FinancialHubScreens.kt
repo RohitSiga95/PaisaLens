@@ -62,6 +62,7 @@ import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.BillReminder
 import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.CreditCardBill
+import com.paisalens.app.data.model.CreditCardPaymentSuggestion
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.DueItem
@@ -184,6 +185,10 @@ fun PlanningScreen(
     creditCardBills: List<CreditCardBill> = emptyList(),
     onMarkCreditCardBillPaid: (Long) -> Unit = {},
     onAssignCreditCardBill: (billId: Long, accountId: Long) -> Unit = { _, _ -> },
+    creditCardPaymentSuggestions: List<CreditCardPaymentSuggestion> = emptyList(),
+    onConfirmCreditCardPayment: (CreditCardPaymentSuggestion) -> Unit = {},
+    onDismissCreditCardPayment: (String) -> Unit = {},
+    onRemoveCreditCardPaymentMatch: (String, Long) -> Unit = { _, _ -> },
 ) {
     var sectionName by rememberSaveable { mutableStateOf(initialSection.name) }
     val section = PlanSection.entries.firstOrNull { it.name == sectionName } ?: PlanSection.BUDGETS
@@ -256,6 +261,10 @@ fun PlanningScreen(
                     accounts = accounts,
                     onMarkPaid = onMarkCreditCardBillPaid,
                     onAssignBill = onAssignCreditCardBill,
+                    paymentSuggestions = creditCardPaymentSuggestions,
+                    onConfirmPayment = onConfirmCreditCardPayment,
+                    onDismissPayment = onDismissCreditCardPayment,
+                    onRemoveMatch = onRemoveCreditCardPaymentMatch,
                 )
                 PlanSection.GOALS -> SavingsGoalsCenterContent(
                     goals = savingsGoals,

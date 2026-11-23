@@ -47,7 +47,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -434,13 +433,8 @@ internal fun PaymentCommitmentEditorSheet(
     onDismiss: () -> Unit,
     isSaving: Boolean = false,
 ) {
-    val currentIsSaving = rememberUpdatedState(isSaving)
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true,
-        confirmValueChange = { !currentIsSaving.value },
-    )
-    val today = LocalDate.now()
-    val initialNextDue = remember(existing, today) {
+    val initialNextDue = remember(existing) {
+        val today = LocalDate.now()
         existing?.let { currentPaymentDueDate(it, today).toString() }
             ?: today.plusMonths(1).toString()
     }
@@ -457,14 +451,15 @@ internal fun PaymentCommitmentEditorSheet(
     var notes by remember(existing) { mutableStateOf(existing?.notes.orEmpty()) }
     var status by remember(existing) { mutableStateOf(existing?.status ?: PaymentCommitmentStatus.ACTIVE) }
     var submitted by remember { mutableStateOf(false) }
-    val hasChanges = existing == null || name.trim() != existing.name ||
-        amount.sharedFinanceMinorOrNull() != existing.amountMinor || kind != existing.kind ||
-        frequency != existing.frequency || nextDue != initialNextDue ||
-        customDays != existing.customIntervalDays?.toString().orEmpty() ||
-        maxMandate.sharedFinanceMinorOrNull() != existing.maxMandateMinor ||
-        accountId != existing.accountId || upiHandle.trim() != existing.upiHandle.orEmpty() ||
-        categoryLabel.trim() != existing.categoryLabel.orEmpty() || notes.trim() != existing.notes.orEmpty() ||
-        status != existing.status
+    val hasChanges = name.trim() != existing?.name.orEmpty() ||
+        amount != existing?.amountMinor?.sharedFinanceInput().orEmpty() ||
+        kind != (existing?.kind ?: PaymentCommitmentKind.SUBSCRIPTION) ||
+        frequency != (existing?.frequency ?: PaymentFrequency.MONTHLY) || nextDue != initialNextDue ||
+        customDays != existing?.customIntervalDays?.toString().orEmpty() ||
+        maxMandate != existing?.maxMandateMinor?.sharedFinanceInput().orEmpty() ||
+        accountId != existing?.accountId || upiHandle.trim() != existing?.upiHandle.orEmpty() ||
+        categoryLabel.trim() != existing?.categoryLabel.orEmpty() || notes.trim() != existing?.notes.orEmpty() ||
+        status != (existing?.status ?: PaymentCommitmentStatus.ACTIVE)
     val parsedAmount = amount.sharedFinanceMinorOrNull()
     val parsedMaximum = maxMandate.sharedFinanceMinorOrNull()
     val parsedDate = runCatching { LocalDate.parse(nextDue) }.getOrNull()
@@ -482,23 +477,15 @@ internal fun PaymentCommitmentEditorSheet(
         else -> null
     }
 
-    ModalBottomSheet(
-        onDismissRequest = { if (!isSaving) onDismiss() },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.94f)
-                .navigationBarsPadding(),
-        ) {
+    FinanceEditorDialog(hasChanges, isSaving, onDismiss) { requestClose ->
+        Column(Modifier.fillMaxWidth()) {
             SharedFinanceSheetHeader(
                 title = if (existing == null) "Add recurring payment" else "Edit recurring payment",
                 subtitle = "Track expected charges privately",
-                onDismiss = { if (!isSaving) onDismiss() },
+                onDismiss = requestClose,
             )
             LazyColumn(
+                modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
@@ -736,15 +723,6 @@ internal fun PaymentCommitmentEditorSheet(
                             if (isSaving) "Saving…"
                             else if (existing == null) "Add recurring payment"
                             else "Save changes",
-                        )
-                    }
-                }
-                if (hasChanges) {
-                    item {
-                        Text(
-                            "Unsaved changes are discarded if you swipe this sheet away.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

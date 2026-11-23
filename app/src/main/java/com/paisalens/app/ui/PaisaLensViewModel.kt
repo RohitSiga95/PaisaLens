@@ -23,6 +23,7 @@ import com.paisalens.app.data.model.AuditUndoResult
 import com.paisalens.app.data.model.CategorySelection
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.CreditCardBillPaymentResult
+import com.paisalens.app.data.model.CreditCardPaymentSuggestion
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.HomeLayoutConfiguration
@@ -81,6 +82,7 @@ class PaisaLensViewModel(
     val balanceHistory = app.repository.balanceHistory
     val bills = app.repository.bills
     val creditCardBills = app.repository.creditCardBills
+    val creditCardPaymentSuggestions = app.repository.creditCardPaymentSuggestions
     val smsCoverageMessages = app.repository.smsCoverageMessages
     val smsCoverageRules = app.repository.smsCoverageRules
     val netWorthItems = app.repository.netWorthItems
@@ -125,6 +127,31 @@ class PaisaLensViewModel(
 
     private val _lastScanAt = MutableStateFlow(app.preferences.lastScanAt)
     val lastScanAt = _lastScanAt.asStateFlow()
+    private val _previousHomeVisitAt = MutableStateFlow<Long?>(null)
+    val previousHomeVisitAt = _previousHomeVisitAt.asStateFlow()
+    private var nextForegroundVisit = 0
+    private var foregroundVisit = 0
+    private var recordedHomeVisit = false
+
+    fun startForegroundVisit(): Int {
+        if (foregroundVisit == 0) {
+            foregroundVisit = ++nextForegroundVisit
+            recordedHomeVisit = false
+        }
+        return foregroundVisit
+    }
+
+    fun stopForegroundVisit() {
+        foregroundVisit = 0
+    }
+
+    fun recordHomeVisit(visit: Int) {
+        if (visit == 0 || visit != foregroundVisit || recordedHomeVisit) return
+        val now = System.currentTimeMillis()
+        _previousHomeVisitAt.value = app.preferences.lastHomeVisitAt.takeIf { it in 1 until now }
+        app.preferences.lastHomeVisitAt = now
+        recordedHomeVisit = true
+    }
 
     private val _lastBackupCreatedAt = MutableStateFlow(app.preferences.lastBackupCreatedAt)
     val lastBackupCreatedAt = _lastBackupCreatedAt.asStateFlow()
@@ -446,6 +473,35 @@ class PaisaLensViewModel(
         }
     }
 
+    fun confirmCreditCardPayment(match: CreditCardPaymentSuggestion) {
+        updateCardPayment("Payment matched", "The bill changed. Review the match again.") {
+            app.repository.confirmCreditCardPayment(match)
+        }
+    }
+
+    fun dismissCreditCardPayment(key: String) {
+        updateCardPayment("Payment suggestion dismissed", "This payment is no longer awaiting review.") {
+            app.repository.dismissCreditCardPayment(key)
+        }
+    }
+
+    fun removeCreditCardPaymentMatch(key: String, billId: Long) {
+        updateCardPayment("Payment match removed", "This payment is no longer matched to that bill.") {
+            app.repository.removeCreditCardPaymentMatch(key, billId)
+        }
+    }
+
+    private fun updateCardPayment(success: String, stale: String, change: suspend () -> Boolean) {
+        viewModelScope.launch {
+            runCatching { change() }
+                .onSuccess { _events.emit(if (it) success else stale) }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    _events.emit("Could not update the card payment. Try again.")
+                }
+        }
+    }
+
     fun saveExpenseSplit(split: ExpenseSplit) {
         viewModelScope.launch {
             runCatching { app.repository.saveExpenseSplit(split) }
@@ -607,6 +663,7 @@ class PaisaLensViewModel(
                         availabilityUpdates = scan.availabilityUpdates,
                         coverageCandidates = scan.coverageCandidates,
                         creditCardBills = scan.creditCardBills,
+                        creditCardPayments = scan.creditCardPayments,
                     )
                 }.onSuccess { result ->
                     val now = System.currentTimeMillis()
@@ -615,7 +672,8 @@ class PaisaLensViewModel(
                     _events.emit(
                         when {
                             result.insertedTransactions > 0 || result.mergedDuplicateTransactions > 0 ||
-                                result.coverageMessagesAdded > 0 || result.updatedCreditCardBills > 0 -> {
+                                result.coverageMessagesAdded > 0 || result.updatedCreditCardBills > 0 ||
+                                result.addedCreditCardPayments > 0 -> {
                                 buildList {
                                     if (result.insertedTransactions > 0) {
                                         add("${result.insertedTransactions} new transaction${if (result.insertedTransactions == 1) "" else "s"}")
@@ -628,6 +686,9 @@ class PaisaLensViewModel(
                                     }
                                     if (result.updatedCreditCardBills > 0) {
                                         add("card bills updated")
+                                    }
+                                    if (result.addedCreditCardPayments > 0) {
+                                        add("card payment SMS processed")
                                     }
                                     if (result.updatedAccounts > 0) {
                                         add("balances updated")
@@ -1305,6 +1366,8 @@ class PaisaLensViewModel(
             app.repository.clearAll()
             app.preferences.lastScanAt = 0L
             _lastScanAt.value = 0L
+            app.preferences.lastHomeVisitAt = 0L
+            _previousHomeVisitAt.value = null
             app.preferences.lastBackupCreatedAt = 0L
             app.preferences.lastBackupVerifiedAt = 0L
             _lastBackupCreatedAt.value = 0L

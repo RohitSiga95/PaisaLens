@@ -29,6 +29,8 @@ import java.time.LocalDate
 import java.util.Currency
 import java.util.Locale
 
+internal enum class ReminderChannelStatus { AVAILABLE, APP_BLOCKED, CHANNEL_BLOCKED, UNAVAILABLE }
+
 object PaymentReminderNotifier {
     const val CHANNEL_STANDARD = "bill_payment_reminders"
     const val CHANNEL_STANDARD_VIBRATE = "bill_payment_reminders_vibrate"
@@ -140,6 +142,60 @@ object PaymentReminderNotifier {
 
     fun settingsIntent(context: Context): Intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
         putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    }
+
+    internal fun channelSettingsIntent(
+        context: Context,
+        style: PaymentReminderNotificationStyle,
+        vibrate: Boolean,
+    ): Intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        putExtra(Settings.EXTRA_CHANNEL_ID, channelFor(style, vibrate))
+    }
+
+    internal fun channelStatus(
+        context: Context,
+        style: PaymentReminderNotificationStyle,
+        vibrate: Boolean,
+    ): ReminderChannelStatus {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return ReminderChannelStatus.UNAVAILABLE
+        ensureChannels(context)
+        if ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) ||
+            !manager.areNotificationsEnabled()
+        ) return ReminderChannelStatus.APP_BLOCKED
+        val channel = manager.getNotificationChannel(channelFor(style, vibrate)) ?: return ReminderChannelStatus.UNAVAILABLE
+        return if (channel.importance == NotificationManager.IMPORTANCE_NONE) {
+            ReminderChannelStatus.CHANNEL_BLOCKED
+        } else ReminderChannelStatus.AVAILABLE
+    }
+
+    /** Posts a sample on the real channel without changing the scheduler or delivery history. */
+    internal fun postTest(
+        context: Context,
+        style: PaymentReminderNotificationStyle,
+        vibrate: Boolean,
+    ): ReminderChannelStatus {
+        val availability = channelStatus(context, style, vibrate)
+        if (availability != ReminderChannelStatus.AVAILABLE) return availability
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return ReminderChannelStatus.UNAVAILABLE
+        val notification = Notification.Builder(context, channelFor(style, vibrate))
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("PaisaLens test reminder")
+            .setContentText("This is a sample bill reminder.")
+            .setContentIntent(summaryOpenIntent(context))
+            .setAutoCancel(true)
+            .setTimeoutAfter(5L * 60_000L)
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .setLocalOnly(true)
+            .build()
+        return try {
+            manager.notify(TEST_NOTIFICATION_TAG, TEST_NOTIFICATION_ID, notification)
+            ReminderChannelStatus.AVAILABLE
+        } catch (_: SecurityException) {
+            channelStatus(context, style, vibrate).takeUnless { it == ReminderChannelStatus.AVAILABLE }
+                ?: ReminderChannelStatus.UNAVAILABLE
+        }
     }
 
     /** Returns true only if Android accepted this local notification. */
@@ -383,6 +439,8 @@ object PaymentReminderNotifier {
 
     private const val REMINDER_NOTIFICATION_ID = 1903
     private const val SUMMARY_NOTIFICATION_ID = 1904
+    private const val TEST_NOTIFICATION_ID = 1905
+    private const val TEST_NOTIFICATION_TAG = "payment-reminder-test"
     private const val SUMMARY_NOTIFICATION_TAG = "payment-reminder-summary"
     private const val OPEN_REQUEST_CODE = 19_030
     private const val SNOOZE_REQUEST_CODE = 19_031

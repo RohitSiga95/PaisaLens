@@ -211,6 +211,7 @@ private enum class AppDestination(
 @Composable
 fun PaisaLensApp(
     viewModel: PaisaLensViewModel,
+    foregroundVisit: Int,
     initialWidgetDestination: String? = null,
     onWidgetDestinationHandled: () -> Unit = {},
     initialAlertDestination: AlertDestination? = null,
@@ -257,6 +258,7 @@ fun PaisaLensApp(
     val balanceHistory by viewModel.balanceHistory.collectAsStateWithLifecycle()
     val bills by viewModel.bills.collectAsStateWithLifecycle()
     val creditCardBills by viewModel.creditCardBills.collectAsStateWithLifecycle()
+    val creditCardPaymentSuggestions by viewModel.creditCardPaymentSuggestions.collectAsStateWithLifecycle()
     val smsCoverageMessages by viewModel.smsCoverageMessages.collectAsStateWithLifecycle()
     val smsCoverageRules by viewModel.smsCoverageRules.collectAsStateWithLifecycle()
     val netWorthItems by viewModel.netWorthItems.collectAsStateWithLifecycle()
@@ -292,6 +294,7 @@ fun PaisaLensApp(
     val scheduledBackup by viewModel.scheduledBackup.collectAsStateWithLifecycle()
     val scheduledBackupStatus by viewModel.scheduledBackupStatus.collectAsStateWithLifecycle()
     val lastScanAt by viewModel.lastScanAt.collectAsStateWithLifecycle()
+    val previousHomeVisitAt by viewModel.previousHomeVisitAt.collectAsStateWithLifecycle()
     val lastBackupCreatedAt by viewModel.lastBackupCreatedAt.collectAsStateWithLifecycle()
     val lastBackupVerifiedAt by viewModel.lastBackupVerifiedAt.collectAsStateWithLifecycle()
     val backupVerification by viewModel.backupVerification.collectAsStateWithLifecycle()
@@ -362,6 +365,13 @@ fun PaisaLensApp(
         activityNavigationRequest += 1
         destination = AppDestination.ACTIVITY
     }
+    LaunchedEffect(destination, foregroundVisit, onboardingComplete, initialWidgetDestination, initialAlertDestination) {
+        if (destination == AppDestination.HOME && onboardingComplete &&
+            initialWidgetDestination == null && initialAlertDestination == null
+        ) {
+            viewModel.recordHomeVisit(foregroundVisit)
+        }
+    }
     LaunchedEffect(initialWidgetDestination) {
         when (initialWidgetDestination) {
             WIDGET_DESTINATION_HOME -> destination = AppDestination.HOME
@@ -404,6 +414,13 @@ fun PaisaLensApp(
     var editingPaymentCommitment by remember { mutableStateOf<PaymentCommitment?>(null) }
     var addingPaymentCommitment by remember { mutableStateOf(false) }
     var paymentCommitmentEditorSaving by remember { mutableStateOf(false) }
+    var paymentCommitmentEditorFromCenter by remember { mutableStateOf(false) }
+    val closePaymentCommitmentEditor: () -> Unit = {
+        addingPaymentCommitment = false
+        editingPaymentCommitment = null
+        showPaymentCommitments = paymentCommitmentEditorFromCenter
+        paymentCommitmentEditorFromCenter = false
+    }
     var trustPeriod by remember { mutableStateOf(YearMonth.now()) }
     var trustAccountId by rememberSaveable { mutableStateOf<Long?>(null) }
     var ignoredLinkSuggestions by remember { mutableStateOf(emptySet<String>()) }
@@ -631,6 +648,8 @@ fun PaisaLensApp(
                             paymentCommitments = paymentCommitments,
                             needsAttention = weeklyReview.attention,
                             lastScanAt = lastScanAt,
+                            previousHomeVisitAt = previousHomeVisitAt,
+                            paymentReviewCount = creditCardPaymentSuggestions.size,
                             privacyModeActive = privacyModeActive,
                             isScanning = isScanning,
                             hasSmsPermission = hasSmsPermission,
@@ -650,6 +669,7 @@ fun PaisaLensApp(
                             onOpenCreditCardBills = {
                                 openPlanSection(PlanSection.CARD_BILLS)
                             },
+                            onReviewTransactions = { openActivityFilter(TransactionFilter.REVIEW) },
                             onOpenWeeklyReview = { showWeeklyReview = true },
                             onAttentionAction = handleAttentionAction,
                             onRefreshAccount = onComposeBalanceSms,
@@ -724,16 +744,19 @@ fun PaisaLensApp(
                                 onDeleteSavingsContribution = { viewModel.deleteSavingsContribution(it.id) },
                                 onAddPaymentCommitment = {
                                     showPaymentCommitments = false
+                                    paymentCommitmentEditorFromCenter = false
                                     addingPaymentCommitment = true
                                 },
                                 onEditPaymentCommitment = {
                                     showPaymentCommitments = false
+                                    paymentCommitmentEditorFromCenter = false
                                     editingPaymentCommitment = it
                                 },
                                 onUpdatePaymentCommitment = { viewModel.savePaymentCommitment(it) },
                                 onDeletePaymentCommitment = { viewModel.deletePaymentCommitment(it.id) },
                                 onAcceptPaymentSuggestion = {
                                     showPaymentCommitments = false
+                                    paymentCommitmentEditorFromCenter = false
                                     editingPaymentCommitment = it
                                 },
                                 onRequestPaymentReminderPermission = onRequestPaymentReminderPermission,
@@ -747,6 +770,10 @@ fun PaisaLensApp(
                                 creditCardBills = creditCardBills,
                                 onMarkCreditCardBillPaid = viewModel::markCreditCardBillPaid,
                                 onAssignCreditCardBill = viewModel::assignCreditCardBillToAccount,
+                                creditCardPaymentSuggestions = creditCardPaymentSuggestions,
+                                onConfirmCreditCardPayment = viewModel::confirmCreditCardPayment,
+                                onDismissCreditCardPayment = viewModel::dismissCreditCardPayment,
+                                onRemoveCreditCardPaymentMatch = viewModel::removeCreditCardPaymentMatch,
                             )
                         }
                         AppDestination.INSIGHTS -> key(insightNavigationRequest) {
@@ -1561,16 +1588,19 @@ fun PaisaLensApp(
                 accounts = accounts,
                 onAddCommitment = {
                     showPaymentCommitments = false
+                    paymentCommitmentEditorFromCenter = true
                     addingPaymentCommitment = true
                 },
                 onEditCommitment = {
                     showPaymentCommitments = false
+                    paymentCommitmentEditorFromCenter = true
                     editingPaymentCommitment = it
                 },
                 onUpdateCommitment = { viewModel.savePaymentCommitment(it) },
                 onDeleteCommitment = { viewModel.deletePaymentCommitment(it.id) },
                 onAcceptSuggestion = {
                     showPaymentCommitments = false
+                    paymentCommitmentEditorFromCenter = true
                     editingPaymentCommitment = it
                 },
                 onDismiss = { showPaymentCommitments = false },
@@ -1586,20 +1616,11 @@ fun PaisaLensApp(
                         paymentCommitmentEditorSaving = true
                         viewModel.savePaymentCommitment(commitment) { success ->
                             paymentCommitmentEditorSaving = false
-                            if (success) {
-                                addingPaymentCommitment = false
-                                editingPaymentCommitment = null
-                            }
+                            if (success) closePaymentCommitmentEditor()
                         }
                     }
                 },
-                onDismiss = {
-                    if (!paymentCommitmentEditorSaving) {
-                        addingPaymentCommitment = false
-                        editingPaymentCommitment = null
-                        paymentCommitmentEditorSaving = false
-                    }
-                },
+                onDismiss = closePaymentCommitmentEditor,
                 isSaving = paymentCommitmentEditorSaving,
             )
         }

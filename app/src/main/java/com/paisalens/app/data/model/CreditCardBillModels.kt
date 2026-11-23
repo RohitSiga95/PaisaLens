@@ -46,7 +46,26 @@ data class CreditCardBill(
     val sender: String,
     val status: CreditCardBillStatus = CreditCardBillStatus.DUE,
     val paidAt: Long? = null,
-)
+    /** When the issuer first reported the currently stored due amount for this cycle. */
+    val dueAmountObservedAt: Long? = null,
+    val matchedPayments: List<CreditCardPayment> = emptyList(),
+) {
+    val amountDueAsOf: Long get() = dueAmountObservedAt ?: detectedAt
+
+    // A refreshed issuer balance already accounts for payments that preceded it.
+    val remainingDueMinor: Long
+        get() = if (status == CreditCardBillStatus.PAID) {
+            0L
+        } else {
+            matchedPayments.asSequence()
+                .filter { it.receivedAt > amountDueAsOf }
+                .fold(totalDueMinor) { due, payment -> (due - payment.amountMinor).coerceAtLeast(0L) }
+        }
+
+    val hasOutstandingBalance: Boolean get() = remainingDueMinor > 0
+    val isPaid: Boolean get() = status == CreditCardBillStatus.PAID ||
+        (totalDueMinor > 0 && !hasOutstandingBalance)
+}
 
 /** Latest statement cycle per card. Older cycles remain available through [creditCardBillHistory]. */
 fun currentCreditCardBills(bills: List<CreditCardBill>): List<CreditCardBill> = bills
@@ -63,9 +82,7 @@ fun currentCreditCardBills(bills: List<CreditCardBill>): List<CreditCardBill> = 
     .sortedWith(compareBy<CreditCardBill> { it.dueDateEpochDay }.thenBy { it.institutionName })
 
 fun totalCurrentCreditCardDueMinor(bills: List<CreditCardBill>): Long = currentCreditCardBills(bills)
-    .asSequence()
-    .filter { it.status == CreditCardBillStatus.DUE }
-    .sumOf(CreditCardBill::totalDueMinor)
+    .sumOf(CreditCardBill::remainingDueMinor)
 
 /**
  * Alerts without last-four digits cannot be safely attributed when several cards are possible.
@@ -75,7 +92,7 @@ val CreditCardBill.needsAccountAssignment: Boolean
     get() = accountId == null && accountHint.isNullOrBlank() && ":unidentified:" in cardIdentityKey
 
 fun unassignedCreditCardBills(bills: List<CreditCardBill>): List<CreditCardBill> = bills
-    .filter { it.status == CreditCardBillStatus.DUE && it.needsAccountAssignment }
+    .filter { it.hasOutstandingBalance && it.needsAccountAssignment }
     .sortedWith(compareBy<CreditCardBill> { it.dueDateEpochDay }.thenByDescending { it.detectedAt })
 
 fun creditCardBillHistory(

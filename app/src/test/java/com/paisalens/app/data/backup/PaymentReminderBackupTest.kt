@@ -23,7 +23,7 @@ class PaymentReminderBackupTest {
     fun `format ten round trip preserves reminder policy state and verification count`() {
         val snapshot = snapshotWithReminder()
         val bytes = ByteArrayOutputStream().also { output ->
-            PaisaLensBackupCodec.write(snapshot, passphrase.copyOf(), output)
+            PaisaLensBackupCodec.writeVersionForTesting(snapshot, passphrase.copyOf(), output, formatVersion = 10)
         }.toByteArray()
 
         val restored = PaisaLensBackupCodec.read(passphrase.copyOf(), ByteArrayInputStream(bytes))

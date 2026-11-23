@@ -230,12 +230,12 @@ fun buildHomeMoneyTimeline(
     }
     val cardItems = currentCreditCardBills(creditCardBills)
         .asSequence()
-        .filter { it.status == CreditCardBillStatus.DUE }
+        .filter(CreditCardBill::hasOutstandingBalance)
         .map { bill ->
             HomeTimelineItem(
                 stableId = "card-bill:${bill.id}:${bill.dueDateEpochDay}",
                 title = "${bill.institutionName} card bill",
-                amountMinor = bill.totalDueMinor,
+                amountMinor = bill.remainingDueMinor,
                 date = LocalDate.ofEpochDay(bill.dueDateEpochDay),
                 source = HomeTimelineSource.CREDIT_CARD_BILL,
                 accountName = bill.accountId?.let(accountNames::get),
@@ -373,9 +373,9 @@ fun buildHomeCardHealth(
                 accountId = account.id,
                 name = account.name,
                 accountHint = account.accountHint,
-                totalDueMinor = bill?.takeIf { it.status == CreditCardBillStatus.DUE }?.totalDueMinor,
-                minimumDueMinor = bill?.takeIf { it.status == CreditCardBillStatus.DUE }?.minimumDueMinor,
-                dueDate = bill?.takeIf { it.status == CreditCardBillStatus.DUE }?.dueDateEpochDay?.let(LocalDate::ofEpochDay),
+                totalDueMinor = bill?.takeIf(CreditCardBill::hasOutstandingBalance)?.remainingDueMinor,
+                minimumDueMinor = bill?.takeIf(CreditCardBill::hasOutstandingBalance)?.minimumDueMinor,
+                dueDate = bill?.takeIf(CreditCardBill::hasOutstandingBalance)?.dueDateEpochDay?.let(LocalDate::ofEpochDay),
                 availableCreditMinor = utilization.availableCreditMinor,
                 creditLimitMinor = utilization.creditLimitMinor,
                 utilizationBasisPoints = utilization.utilizationBasisPoints,
@@ -383,14 +383,14 @@ fun buildHomeCardHealth(
             )
         }
     val billOnlyCards = currentBills
-        .filter { it.status == CreditCardBillStatus.DUE && it.id !in matchedBillIds }
+        .filter { it.hasOutstandingBalance && it.id !in matchedBillIds }
         .map { bill ->
             HomeCardHealthItem(
                 stableId = "bill:${bill.id}",
                 accountId = bill.accountId,
                 name = "${bill.institutionName} card",
                 accountHint = bill.accountHint,
-                totalDueMinor = bill.totalDueMinor,
+                totalDueMinor = bill.remainingDueMinor,
                 minimumDueMinor = bill.minimumDueMinor,
                 dueDate = LocalDate.ofEpochDay(bill.dueDateEpochDay),
                 availableCreditMinor = null,

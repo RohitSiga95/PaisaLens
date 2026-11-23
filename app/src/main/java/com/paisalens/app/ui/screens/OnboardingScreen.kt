@@ -177,7 +177,7 @@ fun OnboardingScreen(
                     Text("Allow SMS analysis", style = MaterialTheme.typography.labelLarge)
                 }
                 Text(
-                    text = "PaisaLens ignores OTPs, reminders and non-transaction messages. Analysis and storage stay on this phone.",
+                    text = "PaisaLens reads financial alerts and ignores OTPs and payment requests. Analysis and storage stay on this phone.",
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

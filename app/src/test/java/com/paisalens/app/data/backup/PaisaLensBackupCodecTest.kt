@@ -97,7 +97,7 @@ class PaisaLensBackupCodecTest {
             ByteArrayInputStream(output.toByteArray()),
         )
 
-        assertEquals(10, metadata.formatVersion)
+        assertEquals(11, metadata.formatVersion)
         assertEquals(snapshot.createdAt, metadata.createdAt)
         assertEquals(snapshot.transactions.size, metadata.transactionCount)
         assertEquals(snapshot.accounts.size, metadata.accountCount)

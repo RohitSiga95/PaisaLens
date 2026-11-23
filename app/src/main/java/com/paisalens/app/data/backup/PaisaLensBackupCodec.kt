@@ -16,6 +16,7 @@ import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.CreditCardBillStatus
+import com.paisalens.app.data.model.CreditCardPayment
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.ExpenseSplitEntryMode
@@ -506,6 +507,7 @@ object PaisaLensBackupCodec {
                     data.writeUTF(bill.sender)
                     data.writeUTF(bill.status.name)
                     data.writeNullableLong(bill.paidAt)
+                    if (formatVersion >= 11) data.writeNullableLong(bill.dueAmountObservedAt)
                 }
             }
             if (formatVersion >= 10) {
@@ -550,6 +552,19 @@ object PaisaLensBackupCodec {
                 data.writeInt(settings.defaultSnoozeMinutes.size)
                 settings.defaultSnoozeMinutes.forEach(data::writeInt)
                 data.writeBoolean(settings.overdueHighlightEnabled)
+            }
+            if (formatVersion >= 11) {
+                data.writeInt(snapshot.creditCardPayments.size)
+                snapshot.creditCardPayments.forEach { payment ->
+                    data.writeUTF(payment.key)
+                    data.writeUTF(payment.institutionName)
+                    data.writeUTF(payment.cardLastFour)
+                    data.writeLong(payment.amountMinor)
+                    data.writeLong(payment.receivedAt)
+                    data.writeNullable(payment.unreferencedMessageHash)
+                    data.writeNullableLong(payment.billId)
+                    data.writeBoolean(payment.dismissed)
+                }
             }
         }
         return bytes.toByteArray()
@@ -939,6 +954,7 @@ object PaisaLensBackupCodec {
                         sender = data.readUTF(),
                         status = data.readEnum(CreditCardBillStatus.DUE),
                         paidAt = data.readNullableLong(),
+                        dueAmountObservedAt = if (formatVersion >= 11) data.readNullableLong() else null,
                     )
                 }
             } else {
@@ -990,6 +1006,23 @@ object PaisaLensBackupCodec {
             } else {
                 PaymentReminderSettings()
             }
+            val creditCardPayments = if (formatVersion >= 11) {
+                List(data.readSafeCount()) {
+                    CreditCardPayment(
+                        key = data.readUTF(),
+                        institutionName = data.readUTF(),
+                        cardLastFour = data.readUTF(),
+                        amountMinor = data.readLong(),
+                        receivedAt = data.readLong(),
+                        unreferencedMessageHash = data.readNullable(),
+                        billId = data.readNullableLong(),
+                        dismissed = data.readBoolean(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val paymentsByBill = creditCardPayments.filter { it.billId != null }.groupBy(CreditCardPayment::billId)
             require(data.available() == 0) { "Backup contains unexpected trailing data" }
             return PaisaLensBackupSnapshot(
                 createdAt = createdAt,
@@ -1015,9 +1048,10 @@ object PaisaLensBackupCodec {
                 smsCoverageMessages = smsCoverageMessages,
                 smsCoverageRules = smsCoverageRules,
                 advancedBudgets = advancedBudgets,
-                creditCardBills = creditCardBills,
+                creditCardBills = creditCardBills.map { it.copy(matchedPayments = paymentsByBill[it.id].orEmpty()) },
                 paymentReminderRules = paymentReminderRules,
                 paymentReminderSettings = paymentReminderSettings,
+                creditCardPayments = creditCardPayments,
             )
         }
     }
@@ -1062,6 +1096,7 @@ object PaisaLensBackupCodec {
                 data.writeInt(metadata.creditCardBillCount)
             }
             if (formatVersion >= 10) data.writeInt(metadata.paymentReminderRuleCount)
+            if (formatVersion >= 11) data.writeInt(metadata.creditCardPaymentCount)
             data.writeUTF(metadata.contentSha256)
         }
         return bytes.toByteArray()
@@ -1103,6 +1138,7 @@ object PaisaLensBackupCodec {
             advancedBudgetCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
             creditCardBillCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
             paymentReminderRuleCount = if (expectedFormatVersion >= 10) data.readSafeCount() else 0,
+            creditCardPaymentCount = if (expectedFormatVersion >= 11) data.readSafeCount() else 0,
             contentSha256 = data.readUTF(),
         )
         require(data.available() == 0) { "Backup contains unexpected verification data" }
@@ -1170,6 +1206,9 @@ object PaisaLensBackupCodec {
         require(metadata.paymentReminderRuleCount == snapshot.paymentReminderRules.size) {
             "Backup payment-reminder count verification failed"
         }
+        require(metadata.creditCardPaymentCount == snapshot.creditCardPayments.size) {
+            "Backup card payment count does not match its contents"
+        }
     }
 
     private fun buildMetadata(
@@ -1204,6 +1243,7 @@ object PaisaLensBackupCodec {
         advancedBudgetCount = if (formatVersion >= 7) snapshot.advancedBudgets.size else 0,
         creditCardBillCount = if (formatVersion >= 7) snapshot.creditCardBills.size else 0,
         paymentReminderRuleCount = if (formatVersion >= 10) snapshot.paymentReminderRules.size else 0,
+        creditCardPaymentCount = if (formatVersion >= 11) snapshot.creditCardPayments.size else 0,
         contentSha256 = sha256(snapshotPayload),
     )
 
@@ -1294,7 +1334,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 10
+    private const val FORMAT_VERSION = 11
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

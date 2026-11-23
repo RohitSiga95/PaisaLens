@@ -196,7 +196,7 @@ fun buildNeedsAttentionSummary(
     val cardBillWindowEnd = today.plusDays(upcomingDueDays.toLong())
     currentCreditCardBills(input.creditCardBills)
         .asSequence()
-        .filter { it.status == CreditCardBillStatus.DUE }
+        .filter(CreditCardBill::hasOutstandingBalance)
         .filter { LocalDate.ofEpochDay(it.dueDateEpochDay) <= cardBillWindowEnd }
         .forEach { bill ->
             val dueDate = LocalDate.ofEpochDay(bill.dueDateEpochDay)
@@ -212,7 +212,7 @@ fun buildNeedsAttentionSummary(
                     else -> "Due in ${ChronoUnit.DAYS.between(today, dueDate)} days."
                 },
                 action = AttentionAction.OPEN_CREDIT_CARD_BILLS,
-                amountMinor = bill.totalDueMinor,
+                amountMinor = bill.remainingDueMinor,
                 dueDate = dueDate,
                 accountId = bill.accountId,
             )

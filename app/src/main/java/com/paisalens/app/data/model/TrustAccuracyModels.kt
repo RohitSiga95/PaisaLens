@@ -803,6 +803,7 @@ data class BackupVerificationMetadata(
     val advancedBudgetCount: Int = 0,
     val creditCardBillCount: Int = 0,
     val paymentReminderRuleCount: Int = 0,
+    val creditCardPaymentCount: Int = 0,
     val contentSha256: String,
 ) {
     val totalRecordCount: Int
@@ -811,7 +812,7 @@ data class BackupVerificationMetadata(
             balanceHistoryCount + billCount + netWorthItemCount + smartCategoryRuleCount +
             expenseSplitCount + savingsGoalCount + savingsContributionCount + paymentCommitmentCount +
             transactionSmsSourceCount + smsCoverageMessageCount + smsCoverageRuleCount + advancedBudgetCount +
-            creditCardBillCount + paymentReminderRuleCount
+            creditCardBillCount + paymentReminderRuleCount + creditCardPaymentCount
 }
 
 enum class DataHealthSeverity {

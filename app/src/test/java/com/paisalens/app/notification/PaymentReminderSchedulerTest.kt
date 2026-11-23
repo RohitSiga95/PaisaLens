@@ -77,6 +77,7 @@ class PaymentReminderSchedulerTest {
         )
         assertEquals(scheduled, future?.alarmAtMillis)
         assertTrue(requireNotNull(future).logicalKey.startsWith("alert:"))
+        assertEquals(PaymentReminderDeliveryPreview(scheduled, occurrence.notificationStyle, occurrence.vibrate), future.deliveryPreview)
 
         val after = scheduled + 60_000L
         val catchUp = selectNextPaymentReminderAlarm(
@@ -96,8 +97,35 @@ class PaymentReminderSchedulerTest {
             after, Long.MIN_VALUE, zone,
         )
         assertTrue(requireNotNull(suppressed).logicalKey.startsWith("maintenance:"))
+        assertNull(suppressed.deliveryPreview)
     }
 
+    @Test
+    fun `test sends a generic notification on the chosen channel without a delivery record`() {
+        val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
+        assertEquals(
+            ReminderChannelStatus.AVAILABLE,
+            PaymentReminderNotifier.postTest(context, PaymentReminderNotificationStyle.SILENT, vibrate = false),
+        )
+        val post = manager.activeNotifications.single { it.tag == "payment-reminder-test" }.notification
+        assertEquals(PaymentReminderNotifier.CHANNEL_SILENT, post.channelId)
+        assertEquals("PaisaLens test reminder", post.extras.getCharSequence(android.app.Notification.EXTRA_TITLE))
+        assertTrue(post.actions.isNullOrEmpty())
+        assertTrue(database.getPaymentReminderDeliveryKeys().isEmpty())
+    }
+
+    @Test
+    fun `test refuses to post when the selected channel is blocked`() {
+        val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
+        manager.createNotificationChannel(NotificationChannel(
+            PaymentReminderNotifier.CHANNEL_PROMINENT_NO_VIBRATE, "Blocked", NotificationManager.IMPORTANCE_NONE,
+        ))
+        assertEquals(
+            ReminderChannelStatus.CHANNEL_BLOCKED,
+            PaymentReminderNotifier.postTest(context, PaymentReminderNotificationStyle.PROMINENT, vibrate = false),
+        )
+        assertTrue(manager.activeNotifications.none { it.tag == "payment-reminder-test" })
+    }
     @Test
     fun `editing a rule does not resurrect delivered leads as catch-up`() {
         val firstGeneration = rule(overdueRepeatDays = 0).copy(generation = 1)

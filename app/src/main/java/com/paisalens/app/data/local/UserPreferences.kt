@@ -92,6 +92,10 @@ class UserPreferences(context: Context) {
         get() = preferences.getLong(KEY_LAST_SCAN, 0L)
         set(value) = preferences.edit().putLong(KEY_LAST_SCAN, value).apply()
 
+    var lastHomeVisitAt: Long
+        get() = preferences.getLong(KEY_LAST_HOME_VISIT, 0L)
+        set(value) = preferences.edit().putLong(KEY_LAST_HOME_VISIT, value).apply()
+
     var lastBackupCreatedAt: Long
         get() = preferences.getLong(KEY_LAST_BACKUP_CREATED, 0L)
         set(value) = preferences.edit().putLong(KEY_LAST_BACKUP_CREATED, value).apply()
@@ -527,6 +531,7 @@ class UserPreferences(context: Context) {
         const val KEY_ONBOARDING = "onboarding_complete"
         const val KEY_DARK_MODE = "dark_mode"
         const val KEY_LAST_SCAN = "last_scan_at"
+        private const val KEY_LAST_HOME_VISIT = "last_home_visit_at"
         const val KEY_LAST_BACKUP_CREATED = "last_backup_created_at"
         const val KEY_LAST_BACKUP_VERIFIED = "last_backup_verified_at"
         const val KEY_APP_LOCK = "app_lock_enabled"

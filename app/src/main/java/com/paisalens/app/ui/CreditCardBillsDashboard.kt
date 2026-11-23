@@ -50,7 +50,8 @@ import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CreditCardBill
-import com.paisalens.app.data.model.CreditCardBillStatus
+import com.paisalens.app.data.model.CreditCardPayment
+import com.paisalens.app.data.model.CreditCardPaymentSuggestion
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
@@ -77,9 +78,15 @@ fun CreditCardBillsDashboardContent(
     accounts: List<AccountProfile>,
     onMarkPaid: (Long) -> Unit,
     onAssignBill: (billId: Long, accountId: Long) -> Unit,
+    paymentSuggestions: List<CreditCardPaymentSuggestion>,
+    onConfirmPayment: (CreditCardPaymentSuggestion) -> Unit,
+    onDismissPayment: (String) -> Unit,
+    onRemoveMatch: (String, Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pendingPaidConfirmation by remember { mutableStateOf<CreditCardBill?>(null) }
+    var reviewingPayment by remember { mutableStateOf<CreditCardPaymentSuggestion?>(null) }
+    var undoingPayment by remember { mutableStateOf<CreditCardPayment?>(null) }
     var selectedCardKey by remember { mutableStateOf<String?>(null) }
     var assigningBill by remember { mutableStateOf<CreditCardBill?>(null) }
     val latestByCard = remember(bills) { currentCreditCardBills(bills) }
@@ -122,12 +129,33 @@ fun CreditCardBillsDashboardContent(
                     )
                     Text(
                         buildString {
-                            val dueCount = latestByCard.count { it.status == CreditCardBillStatus.DUE }
+                            val dueCount = latestByCard.count(CreditCardBill::hasOutstandingBalance)
                             append("Across $dueCount assigned card bill${if (dueCount == 1) "" else "s"}")
                             if (unassigned.isNotEmpty()) append(" · ${unassigned.size} need a card")
                         },
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                }
+            }
+        }
+
+        if (paymentSuggestions.isNotEmpty()) {
+            item {
+                Text("Payments to review", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+            items(paymentSuggestions, key = { "match:${it.payment.key}" }) { match ->
+                PaisaCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(cardDisplayName(match.bill, accounts), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Payment SMS received ${paymentReceivedDate(match.payment)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        MoneyText(match.payment.amountMinor, style = MaterialTheme.typography.titleLarge)
+                        Button(onClick = { reviewingPayment = match }, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Text("Review match")
+                        }
+                    }
                 }
             }
         }
@@ -175,12 +203,12 @@ fun CreditCardBillsDashboardContent(
                     bill = bill,
                     displayName = cardDisplayName(bill, accounts),
                     onOpen = { selectedCardKey = bill.creditCardBillGroupKey },
-                    onPaidChange = { if (bill.status == CreditCardBillStatus.DUE) pendingPaidConfirmation = bill },
+                    onPaidChange = { if (bill.hasOutstandingBalance) pendingPaidConfirmation = bill },
                 )
             }
         }
 
-        if (bills.any { it.status == CreditCardBillStatus.PAID }) {
+        if (bills.any(CreditCardBill::isPaid)) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Rounded.History, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -188,6 +216,47 @@ fun CreditCardBillsDashboardContent(
                 }
             }
         }
+    }
+
+    reviewingPayment?.let { match ->
+        AlertDialog(
+            onDismissRequest = { reviewingPayment = null },
+            title = { Text("Match this payment?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(cardDisplayName(match.bill, accounts), style = MaterialTheme.typography.titleMedium)
+                    Text("${formatMoney(match.payment.amountMinor)} received ${paymentReceivedDate(match.payment)}")
+                    Text("Statement due ${LocalDate.ofEpochDay(match.bill.dueDateEpochDay).format(fullDate)}")
+                    Text(
+                        if (match.remainingAfterMatch == 0L) "This will mark the statement paid and stop its reminders."
+                        else "Remaining due after match · ${formatMoney(match.remainingAfterMatch)}",
+                    )
+                    TextButton(
+                        onClick = { onDismissPayment(match.payment.key); reviewingPayment = null },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("Ignore this payment SMS") }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { onConfirmPayment(match); reviewingPayment = null }) { Text("Confirm match") }
+            },
+            dismissButton = { TextButton(onClick = { reviewingPayment = null }) { Text("Cancel") } },
+        )
+    }
+
+    undoingPayment?.let { payment ->
+        AlertDialog(
+            onDismissRequest = { undoingPayment = null },
+            title = { Text("Remove this payment match?") },
+            text = { Text("PaisaLens will recalculate the amount due and update reminders for this bill.") },
+            confirmButton = {
+                Button(onClick = {
+                    payment.billId?.let { onRemoveMatch(payment.key, it) }
+                    undoingPayment = null
+                }) { Text("Remove match") }
+            },
+            dismissButton = { TextButton(onClick = { undoingPayment = null }) { Text("Cancel") } },
+        )
     }
 
     assigningBill?.let { bill ->
@@ -209,7 +278,7 @@ fun CreditCardBillsDashboardContent(
             title = { Text("Mark this card bill paid?") },
             text = {
                 Text(
-                    "Confirm that ${formatMoney(bill.totalDueMinor)} due on ${LocalDate.ofEpochDay(bill.dueDateEpochDay).format(fullDate)} has been paid. The cycle stays in history.",
+                    "Confirm that the remaining ${formatMoney(bill.remainingDueMinor)} due on ${LocalDate.ofEpochDay(bill.dueDateEpochDay).format(fullDate)} has been paid. The cycle stays in history.",
                 )
             },
             confirmButton = {
@@ -233,6 +302,7 @@ fun CreditCardBillsDashboardContent(
             transactions = transactions,
             accounts = accounts,
             onMarkPaid = { pendingPaidConfirmation = it },
+            onRemoveMatch = { undoingPayment = it },
             onDismiss = { selectedCardKey = null },
         )
     }
@@ -245,7 +315,8 @@ private fun CreditCardBillCard(
     onOpen: (() -> Unit)?,
     onPaidChange: () -> Unit,
 ) {
-    val paid = bill.status == CreditCardBillStatus.PAID
+    val paid = bill.isPaid
+    val partlyPaid = bill.hasOutstandingBalance && bill.remainingDueMinor < bill.totalDueMinor
     PaisaCard(Modifier.fillMaxWidth().alpha(if (paid) 0.62f else 1f)) {
         Column {
             Surface(
@@ -273,7 +344,7 @@ private fun CreditCardBillCard(
                             textDecoration = if (paid) TextDecoration.LineThrough else null,
                         )
                     }
-                    MoneyText(bill.totalDueMinor, style = MaterialTheme.typography.titleLarge)
+                    MoneyText(if (paid) bill.totalDueMinor else bill.remainingDueMinor, style = MaterialTheme.typography.titleLarge)
                     if (onOpen != null) {
                         Icon(Icons.Rounded.ChevronRight, contentDescription = "Open $displayName bill history")
                     }
@@ -282,7 +353,7 @@ private fun CreditCardBillCard(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Surface(
                 onClick = onPaidChange,
-                enabled = !paid,
+                enabled = bill.hasOutstandingBalance,
                 color = Color.Transparent,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
             ) {
@@ -290,11 +361,27 @@ private fun CreditCardBillCard(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Checkbox(checked = paid, onCheckedChange = { onPaidChange() }, enabled = !paid)
-                    Text(if (paid) "Paid · saved in history" else "Paid?", style = MaterialTheme.typography.labelLarge)
-                    Spacer(Modifier.weight(1f))
-                    bill.minimumDueMinor?.let {
-                        Text("Minimum ${formatMoney(it)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Checkbox(checked = paid, onCheckedChange = null, enabled = bill.hasOutstandingBalance)
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            when {
+                                paid -> "Paid · saved in history"
+                                !bill.hasOutstandingBalance -> "No amount due"
+                                partlyPaid -> "Partly paid · mark remaining as paid"
+                                else -> "Paid?"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        if (bill.hasOutstandingBalance) {
+                            bill.minimumDueMinor?.let {
+                                Text(
+                                    "Statement minimum ${formatMoney(it)}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -309,6 +396,7 @@ private fun CreditCardBillDetailSheet(
     transactions: List<TransactionRecord>,
     accounts: List<AccountProfile>,
     onMarkPaid: (CreditCardBill) -> Unit,
+    onRemoveMatch: (CreditCardPayment) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val latest = history.firstOrNull() ?: return
@@ -352,12 +440,25 @@ private fun CreditCardBillDetailSheet(
             }
             item { Text("Statement cycles", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             items(history, key = CreditCardBill::id) { bill ->
-                CreditCardBillCard(
-                    bill = bill,
-                    displayName = LocalDate.ofEpochDay(bill.dueDateEpochDay).format(fullDate),
-                    onOpen = null,
-                    onPaidChange = { if (bill.status == CreditCardBillStatus.DUE) onMarkPaid(bill) },
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CreditCardBillCard(
+                        bill = bill,
+                        displayName = LocalDate.ofEpochDay(bill.dueDateEpochDay).format(fullDate),
+                        onOpen = null,
+                        onPaidChange = { if (bill.hasOutstandingBalance) onMarkPaid(bill) },
+                    )
+                    bill.matchedPayments.forEach { payment ->
+                        PaisaCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text("Matched payment · ${paymentReceivedDate(payment)}")
+                                MoneyText(payment.amountMinor, style = MaterialTheme.typography.bodyLarge)
+                                TextButton(onClick = { onRemoveMatch(payment) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                    Text("Remove match")
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -469,9 +570,13 @@ private fun monthlyCardSpendPoints(
 
 private fun cardDisplayName(bill: CreditCardBill, accounts: List<AccountProfile>): String {
     val accountName = bill.accountId?.let { accountId -> accounts.firstOrNull { it.id == accountId }?.name }
-    val suffix = bill.accountHint?.let { " •$it" }.orEmpty()
-    return (accountName ?: bill.institutionName) + suffix
+    val label = accountName ?: bill.institutionName
+    val suffix = bill.accountHint
+    return if (suffix.isNullOrBlank() || label.trimEnd().endsWith(suffix)) label else "$label •$suffix"
 }
+
+private fun paymentReceivedDate(payment: CreditCardPayment): String =
+    Instant.ofEpochMilli(payment.receivedAt).atZone(ZoneId.systemDefault()).format(fullDate)
 
 private val fullDate: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM yyyy")
 private val monthLabel: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM")

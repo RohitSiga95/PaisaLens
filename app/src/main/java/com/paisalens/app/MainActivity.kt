@@ -52,6 +52,7 @@ class MainActivity : FragmentActivity() {
     private var hasNotificationPermission by mutableStateOf(false)
     private var hasActionableAlertPermission by mutableStateOf(false)
     private var hasPaymentReminderPermission by mutableStateOf(false)
+    private var foregroundVisit by mutableStateOf(0)
     private var pendingNotificationPurpose: NotificationPermissionPurpose? = null
     private var pendingBackupPassphrase: CharArray? = null
     private var pendingRestorePassphrase: CharArray? = null
@@ -190,6 +191,7 @@ class MainActivity : FragmentActivity() {
             if (isUnlocked) {
                 PaisaLensApp(
                     viewModel = viewModel,
+                    foregroundVisit = foregroundVisit,
                     initialWidgetDestination = widgetDestination,
                     onWidgetDestinationHandled = {
                         widgetDestination = null
@@ -312,6 +314,11 @@ class MainActivity : FragmentActivity() {
         super.onSaveInstanceState(outState)
     }
 
+    override fun onStart() {
+        super.onStart()
+        foregroundVisit = viewModel.startForegroundVisit()
+    }
+
     override fun onResume() {
         super.onResume()
         updatePermissionState()
@@ -327,6 +334,10 @@ class MainActivity : FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (!isChangingConfigurations) {
+            viewModel.stopForegroundVisit()
+            foregroundVisit = 0
+        }
         if (!isChangingConfigurations && (application as PaisaLensApplication).preferences.appLockEnabled) {
             isUnlocked = false
         }

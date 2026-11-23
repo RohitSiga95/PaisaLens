@@ -6,6 +6,7 @@ import android.content.Intent
 import android.provider.Telephony
 import com.paisalens.app.PaisaLensApplication
 import com.paisalens.app.data.model.SmsCoverageCandidate
+import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.smsCoverageFingerprint
 import com.paisalens.app.data.model.smsCoverageReasonOrNull
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,7 @@ class TransactionSmsReceiver : BroadcastReceiver() {
 
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
+                val creditCardPayment = CreditCardPaymentSmsParser.parse(sender, body, timestamp)
                 // A manifest receiver can cold-start the process before the ViewModel has loaded
                 // repository flows, so read durable rules before parsing this live message.
                 val parsed = app.parser.parse(
@@ -36,15 +38,14 @@ class TransactionSmsReceiver : BroadcastReceiver() {
                     timestamp = timestamp,
                     messageId = sourceMessageId,
                     coverageRules = app.repository.smsCoverageRulesForParsing(),
-                )
+                )?.takeIf { creditCardPayment == null || it.type == TransactionType.TRANSFER }
                 val availability = app.availabilityParser.parse(sender, body, timestamp)
-                val creditCardBill = app.creditCardBillParser.parse(
-                    sender = sender,
-                    body = body,
-                    timestamp = timestamp,
-                    messageId = sourceMessageId,
-                )
-                val coverageCandidate = if (parsed == null && availability == null && creditCardBill == null) {
+                val creditCardBill = if (creditCardPayment == null) {
+                    app.creditCardBillParser.parse(sender, body, timestamp, sourceMessageId)
+                } else null
+                val coverageCandidate = if (
+                    parsed == null && availability == null && creditCardBill == null && creditCardPayment == null
+                ) {
                     smsCoverageReasonOrNull(sender, body)?.let { reason ->
                         SmsCoverageCandidate(
                             sourceMessageId = sourceMessageId,
@@ -57,12 +58,16 @@ class TransactionSmsReceiver : BroadcastReceiver() {
                 } else {
                     null
                 }
-                if (parsed != null || availability != null || creditCardBill != null || coverageCandidate != null) {
+                if (
+                    parsed != null || availability != null || creditCardBill != null ||
+                    coverageCandidate != null || creditCardPayment != null
+                ) {
                     app.repository.ingestSms(
                         items = listOfNotNull(parsed),
                         availabilityUpdates = listOfNotNull(availability),
                         coverageCandidates = listOfNotNull(coverageCandidate),
                         creditCardBills = listOfNotNull(creditCardBill),
+                        creditCardPayments = listOfNotNull(creditCardPayment),
                     )
                 }
             } finally {

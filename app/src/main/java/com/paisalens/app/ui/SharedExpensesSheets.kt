@@ -52,7 +52,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -646,11 +645,6 @@ internal fun TransactionSplitEditorSheet(
     onDismiss: () -> Unit,
     isSaving: Boolean = false,
 ) {
-    val currentIsSaving = rememberUpdatedState(isSaving)
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true,
-        confirmValueChange = { !currentIsSaving.value },
-    )
     val relevantExisting = remember(existingSplits, transaction.id) {
         existingSplits.filter { it.transactionId == transaction.id }
     }
@@ -690,7 +684,6 @@ internal fun TransactionSplitEditorSheet(
     }
     var entryMode by rememberSaveable(transaction.id) { mutableStateOf(initialEntryMode) }
     var submitted by rememberSaveable(transaction.id) { mutableStateOf(false) }
-    var confirmDiscard by remember { mutableStateOf(false) }
     val hasUnsavedChanges = rows != startingRows || entryMode != initialEntryMode
     val percentageBasisPoints = if (entryMode == ExpenseSplitEntryMode.PERCENTAGE) {
         rows.map { it.share.splitPercentageBasisPointsOrNull() }
@@ -743,32 +736,15 @@ internal fun TransactionSplitEditorSheet(
     }
     val remaining = (transaction.amountMinor - allocated).coerceAtLeast(0)
 
-    ModalBottomSheet(
-        onDismissRequest = {
-            if (!isSaving) {
-                if (hasUnsavedChanges) confirmDiscard = true else onDismiss()
-            }
-        },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.94f)
-                .navigationBarsPadding(),
-        ) {
+    FinanceEditorDialog(hasUnsavedChanges, isSaving, onDismiss) { requestClose ->
+        Column(Modifier.fillMaxWidth()) {
             SharedFinanceSheetHeader(
                 title = "Split expense",
                 subtitle = transaction.merchant,
-                onDismiss = {
-                    if (!isSaving) {
-                        if (hasUnsavedChanges) confirmDiscard = true else onDismiss()
-                    }
-                },
+                onDismiss = requestClose,
             )
             LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().weight(1f),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
@@ -950,19 +926,6 @@ internal fun TransactionSplitEditorSheet(
         }
     }
 
-    if (confirmDiscard) {
-        AlertDialog(
-            onDismissRequest = { confirmDiscard = false },
-            title = { Text("Discard split changes?") },
-            text = { Text("Participant names, shares, percentages and notes entered here have not been saved.") },
-            confirmButton = {
-                Button(onClick = onDismiss) { Text("Discard") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") }
-            },
-        )
-    }
 }
 
 @Composable

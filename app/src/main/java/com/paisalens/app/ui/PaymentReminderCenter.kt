@@ -58,14 +58,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -547,9 +545,9 @@ fun PaymentReminderCenterContent(
     if (showSettings) {
         PaymentReminderSettingsSheet(
             settings = settings,
+            nowMillis = nowMillis,
             hasNotificationPermission = hasNotificationPermission,
             onRequestNotificationPermission = onRequestNotificationPermission,
-            onOpenSystemNotificationSettings = onOpenSystemNotificationSettings,
             onSettingsChange = onSettingsChange,
             onDismiss = { showSettings = false },
         )
@@ -881,7 +879,6 @@ private fun PaymentReminderEditorSheet(
     val context = LocalContext.current
     val locale = LocalConfiguration.current.locales[0]
     val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedTargetKey by remember(existing, initialTarget) {
         mutableStateOf(existing?.let { it.targetType to it.targetKey } ?: initialTarget?.let { it.targetType to it.targetKey })
     }
@@ -919,7 +916,6 @@ private fun PaymentReminderEditorSheet(
     var dirty by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
-    var showDiscardDialog by remember { mutableStateOf(false) }
     val customAdvanceValue = customAdvance.toIntOrNull()
     val customSnoozeValue = customSnooze.toIntOrNull()
     val advanceError = customAdvance.isNotBlank() && customAdvanceValue !in 0..3650
@@ -929,19 +925,7 @@ private fun PaymentReminderEditorSheet(
         (advanceDays.isNotEmpty() || customAdvanceValue != null) &&
         (snoozeMinutes.isNotEmpty() || customSnoozeValue != null)
 
-    fun requestDismiss() {
-        when {
-            saving -> Unit
-            dirty -> showDiscardDialog = true
-            else -> onDismiss()
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = ::requestDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
+    FinanceEditorDialog(dirty, saving, onDismiss) { requestClose ->
         LazyColumn(
             modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
             contentPadding = PaddingValues(start = 20.dp, top = 4.dp, end = 20.dp, bottom = 28.dp),
@@ -1267,20 +1251,11 @@ private fun PaymentReminderEditorSheet(
                         Text("Save reminder")
                     }
                 }
-                TextButton(onClick = ::requestDismiss, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                TextButton(onClick = requestClose, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Text("Cancel")
                 }
             }
         }
-    }
-    if (showDiscardDialog) {
-        AlertDialog(
-            onDismissRequest = { showDiscardDialog = false },
-            title = { Text("Discard reminder changes?") },
-            text = { Text("Your unsaved reminder customization will be lost.") },
-            confirmButton = { Button(onClick = onDismiss) { Text("Discard") } },
-            dismissButton = { TextButton(onClick = { showDiscardDialog = false }) { Text("Keep editing") } },
-        )
     }
 }
 
@@ -1288,9 +1263,9 @@ private fun PaymentReminderEditorSheet(
 @Composable
 fun PaymentReminderSettingsSheet(
     settings: PaymentReminderSettings,
+    nowMillis: Long,
     hasNotificationPermission: Boolean,
     onRequestNotificationPermission: () -> Unit,
-    onOpenSystemNotificationSettings: () -> Unit,
     onSettingsChange: suspend (PaymentReminderSettings) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1300,17 +1275,8 @@ fun PaymentReminderSettingsSheet(
     var draft by remember { mutableStateOf(original) }
     var saving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf<String?>(null) }
-    var showDiscardDialog by remember { mutableStateOf(false) }
     val safe = draft.normalized()
-    fun requestDismiss() {
-        if (safe == original) onDismiss() else showDiscardDialog = true
-    }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-        onDismissRequest = ::requestDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
+    FinanceEditorDialog(safe != original, saving, onDismiss) { requestClose ->
         LazyColumn(
             modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
             contentPadding = PaddingValues(start = 20.dp, top = 4.dp, end = 20.dp, bottom = 28.dp),
@@ -1325,41 +1291,7 @@ fun PaymentReminderSettingsSheet(
                 )
             }
             item {
-                Surface(
-                    color = if (hasNotificationPermission) MaterialTheme.colorScheme.secondaryContainer
-                    else MaterialTheme.colorScheme.errorContainer,
-                    contentColor = if (hasNotificationPermission) MaterialTheme.colorScheme.onSecondaryContainer
-                    else MaterialTheme.colorScheme.onErrorContainer,
-                    shape = MaterialTheme.shapes.large,
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Rounded.NotificationsActive, contentDescription = null)
-                            Text(
-                                if (hasNotificationPermission) "Android notifications available" else "Android notifications blocked",
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                        }
-                        Text(
-                            if (hasNotificationPermission) {
-                                "Individual standard, prominent, vibrating, silent, or summary channels may still be off."
-                            } else {
-                                "Schedules stay saved, but reminders cannot appear until access is restored."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (!hasNotificationPermission) {
-                                Button(onClick = onRequestNotificationPermission, modifier = Modifier.heightIn(min = 48.dp)) {
-                                    Text("Allow")
-                                }
-                            }
-                            TextButton(onClick = onOpenSystemNotificationSettings, modifier = Modifier.heightIn(min = 48.dp)) {
-                                Text("Android settings")
-                            }
-                        }
-                    }
-                }
+                PaymentReminderDeliveryCheck(settings, nowMillis, onRequestNotificationPermission)
             }
             item {
                 ReminderToggleRow(
@@ -1502,7 +1434,7 @@ fun PaymentReminderSettingsSheet(
                     }
                 }
                 TextButton(
-                    onClick = ::requestDismiss,
+                    onClick = requestClose,
                     enabled = !saving,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) {
@@ -1510,17 +1442,6 @@ fun PaymentReminderSettingsSheet(
                 }
             }
         }
-    }
-    if (showDiscardDialog) {
-        AlertDialog(
-            onDismissRequest = { showDiscardDialog = false },
-            title = { Text("Discard reminder settings?") },
-            text = { Text("Your unsaved reminder settings will be lost.") },
-            confirmButton = { Button(onClick = onDismiss) { Text("Discard") } },
-            dismissButton = {
-                TextButton(onClick = { showDiscardDialog = false }) { Text("Keep editing") }
-            },
-        )
     }
 }
 

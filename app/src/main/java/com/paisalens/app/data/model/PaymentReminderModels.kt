@@ -248,7 +248,7 @@ fun buildPaymentReminderTargets(
     }
     currentCreditCardBills(creditCardBills)
         .filter {
-            it.status == CreditCardBillStatus.DUE &&
+            it.hasOutstandingBalance &&
                 it.dueDateEpochDay in MIN_EPOCH_DAY..MAX_EPOCH_DAY
         }
         .forEach { bill ->
@@ -260,7 +260,7 @@ fun buildPaymentReminderTargets(
                     targetType = PaymentReminderTargetType.CREDIT_CARD,
                     targetKey = creditCardReminderTargetKey(bill.creditCardBillGroupKey),
                     title = accountName ?: bill.institutionName,
-                    amountMinor = bill.totalDueMinor,
+                    amountMinor = bill.remainingDueMinor,
                     dueDateEpochDay = bill.dueDateEpochDay,
                     accountId = bill.accountId,
                     accountName = accountName ?: bill.accountHint,

@@ -52,7 +52,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -525,11 +524,6 @@ internal fun SavingsGoalEditorSheet(
     onDismiss: () -> Unit,
     isSaving: Boolean = false,
 ) {
-    val currentIsSaving = rememberUpdatedState(isSaving)
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true,
-        confirmValueChange = { !currentIsSaving.value },
-    )
     var name by remember(existing) { mutableStateOf(existing?.name.orEmpty()) }
     var target by remember(existing) { mutableStateOf(existing?.targetMinor?.sharedFinanceInput().orEmpty()) }
     var startingSaved by remember(existing) { mutableStateOf(existing?.startingSavedMinor?.sharedFinanceInput() ?: "0") }
@@ -543,13 +537,14 @@ internal fun SavingsGoalEditorSheet(
     var colorHex by remember(existing) { mutableStateOf(existing?.colorHex ?: SAVINGS_GOAL_COLORS.first()) }
     var active by remember(existing) { mutableStateOf(existing?.isActive ?: true) }
     var submitted by remember { mutableStateOf(false) }
-    val hasChanges = existing == null ||
-        name.trim() != existing.name ||
-        target.sharedFinanceMinorOrNull() != existing.targetMinor ||
-        startingSaved.sharedFinanceMinorOrNull() != existing.startingSavedMinor ||
-        targetDate.trim() != existing.targetDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() }.orEmpty() ||
-        linkedAccountId != existing.linkedAccountId || kind != existing.kind || frequency != existing.contributionFrequency ||
-        notes.trim() != existing.notes.orEmpty() || colorHex != existing.colorHex || active != existing.isActive
+    val hasChanges = name.trim() != existing?.name.orEmpty() ||
+        target != existing?.targetMinor?.sharedFinanceInput().orEmpty() ||
+        startingSaved != (existing?.startingSavedMinor?.sharedFinanceInput() ?: "0") ||
+        targetDate.trim() != existing?.targetDateEpochDay?.let { LocalDate.ofEpochDay(it).toString() }.orEmpty() ||
+        linkedAccountId != existing?.linkedAccountId || kind != (existing?.kind ?: SavingsGoalKind.SAVINGS_GOAL) ||
+        frequency != (existing?.contributionFrequency ?: ContributionFrequency.MONTHLY) ||
+        notes.trim() != existing?.notes.orEmpty() || colorHex != (existing?.colorHex ?: SAVINGS_GOAL_COLORS.first()) ||
+        active != (existing?.isActive ?: true)
     val parsedTarget = target.sharedFinanceMinorOrNull()
     val parsedStarting = startingSaved.sharedFinanceMinorOrNull()
     val parsedDate = targetDate.trim().takeIf(String::isNotBlank)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
@@ -561,23 +556,15 @@ internal fun SavingsGoalEditorSheet(
         else -> null
     }
 
-    ModalBottomSheet(
-        onDismissRequest = { if (!isSaving) onDismiss() },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.94f)
-                .navigationBarsPadding(),
-        ) {
+    FinanceEditorDialog(hasChanges, isSaving, onDismiss) { requestClose ->
+        Column(Modifier.fillMaxWidth()) {
             SharedFinanceSheetHeader(
                 title = if (existing == null) "New savings plan" else "Edit savings plan",
                 subtitle = "Set a target you can revisit anytime",
-                onDismiss = { if (!isSaving) onDismiss() },
+                onDismiss = requestClose,
             )
             LazyColumn(
+                modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
@@ -794,15 +781,6 @@ internal fun SavingsGoalEditorSheet(
                             if (isSaving) "Saving…"
                             else if (existing == null) "Create savings plan"
                             else "Save changes",
-                        )
-                    }
-                }
-                if (hasChanges) {
-                    item {
-                        Text(
-                            "Unsaved changes are discarded if you swipe this sheet away.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

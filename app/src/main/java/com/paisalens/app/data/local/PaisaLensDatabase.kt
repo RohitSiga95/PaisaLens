@@ -25,6 +25,9 @@ import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.CreditCardBillPaymentResult
 import com.paisalens.app.data.model.CreditCardBillStatus
+import com.paisalens.app.data.model.CreditCardPayment
+import com.paisalens.app.data.model.CreditCardPaymentSuggestion
+import com.paisalens.app.data.model.suggestCreditCardPayments
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.ExpenseSplit
@@ -171,6 +174,7 @@ class PaisaLensDatabase(context: Context) :
         createSharedFinanceTables(db)
         createV10Tables(db)
         createPaymentReminderTables(db)
+        createCreditCardPaymentSchema(db)
         createTransactionIndexes(db)
         createMerchantCategoriesTable(db)
         db.execSQL(
@@ -255,6 +259,9 @@ class PaisaLensDatabase(context: Context) :
         }
         if (oldVersion < 13) {
             createPaymentReminderTables(db)
+        }
+        if (oldVersion < 14) {
+            createCreditCardPaymentSchema(db)
         }
     }
 
@@ -679,12 +686,13 @@ class PaisaLensDatabase(context: Context) :
         } else {
             emptyMap()
         }
+        val matchedPayments = getCreditCardPayments(db, "bill_id IS NOT NULL").groupBy(CreditCardPayment::billId)
         db.query(
             "credit_card_bills",
             arrayOf(
                 "id", "bill_key", "source_message_id", "account_id", "card_identity_key",
                 "account_hint", "institution_name", "total_due_minor", "minimum_due_minor",
-                "due_date_epoch_day", "detected_at", "sender", "status", "paid_at",
+                "due_date_epoch_day", "detected_at", "sender", "status", "paid_at", "due_amount_observed_at",
             ),
             null,
             null,
@@ -710,6 +718,8 @@ class PaisaLensDatabase(context: Context) :
                     sender = cursor.getString(11),
                     status = enumValueOrDefault(cursor.getString(12), CreditCardBillStatus.DUE),
                     paidAt = cursor.longOrNull(13),
+                    dueAmountObservedAt = cursor.longOrNull(14),
+                    matchedPayments = matchedPayments[cursor.getLong(0)].orEmpty(),
                 )
             }
         }
@@ -723,7 +733,7 @@ class PaisaLensDatabase(context: Context) :
         var changed = 0
         db.beginTransaction()
         try {
-            items.forEach { item ->
+            items.sortedBy(ParsedCreditCardBill::detectedAt).forEach { item ->
                 if (item.totalDueMinor < 0 || item.dueDateEpochDay <= 0 || item.cardIdentityKey.isBlank()) {
                     return@forEach
                 }
@@ -764,7 +774,7 @@ class PaisaLensDatabase(context: Context) :
                 val billKey = "$cardIdentityKey:${item.dueDateEpochDay}"
                 val existing = db.query(
                     "credit_card_bills",
-                    arrayOf("id", "detected_at"),
+                    arrayOf("id", "detected_at", "total_due_minor", "due_amount_observed_at"),
                     "bill_key = ?",
                     arrayOf(billKey),
                     null,
@@ -772,7 +782,9 @@ class PaisaLensDatabase(context: Context) :
                     null,
                     "1",
                 ).use { cursor ->
-                    if (cursor.moveToFirst()) cursor.getLong(0) to cursor.getLong(1) else null
+                    if (cursor.moveToFirst()) {
+                        StoredCardBillAmount(cursor.getLong(0), cursor.getLong(1), cursor.getLong(2), cursor.longOrNull(3))
+                    } else null
                 }
                 if (existing == null) {
                     val rowId = db.insertWithOnConflict(
@@ -791,12 +803,13 @@ class PaisaLensDatabase(context: Context) :
                                 dueDateEpochDay = item.dueDateEpochDay,
                                 detectedAt = item.detectedAt,
                                 sender = item.sender,
+                                dueAmountObservedAt = item.detectedAt,
                             ),
                         ),
                         SQLiteDatabase.CONFLICT_IGNORE,
                     )
                     if (rowId != -1L) changed += 1
-                } else if (item.detectedAt > existing.second) {
+                } else if (item.detectedAt > existing.detectedAt) {
                     changed += db.update(
                         "credit_card_bills",
                         ContentValues().apply {
@@ -807,18 +820,37 @@ class PaisaLensDatabase(context: Context) :
                             put("total_due_minor", item.totalDueMinor)
                             putNullableLong("minimum_due_minor", item.minimumDueMinor)
                             put("detected_at", item.detectedAt)
+                            val observedAt = if (existing.totalDueMinor == item.totalDueMinor) {
+                                existing.dueAmountObservedAt ?: existing.detectedAt
+                            } else item.detectedAt
+                            put("due_amount_observed_at", observedAt)
                             put("sender", item.sender.take(64))
                             put("updated_at", System.currentTimeMillis())
                         },
                         "id = ?",
-                        arrayOf(existing.first.toString()),
+                        arrayOf(existing.id.toString()),
                     )
-                } else if (accountId != null) {
+                } else {
+                    // A pre-v14 cycle had only the latest alert timestamp. A rescan can establish
+                    // its starting amount when it finds an earlier alert for the same total.
+                    val earlierObservation = item.detectedAt.takeIf {
+                        existing.dueAmountObservedAt == null && existing.totalDueMinor == item.totalDueMinor &&
+                            it < existing.detectedAt
+                    }
+                    if (earlierObservation != null) {
+                        changed += db.update(
+                            "credit_card_bills",
+                            ContentValues().apply { put("due_amount_observed_at", earlierObservation) },
+                            "id = ?",
+                            arrayOf(existing.id.toString()),
+                        )
+                    }
+                    if (accountId == null) return@forEach
                     changed += db.update(
                         "credit_card_bills",
                         ContentValues().apply { put("account_id", accountId) },
                         "id = ? AND account_id IS NULL",
-                        arrayOf(existing.first.toString()),
+                        arrayOf(existing.id.toString()),
                     )
                 }
             }
@@ -829,6 +861,113 @@ class PaisaLensDatabase(context: Context) :
         return changed
     }
 
+    private data class StoredCardBillAmount(
+        val id: Long,
+        val detectedAt: Long,
+        val totalDueMinor: Long,
+        val dueAmountObservedAt: Long?,
+    )
+
+    private fun getCreditCardPayments(
+        db: SQLiteDatabase,
+        selection: String? = null,
+        selectionArgs: Array<String>? = null,
+    ): List<CreditCardPayment> = db.query(
+        "credit_card_payments",
+        arrayOf("payment_key", "institution_name", "card_last_four", "amount_minor", "received_at",
+            "unreferenced_message_hash", "bill_id", "dismissed"),
+        selection, selectionArgs, null, null, "received_at DESC, payment_key",
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                add(CreditCardPayment(
+                    key = cursor.getString(0),
+                    institutionName = cursor.getString(1),
+                    cardLastFour = cursor.getString(2),
+                    amountMinor = cursor.getLong(3),
+                    receivedAt = cursor.getLong(4),
+                    unreferencedMessageHash = cursor.getString(5),
+                    billId = cursor.longOrNull(6),
+                    dismissed = cursor.getInt(7) != 0,
+                ))
+            }
+        }
+    }
+
+    fun getPendingCreditCardPayments(): List<CreditCardPayment> =
+        getCreditCardPayments(readableDatabase, "bill_id IS NULL AND dismissed = 0")
+
+    fun insertCreditCardPayments(payments: List<CreditCardPayment>): Int {
+        if (payments.isEmpty()) return 0
+        val db = writableDatabase
+        var inserted = 0
+        db.beginTransaction()
+        try {
+            payments.sortedBy(CreditCardPayment::receivedAt).forEach { payment ->
+                if (!validCreditCardPayment(payment)) return@forEach
+                val messageHash = payment.unreferencedMessageHash
+                if (messageHash != null && db.query(
+                        "credit_card_payments", arrayOf("payment_key"),
+                        "unreferenced_message_hash = ? AND received_at BETWEEN ? AND ?",
+                        arrayOf(
+                            messageHash,
+                            (payment.receivedAt - UNREFERENCED_PAYMENT_DUPLICATE_WINDOW_MILLIS).toString(),
+                            (payment.receivedAt + UNREFERENCED_PAYMENT_DUPLICATE_WINDOW_MILLIS).toString(),
+                        ),
+                        null, null, null, "1",
+                    ).use { it.moveToFirst() }
+                ) return@forEach
+                if (db.insertWithOnConflict(
+                        "credit_card_payments", null, creditCardPaymentValues(payment.copy(billId = null, dismissed = false)),
+                        SQLiteDatabase.CONFLICT_IGNORE,
+                    ) != -1L
+                ) inserted++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return inserted
+    }
+
+    fun confirmCreditCardPayment(suggestion: CreditCardPaymentSuggestion): Boolean {
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val payments = getCreditCardPayments(db, "payment_key = ?", arrayOf(suggestion.payment.key))
+            val match = suggestCreditCardPayments(payments, getCreditCardBills(db, canonicalizeAccounts = true))
+                .singleOrNull()
+            if (match == null || match.payment != suggestion.payment || match.bill.id != suggestion.bill.id ||
+                match.bill.amountDueAsOf != suggestion.bill.amountDueAsOf ||
+                match.bill.remainingDueMinor != suggestion.bill.remainingDueMinor
+            ) return false
+            val changed = db.update(
+                "credit_card_payments",
+                ContentValues().apply { put("bill_id", match.bill.id) },
+                "payment_key = ? AND bill_id IS NULL AND dismissed = 0",
+                arrayOf(match.payment.key),
+            )
+            db.setTransactionSuccessful()
+            changed == 1
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun dismissCreditCardPayment(key: String): Boolean = writableDatabase.update(
+        "credit_card_payments",
+        ContentValues().apply { put("dismissed", 1) },
+        "payment_key = ? AND bill_id IS NULL AND dismissed = 0",
+        arrayOf(key),
+    ) == 1
+
+    fun removeCreditCardPaymentMatch(key: String, billId: Long): Boolean = writableDatabase.update(
+        "credit_card_payments",
+        ContentValues().apply { putNull("bill_id") },
+        "payment_key = ? AND bill_id = ?",
+        arrayOf(key, billId.toString()),
+    ) == 1
+
     fun markCreditCardBillPaid(
         id: Long,
         confirmed: Boolean,
@@ -837,7 +976,7 @@ class PaisaLensDatabase(context: Context) :
         if (!confirmed) return CreditCardBillPaymentResult.CONFIRMATION_REQUIRED
         val current = getCreditCardBills().firstOrNull { it.id == id }
             ?: return CreditCardBillPaymentResult.NOT_FOUND
-        if (current.status == CreditCardBillStatus.PAID) return CreditCardBillPaymentResult.ALREADY_PAID
+        if (current.isPaid) return CreditCardBillPaymentResult.ALREADY_PAID
         require(paidAt > 0) { "Paid time is invalid" }
         val updated = writableDatabase.update(
             "credit_card_bills",
@@ -925,6 +1064,8 @@ class PaisaLensDatabase(context: Context) :
                             put("institution_name", newest.institutionName)
                             put("total_due_minor", newest.totalDueMinor)
                             putNullableLong("minimum_due_minor", newest.minimumDueMinor)
+                            val amountSource = if (existing.totalDueMinor == newest.totalDueMinor) existing else newest
+                            putNullableLong("due_amount_observed_at", amountSource.dueAmountObservedAt ?: amountSource.detectedAt)
                             put("detected_at", newest.detectedAt)
                             put("sender", newest.sender)
                             put("status", paid?.status?.name ?: CreditCardBillStatus.DUE.name)
@@ -2598,7 +2739,26 @@ class PaisaLensDatabase(context: Context) :
         put("sender", bill.sender.take(64))
         put("status", bill.status.name)
         putNullableLong("paid_at", bill.paidAt)
+        putNullableLong("due_amount_observed_at", bill.dueAmountObservedAt)
         put("updated_at", maxOf(bill.detectedAt, bill.paidAt ?: 0L))
+    }
+
+    private fun validCreditCardPayment(payment: CreditCardPayment): Boolean =
+        PAYMENT_HASH.matches(payment.key) &&
+            (payment.unreferencedMessageHash?.let(PAYMENT_HASH::matches) ?: true) &&
+            payment.institutionName.isNotBlank() && payment.institutionName.length <= 64 &&
+            CARD_PAYMENT_SUFFIX.matches(payment.cardLastFour) &&
+            payment.amountMinor > 0 && payment.receivedAt in 1..(Long.MAX_VALUE - UNREFERENCED_PAYMENT_DUPLICATE_WINDOW_MILLIS)
+
+    private fun creditCardPaymentValues(payment: CreditCardPayment) = ContentValues().apply {
+        put("payment_key", payment.key)
+        put("institution_name", payment.institutionName)
+        put("card_last_four", payment.cardLastFour)
+        put("amount_minor", payment.amountMinor)
+        put("received_at", payment.receivedAt)
+        putNullableText("unreferenced_message_hash", payment.unreferencedMessageHash)
+        putNullableLong("bill_id", payment.billId)
+        put("dismissed", if (payment.dismissed) 1 else 0)
     }
 
     private fun advancedBudgetValues(plan: AdvancedBudgetPlan, includeId: Boolean = false) = ContentValues().apply {
@@ -3934,6 +4094,7 @@ class PaisaLensDatabase(context: Context) :
                 smsCoverageRules = getSmsCoverageRules(),
                 advancedBudgets = getAdvancedBudgetPlans(),
                 creditCardBills = getCreditCardBills(db, canonicalizeAccounts = false),
+                creditCardPayments = getCreditCardPayments(db),
                 paymentReminderRules = getPaymentReminderRules(db),
                 paymentReminderSettings = getPaymentReminderSettings(),
             ).also { db.setTransactionSuccessful() }
@@ -4175,6 +4336,15 @@ class PaisaLensDatabase(context: Context) :
                     ),
                 )
             }
+            val restoredBillsById = snapshot.creditCardBills.associateBy(CreditCardBill::id)
+            snapshot.creditCardPayments.forEach { payment ->
+                val bill = payment.billId?.let(restoredBillsById::get)
+                require(validCreditCardPayment(payment) && (payment.billId == null ||
+                    (bill != null && !payment.dismissed && bill.accountHint == payment.cardLastFour &&
+                        bill.institutionName.equals(payment.institutionName, ignoreCase = true)))
+                ) { "Backup contains an invalid card payment match" }
+                db.insertOrThrow("credit_card_payments", null, creditCardPaymentValues(payment))
+            }
             snapshot.loans.forEach { loan ->
                 db.insertOrThrow(
                     "loans",
@@ -4228,15 +4398,11 @@ class PaisaLensDatabase(context: Context) :
                     },
                 )
             }
-            val canonicalReminderCardBills = snapshot.creditCardBills.map { bill ->
-                bill.copy(
-                    accountId = bill.accountId?.let { accountId ->
-                        canonicalAccountId(restoredAccountsById, accountId)
-                    },
-                )
-            }
+            val canonicalReminderCardBills = getCreditCardBills(db, canonicalizeAccounts = true)
             val restoredCardTargetRemaps = buildMap {
-                snapshot.creditCardBills.zip(canonicalReminderCardBills).forEach { (raw, canonical) ->
+                val canonicalById = canonicalReminderCardBills.associateBy(CreditCardBill::id)
+                snapshot.creditCardBills.forEach { raw ->
+                    val canonical = canonicalById.getValue(raw.id)
                     put(
                         creditCardReminderTargetKey(raw.creditCardBillGroupKey),
                         creditCardReminderTargetKey(canonical.creditCardBillGroupKey),
@@ -5293,8 +5459,34 @@ class PaisaLensDatabase(context: Context) :
         )
     }
 
-    private fun createV10Tables(db: SQLiteDatabase) {
-        createSmsIntelligenceTables(db)
+    private fun createCreditCardPaymentSchema(db: SQLiteDatabase) {
+        createCreditCardBillsTable(db)
+        if (!hasColumn(db, "credit_card_bills", "due_amount_observed_at")) {
+            db.execSQL("ALTER TABLE credit_card_bills ADD COLUMN due_amount_observed_at INTEGER")
+        }
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS credit_card_payments (
+                payment_key TEXT PRIMARY KEY NOT NULL,
+                institution_name TEXT NOT NULL,
+                card_last_four TEXT NOT NULL,
+                amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+                received_at INTEGER NOT NULL CHECK(received_at > 0),
+                unreferenced_message_hash TEXT,
+                bill_id INTEGER REFERENCES credit_card_bills(id) ON DELETE SET NULL,
+                dismissed INTEGER NOT NULL DEFAULT 0 CHECK(dismissed IN (0, 1)),
+                CHECK(bill_id IS NULL OR dismissed = 0)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_card_payment_bill ON credit_card_payments(bill_id)")
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_card_payment_message ON " +
+                "credit_card_payments(unreferenced_message_hash, received_at)",
+        )
+    }
+
+    private fun createCreditCardBillsTable(db: SQLiteDatabase) {
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS credit_card_bills (
@@ -5324,6 +5516,11 @@ class PaisaLensDatabase(context: Context) :
             "CREATE INDEX IF NOT EXISTS index_credit_card_bills_card_history " +
                 "ON credit_card_bills(card_identity_key, due_date_epoch_day DESC)",
         )
+    }
+
+    private fun createV10Tables(db: SQLiteDatabase) {
+        createSmsIntelligenceTables(db)
+        createCreditCardBillsTable(db)
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS advanced_budget_plans (
@@ -6619,6 +6816,7 @@ class PaisaLensDatabase(context: Context) :
         if (!preserveSmsCoverageMessages) db.delete("sms_coverage_messages", null, null)
         db.delete("sms_coverage_rules", null, null)
         db.delete("transaction_sms_sources", null, null)
+        db.delete("credit_card_payments", null, null)
         db.delete("credit_card_bills", null, null)
         db.delete("advanced_budget_plans", null, null)
         db.delete("expense_splits", null, null)
@@ -6731,7 +6929,10 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 13
+        const val DATABASE_VERSION = 14
+        private const val UNREFERENCED_PAYMENT_DUPLICATE_WINDOW_MILLIS = 24L * 60L * 60L * 1000L
+        private val PAYMENT_HASH = Regex("[a-f0-9]{64}")
+        private val CARD_PAYMENT_SUFFIX = Regex("[0-9]{4}")
         const val TAG_SEPARATOR = "\u001F"
         const val SMS_RULE_PHRASE_SEPARATOR = "\u001E"
         const val PAYMENT_REMINDER_RESTORE_LOOKBACK_MILLIS = 31L * 24L * 60L * 60L * 1_000L

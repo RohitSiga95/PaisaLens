@@ -12,8 +12,8 @@ android {
         applicationId = "com.paisalens.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "1.8.7"
+        versionCode = 14
+        versionName = "1.8.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import com.paisalens.app.data.local.PaisaLensDatabase
 import com.paisalens.app.data.model.PaymentReminderAlert
+import com.paisalens.app.data.model.PaymentReminderNotificationStyle
 import com.paisalens.app.data.model.PaymentReminderOccurrence
 import com.paisalens.app.data.model.PaymentReminderRule
 import com.paisalens.app.data.model.PaymentReminderSettings
@@ -20,6 +21,23 @@ import java.time.ZonedDateTime
 
 object PaymentReminderScheduler {
     fun ensure(context: Context) = sync(context)
+
+    internal fun previewNextDelivery(
+        context: Context,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): PaymentReminderDeliveryPreview? {
+        val runtime = loadPaymentReminderRuntime(context, nowMillis, reconcile = false)
+        if (runtime.occurrences.isEmpty()) return null
+        return selectNextPaymentReminderAlarm(
+            rules = runtime.rules,
+            occurrences = runtime.occurrences,
+            settings = runtime.settings,
+            deliveredKeys = runtime.deliveredKeys,
+            nowMillis = nowMillis,
+            lastSummaryEpochDay = lastSummaryEpochDay(context),
+            zoneId = ZoneId.systemDefault(),
+        )?.deliveryPreview
+    }
 
     /** Reconciles one battery-friendly inexact alarm against the persisted source-of-truth. */
     @Synchronized
@@ -274,6 +292,14 @@ internal data class PaymentReminderAlarmPlan(
     val alarmAtMillis: Long,
     val logicalKey: String,
     val includesSummary: Boolean,
+    val deliveryPreview: PaymentReminderDeliveryPreview? = null,
+)
+
+internal data class PaymentReminderDeliveryPreview(
+    val scheduledAtMillis: Long,
+    val style: PaymentReminderNotificationStyle,
+    val vibrate: Boolean,
+    val isSummary: Boolean = false,
 )
 
 internal fun isUnexpiredPaymentReminderClaim(
@@ -296,6 +322,7 @@ internal data class PaymentReminderRuntime(
 internal fun loadPaymentReminderRuntime(
     context: Context,
     nowMillis: Long,
+    reconcile: Boolean = true,
 ): PaymentReminderRuntime {
     val database = PaisaLensDatabase(context.applicationContext)
     return try {
@@ -315,19 +342,21 @@ internal fun loadPaymentReminderRuntime(
             systemZone = zone,
         )
         var occurrences = resolve(rules)
-        database.prunePaymentReminderDeliveries(nowMillis - DELIVERY_RETENTION_MILLIS)
+        if (reconcile) database.prunePaymentReminderDeliveries(nowMillis - DELIVERY_RETENTION_MILLIS)
         val deliveredKeys = database.getPaymentReminderDeliveryKeys()
-        val deliveredSnoozes = deliveredPaymentReminderSnoozeStates(rules, occurrences, deliveredKeys)
-        val consumedDeliveredSnooze = deliveredSnoozes.map { (rule, occurrence) ->
+        if (reconcile) {
+            val deliveredSnoozes = deliveredPaymentReminderSnoozeStates(rules, occurrences, deliveredKeys)
+            val consumedDeliveredSnooze = deliveredSnoozes.map { (rule, occurrence) ->
                 database.consumePaymentReminderSnooze(
                     ruleId = rule.id,
                     generation = rule.generation,
                     occurrenceEpochDay = occurrence.dueDateEpochDay,
                 )
             }.any { it }
-        if (consumedDeliveredSnooze) {
-            rules = database.getPaymentReminderRules()
-            occurrences = resolve(rules)
+            if (consumedDeliveredSnooze) {
+                rules = database.getPaymentReminderRules()
+                occurrences = resolve(rules)
+            }
         }
         PaymentReminderRuntime(
             rules = rules,
@@ -387,20 +416,26 @@ internal fun selectNextPaymentReminderAlarm(
     val chosen = listOfNotNull(nextAlertAt, summaryAt).minOrNull()
         ?: if (rules.any(PaymentReminderRule::enabled)) nowMillis + MAINTENANCE_INTERVAL_MILLIS else return null
     val includesSummary = summaryAt != null && summaryAt <= chosen + SIMULTANEOUS_WINDOW_MILLIS
+    val primaryAlert = if (chosen == nextAlertAt) {
+        if (missed.isNotEmpty()) missed.minByOrNull(PaymentReminderAlert::stableKey)
+        else pending.filter { it.scheduledAtMillis == nextAlertAt }.minByOrNull(PaymentReminderAlert::stableKey)
+    } else null
     val logicalKey = when {
-        missed.isNotEmpty() && chosen == nextAlertAt -> {
-            val identity = missed.minBy(PaymentReminderAlert::stableKey).stableKey
-            "catch-up:$identity:${missed.size}"
-        }
-        nextAlertAt != null && chosen == nextAlertAt -> {
-            val identity = pending.filter { it.scheduledAtMillis == nextAlertAt }
-                .minBy(PaymentReminderAlert::stableKey).stableKey
-            "alert:$identity"
-        }
+        primaryAlert != null && missed.isNotEmpty() -> "catch-up:${primaryAlert.stableKey}:${missed.size}"
+        primaryAlert != null -> "alert:${primaryAlert.stableKey}"
         includesSummary -> "summary:${summary?.toLocalDate()?.toEpochDay()}"
         else -> "maintenance:${Instant.ofEpochMilli(chosen).atZone(zoneId).toLocalDate()}"
     }
-    return PaymentReminderAlarmPlan(chosen, logicalKey, includesSummary)
+    val deliveryPreview = when {
+        primaryAlert != null -> PaymentReminderDeliveryPreview(
+            chosen, primaryAlert.occurrence.notificationStyle, primaryAlert.occurrence.vibrate,
+        )
+        includesSummary -> PaymentReminderDeliveryPreview(
+            chosen, PaymentReminderNotificationStyle.SILENT, vibrate = false, isSummary = true,
+        )
+        else -> null
+    }
+    return PaymentReminderAlarmPlan(chosen, logicalKey, includesSummary, deliveryPreview)
 }
 
 internal fun duePaymentReminderAlertGroups(

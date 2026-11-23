@@ -95,6 +95,7 @@ import com.paisalens.app.data.model.HomeMoneyTimeline
 import com.paisalens.app.data.model.HomeModule
 import com.paisalens.app.data.model.HomeTimelineItem
 import com.paisalens.app.data.model.HomeTimelineSource
+import com.paisalens.app.data.model.buildHomeDailyCheckIn
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.AttentionItem
 import com.paisalens.app.data.model.AttentionPriority
@@ -136,6 +137,7 @@ import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -188,6 +190,8 @@ fun HomeScreen(
     paymentCommitments: List<PaymentCommitment>,
     needsAttention: NeedsAttentionSummary,
     lastScanAt: Long,
+    previousHomeVisitAt: Long?,
+    paymentReviewCount: Int,
     privacyModeActive: Boolean,
     isScanning: Boolean,
     hasSmsPermission: Boolean,
@@ -200,6 +204,7 @@ fun HomeScreen(
     onOpenBudgets: () -> Unit,
     onOpenBills: () -> Unit,
     onOpenCreditCardBills: () -> Unit,
+    onReviewTransactions: () -> Unit,
     onOpenWeeklyReview: () -> Unit,
     onTogglePrivacy: () -> Unit,
     onAttentionAction: (AttentionItem) -> Unit,
@@ -303,6 +308,16 @@ fun HomeScreen(
         )
     }
     val normalizedHomeLayout = homeLayout.normalized()
+    val checkIn = remember(previousHomeVisitAt, now, transactions, effectiveExpenseTransactions, dashboardSnapshot.timeline, paymentReviewCount) {
+        buildHomeDailyCheckIn(
+            previousHomeVisitAt = previousHomeVisitAt,
+            now = now,
+            transactions = transactions,
+            effectiveExpenses = effectiveExpenseTransactions,
+            timeline = dashboardSnapshot.timeline,
+            paymentReviewCount = paymentReviewCount,
+        )
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -323,6 +338,21 @@ fun HomeScreen(
                 now = now,
                 privacyModeActive = privacyModeActive,
                 onTogglePrivacy = onTogglePrivacy,
+            )
+        }
+        item(key = "daily_check_in") {
+            HomeDailyCheckInCard(
+                checkIn = checkIn,
+                onOpenTransaction = onTransactionClick,
+                onOpenDueBill = { bill ->
+                    when (bill.source) {
+                        HomeTimelineSource.CREDIT_CARD_BILL -> onOpenCreditCardBills()
+                        HomeTimelineSource.PAYMENT_COMMITMENT -> onOpenCommitments()
+                        else -> onOpenBills()
+                    }
+                },
+                onReviewTransactions = onReviewTransactions,
+                onReviewCardPayments = onOpenCreditCardBills,
             )
         }
         normalizedHomeLayout.orderedVisibleModules.forEach { module ->
@@ -847,6 +877,14 @@ private fun FinancialPulseHomeModule(
                         style = MaterialTheme.typography.displayMedium,
                         color = foreground,
                     )
+                    if (metric == HomeHeroMetric.SAFE_TO_SPEND) {
+                        pulse.oldestBalanceAt?.let { at ->
+                            val timestamp = Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault())
+                                .format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT))
+                            val label = if (pulse.availableBalanceCount > 1) "Oldest balance snapshot" else "Balance snapshot"
+                            Text("$label · $timestamp", style = MaterialTheme.typography.bodySmall, color = foreground)
+                        }
+                    }
                 }
                 Spacer(Modifier.height(if (density == HomeDashboardDensity.COMPACT) 14.dp else 18.dp))
                 PulseMetricRow(
