@@ -49,6 +49,7 @@ import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionLinkSuggestion
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.UtilitySmsBill
 import com.paisalens.app.data.model.sanitizeTags
 import com.paisalens.app.data.model.normalizedCurrency
 import com.paisalens.app.data.export.PaisaLensWorkbookExporter
@@ -81,6 +82,7 @@ class PaisaLensViewModel(
     val accounts = app.repository.accounts
     val balanceHistory = app.repository.balanceHistory
     val bills = app.repository.bills
+    val utilitySmsBills = app.repository.utilitySmsBills
     val creditCardBills = app.repository.creditCardBills
     val creditCardPaymentSuggestions = app.repository.creditCardPaymentSuggestions
     val smsCoverageMessages = app.repository.smsCoverageMessages
@@ -664,6 +666,7 @@ class PaisaLensViewModel(
                         coverageCandidates = scan.coverageCandidates,
                         creditCardBills = scan.creditCardBills,
                         creditCardPayments = scan.creditCardPayments,
+                        utilityBills = scan.utilityBills,
                     )
                 }.onSuccess { result ->
                     val now = System.currentTimeMillis()
@@ -673,7 +676,7 @@ class PaisaLensViewModel(
                         when {
                             result.insertedTransactions > 0 || result.mergedDuplicateTransactions > 0 ||
                                 result.coverageMessagesAdded > 0 || result.updatedCreditCardBills > 0 ||
-                                result.addedCreditCardPayments > 0 -> {
+                                result.addedCreditCardPayments > 0 || result.updatedUtilityBills > 0 -> {
                                 buildList {
                                     if (result.insertedTransactions > 0) {
                                         add("${result.insertedTransactions} new transaction${if (result.insertedTransactions == 1) "" else "s"}")
@@ -689,6 +692,9 @@ class PaisaLensViewModel(
                                     }
                                     if (result.addedCreditCardPayments > 0) {
                                         add("card payment SMS processed")
+                                    }
+                                    if (result.updatedUtilityBills > 0) {
+                                        add("utility bills updated")
                                     }
                                     if (result.updatedAccounts > 0) {
                                         add("balances updated")
@@ -882,7 +888,7 @@ class PaisaLensViewModel(
             }.onSuccess { result ->
                 val message = when {
                     result.currentBalanceUpdated -> "Bank balance updated"
-                    result.snapshotRecorded -> "Balance saved to history; a newer balance remains current"
+                    result.snapshotRecorded -> "Balance saved to history. The displayed balance is unchanged."
                     else -> "That balance is already recorded"
                 }
                 _events.emit(message)
@@ -907,6 +913,23 @@ class PaisaLensViewModel(
             runCatching { app.repository.saveBill(bill) }
                 .onSuccess { _events.emit("Bill reminder saved") }
                 .onFailure { _events.emit(it.message ?: "Could not save bill reminder") }
+        }
+    }
+
+    fun trackUtilitySmsBill(bill: UtilitySmsBill, onComplete: (Long?) -> Unit) {
+        viewModelScope.launch {
+            val id = runCatching { app.repository.trackUtilitySmsBill(bill) }
+                .onFailure { _events.emit("Could not add the utility bill") }
+                .onSuccess { if (it == null) _events.emit("Bill changed. Review the latest notice and try again.") }
+                .getOrNull()
+            onComplete(id)
+        }
+    }
+
+    fun dismissUtilitySmsBill(id: Long) {
+        viewModelScope.launch {
+            runCatching { app.repository.dismissUtilitySmsBill(id) }
+                .onFailure { _events.emit("Could not dismiss the utility bill") }
         }
     }
 

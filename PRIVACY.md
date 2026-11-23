@@ -1,6 +1,6 @@
 # PaisaLens Privacy Notice
 
-Last updated: 26 August 2026
+Last updated: 23 November 2026
 
 PaisaLens is designed to analyze and track personal expenses entirely on the Android device where it is installed.
 
@@ -9,6 +9,8 @@ PaisaLens is designed to analyze and track personal expenses entirely on the And
 If the user grants SMS permission, PaisaLens reads SMS messages to identify bank, credit-card, wallet, and UPI transaction alerts, bank-balance snapshots, available-credit values, total credit limits, card statements, and supported card payment acknowledgements. It ignores messages recognized as OTPs, verification codes and payment requests.
 
 Card payment matching keeps the issuer, card's last four digits, amount, SMS timestamp, hashed duplicate identifiers, and match status on the device. The match record contains no SMS text. Applying it to a statement requires confirmation in PaisaLens. Home's daily check-in stores the last Home visit timestamp in app-private preferences.
+
+For supported electricity, broadband, and mobile postpaid bills, PaisaLens stores the provider, amount, due date, SMS timestamp, masked service suffix where available, and hashed identifiers to recognize repeat notices. It does not store the full utility SMS, full service account number, or payment link in the bill record. A detected utility bill does not create a transaction or enable a reminder without your action.
 
 SMS permission is optional. Manual transaction tracking works without it.
 
@@ -60,6 +62,8 @@ Android may deliver an inexact digest near the selected hour to protect battery 
 ## Bill-payment reminders
 
 If the user explicitly enables a reminder for a saved utility bill or detected credit-card statement, PaisaLens schedules battery-conscious, inexact Android alerts from data already on the device. The user can choose multiple advance days, a local wall-clock time and timezone, snooze options, overdue repeats, quiet hours, an optional daily summary, priority, vibration, and whether the private notification may include the amount. Prominent reminders use Android's normal notification behavior; PaisaLens does not request exact-alarm access or display intrusive full-screen alarms.
+
+Encrypted backups include structured utility notices and their review status, including dismissals, so an inbox rescan after restore can recognize a bill already reviewed. The backups do not include utility SMS bodies.
 
 Reminder notification actions are restricted to opening PaisaLens's bill-reminder centre or snoozing the alert for a configured interval. They never mark a bill paid, initiate a payment, open an arbitrary link, or send data to another app. A paid, edited, skipped, or deleted bill invalidates stale scheduled work, and a small local delivery history suppresses duplicate alerts. The test reminder posts a sample without bill details or changes to saved schedules. Android ultimately controls notification permission, channel importance, lock-screen presentation, battery delays, and whether a heads-up notification appears. No server, cloud scheduler, account API, or network request is used.
 

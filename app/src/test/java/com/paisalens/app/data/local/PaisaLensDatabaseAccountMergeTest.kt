@@ -2,6 +2,7 @@ package com.paisalens.app.data.local
 
 import android.content.Context
 import com.paisalens.app.data.backup.PaisaLensBackupCodec
+import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountMergeError
 import com.paisalens.app.data.model.AccountMergeResult
 import com.paisalens.app.data.model.AccountProfile
@@ -29,6 +30,7 @@ import com.paisalens.app.data.model.buildNeedsAttentionSummary
 import com.paisalens.app.data.model.currentCreditCardBills
 import com.paisalens.app.data.model.deduplicatedPaymentCommitments
 import com.paisalens.app.data.model.detectRecurringPayments
+import com.paisalens.app.sms.AccountAvailabilitySmsParser
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
@@ -61,6 +63,69 @@ class PaisaLensDatabaseAccountMergeTest {
     fun tearDown() {
         database.close()
         context.deleteDatabase(DATABASE_NAME)
+    }
+
+    @Test
+    fun sameBankAndSuffixCollapseToOneProfileShowingTheLatestSmsBalance() {
+        val custom = database.addAccount("HDFC daily spending", AccountType.BANK_ACCOUNT, "0987")
+        database.insertAll(listOf(bankTransaction("legacy", "0987", "VM-HDFCBK", 1_000) to byteArrayOf(1)))
+        val legacy = database.addAccount("HDFC Bank •0987", AccountType.BANK_ACCOUNT, "0987")
+        val sameSuffixOtherBank = database.addAccount("SBI savings", AccountType.BANK_ACCOUNT, "0987")
+        val original = database.snapshot()
+        database.restore(original.copy(
+            transactions = original.transactions.map { it.copy(accountId = legacy) },
+            balanceHistory = listOf(
+                AccountBalanceSnapshot(1, custom, 110_000L, null, null, 2_000L, "VM-HDFCBK"),
+                AccountBalanceSnapshot(2, legacy, 240_000L, null, null, 3_000L, "AX-HDFCBK"),
+            ),
+        ))
+        database.recordUserEnteredUpiBalance(custom, 999_999, 5_000)
+        database.consolidateDuplicateBankAccounts()
+        database.consolidateDuplicateBankAccounts()
+
+        val accounts = database.getAccounts()
+        assertEquals(setOf(custom, sameSuffixOtherBank), accounts.mapTo(hashSetOf(), AccountProfile::id))
+        val visible = accounts.single { it.id == custom }
+        assertEquals("HDFC daily spending", visible.name)
+        assertEquals("0987", visible.accountHint)
+        assertEquals(2, visible.mergedMemberCount)
+        assertEquals(240_000L, visible.balanceMinor)
+        assertEquals(3_000L, visible.availabilityFetchedAt)
+        assertEquals("AX-HDFCBK", visible.availabilitySender)
+        assertEquals(custom, database.getTransactions().single().accountId)
+        assertEquals(setOf(custom), database.getBalanceHistory(legacy).mapTo(hashSetOf(), AccountBalanceSnapshot::accountId))
+
+        val sms = AccountAvailabilitySmsParser()
+        val newest = requireNotNull(sms.parse("VM-HDFCBK", "A/c XX0987. Available balance INR 2,300.", 4_000))
+        val stale = requireNotNull(sms.parse("VM-HDFCBK", "A/c XX0987. Available balance INR 3,500.", 2_500))
+        database.applyAccountAvailability(listOf(newest))
+        database.applyAccountAvailability(listOf(stale))
+        assertEquals(230_000L, database.getAccounts().single { it.id == custom }.balanceMinor)
+        database.updateAccountProfile(visible.copy(name = "Everyday"))
+        database.insertAll(listOf(bankTransaction("new", "0987", "AX-HDFCBK", 6_000) to byteArrayOf(2)))
+        assertTrue(database.getTransactions().all { it.accountId == custom && it.accountName == "Everyday" })
+        assertEquals(230_000L, database.getAccounts().single { it.id == custom }.balanceMinor)
+    }
+
+    @Test
+    fun explicitBalanceSuffixNeverFallsBackToAnotherAccountAtTheSameBank() {
+        val sms = AccountAvailabilitySmsParser()
+        fun ingest(body: String, at: Long) {
+            database.applyAccountAvailability(listOf(requireNotNull(sms.parse("VM-HDFCBK", body, at))))
+        }
+        ingest("Available balance for account XX8001 is INR 1,000.", 1_000)
+        val matchingAlias = database.addAccount("HDFC Savings", AccountType.BANK_ACCOUNT, "8001")
+        database.consolidateDuplicateBankAccounts()
+        ingest("Available balance INR 1,500.", 2_000)
+        assertEquals(matchingAlias, database.getAccounts().single().id)
+        assertEquals(150_000L, database.getAccounts().single().balanceMinor)
+
+        ingest("Available balance for account XX8002 is INR 2,500.", 3_000)
+        ingest("Available balance INR 9,000.", 4_000)
+        assertEquals(
+            mapOf("8001" to 150_000L, "8002" to 250_000L),
+            database.getAccounts().associate { it.accountHint to it.balanceMinor },
+        )
     }
 
     @Test

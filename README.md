@@ -3,22 +3,22 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8"><img alt="Release v1.8.8" src="https://img.shields.io/badge/release-v1.8.8-5965E8?style=for-the-badge"></a>
-  <img alt="Source v1.8.8" src="https://img.shields.io/badge/source-v1.8.8-1E88E5?style=for-the-badge">
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9"><img alt="Release v1.8.9" src="https://img.shields.io/badge/release-v1.8.9-5965E8?style=for-the-badge"></a>
+  <img alt="Source v1.8.9" src="https://img.shields.io/badge/source-v1.8.9-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
   <img alt="Private by design" src="https://img.shields.io/badge/network-rate_refresh_only-0A4E3C?style=for-the-badge&logo=shield&logoColor=white">
 </p>
 
 <p align="center">
-  A private Android expense tracker for Indian bank, credit-card, wallet and UPI alerts.<br>
+  A private Android expense tracker for Indian bank, credit-card, wallet, UPI, and utility bill alerts.<br>
   Your SMS and financial data are processed entirely on your phone.
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.8/PaisaLens-v1.8.8-debug.apk"><strong>⬇ Download PaisaLens v1.8.8 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9/PaisaLens-v1.8.9-debug.apk"><strong>⬇ Download PaisaLens v1.8.9 APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -26,7 +26,16 @@
 > [!IMPORTANT]
 > The downloadable file is the current **debug APK** for direct installation and testing. Android may ask you to allow installation from your browser or file manager. Requires Android 8.0 (API 26) or newer.
 
-## What's new in v1.8.8
+## What's new in v1.8.9
+
+| | Update | Highlights |
+|---|---|---|
+| 🧾 | **Utility bills from SMS** | Find supported electricity, broadband, and mobile postpaid bills in **Plan → Bills & dues**. See the amount and due date, review repeat notices together, and set a reminder. |
+| 🏦 | **One balance per bank account** | Duplicate profiles from the same bank with the same last four digits use the latest SMS balance. Transaction and balance history are preserved. |
+| ⚡ | **Android app shortcuts** | Press and hold the PaisaLens icon to add an expense, sync SMS, open Bills & dues, or open Reminders. |
+
+<details>
+<summary><strong>Earlier v1.8 updates</strong></summary>
 
 | | Update | Highlights |
 |---|---|---|
@@ -34,12 +43,6 @@
 | 🏠 | **Home daily check-in** | See spending since your last visit, bills due in the next seven days, and items to review. Tap each row to see the details. |
 | 🔔 | **Test bill reminders** | See the next planned alert and its Android notification channel in reminder settings. Send a sample to check delivery. |
 | 📝 | **Financial form scrolling** | Subscription, AutoPay, savings, split expense, and reminder editors keep drafts open while you scroll. The form fits above the keyboard and confirms before discarding edits. |
-
-<details>
-<summary><strong>Earlier v1.8 updates</strong></summary>
-
-| | Update | Highlights |
-|---|---|---|
 | ⏰ | **Custom bill-payment reminders & widget** | Create one-time or recurring reminders for detected credit-card statements and saved utility, EMI, subscription or other bills. Configure multiple advance alerts, local time and timezone, overdue repeats, snooze choices, skip-next, priority, quiet hours, a daily summary and private amount visibility; then keep upcoming bills visible in a responsive Android widget. |
 | 🧹 | **Reliable duplicate-SMS cleanup** | Live receiver and inbox-rescan copies now consolidate into one Activity row with a `×N` source count. A resync repairs existing timestamp-offset copies while exact identity, backup, restore, and undo safeguards keep genuine repeat purchases separate. |
 | 🏦 | **Account and card groups** | Merge two or more bank accounts—or two or more credit cards—under a custom name. Transactions keep their original source identity for future SMS matching while appearing together throughout the app. |
@@ -72,7 +75,7 @@
 </table>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8"><strong>Read the complete v1.8.8 release notes →</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9"><strong>Read the complete v1.8.9 release notes →</strong></a>
 </p>
 
 ## See PaisaLens in action
@@ -97,6 +100,7 @@
 | | Feature | What it does |
 |---|---|---|
 | 🔎 | **Local SMS detection** | Finds debits, credits, refunds, card purchases, ATM withdrawals, UPI and wallet alerts without uploading messages; a deliberate pull down on any main screen resyncs the inbox. |
+| ⚡ | **Android app shortcuts** | Press and hold the PaisaLens icon for **Add expense**, **Sync SMS**, **Bills & dues**, or **Reminders**. On supported launchers, you can also drag a shortcut onto your home screen. |
 | 🏷️ | **Merchant category rules** | Groups matching merchants, shows their spending history and trend, asks you once for the category, updates their existing expenses and remembers the answer. |
 | 📝 | **Expense notes** | Adds a specific note to a deducted transaction and shows it beneath the item in recent activity and search results. |
 | 📊 | **Focused Home dashboard** | Moves month by month with arrow navigation and updates the spend summary, overview, category breakdown, daily chart, and expense list together. |
@@ -107,7 +111,8 @@
 | 🎯 | **Budgeting 2.0** | Supports calendar-month or payday periods, annual and irregular-event plans, positive/full rollover, custom warning thresholds, and custom categories. |
 | 📗 | **Beautiful Excel export** | Creates a categorized, link-aware workbook with recorded and analysis amounts, trends, budgets, dashboard cards and native charts. |
 | 🏦 | **Named accounts & cards** | Renames bank accounts and credit cards once, keeps that name across existing and future matching SMS, tags alerts from HDFC, IDFC, SBI, SIB and other recognized institutions, and supports multi-select bank/card filters in Activity. |
-| 💳 | **Balances & available credit** | Reads supported SMS balance alerts, combines duplicate profiles by account last-four digits, and lets you open an installed UPI app, check the balance there, then save the amount locally as a clearly labelled user-entered snapshot. |
+| 💳 | **Balances & available credit** | Combines duplicate bank profiles with the same bank and last four digits and shows the latest SMS balance once. A balance you enter after checking a UPI app is saved to history. |
+| 🧾 | **Utility bills from SMS** | Finds the amount and due date on supported electricity, broadband, and mobile postpaid notices. Repeat notices for the same bill appear together in **Plan → Bills & dues**, where you can review the bill and set a reminder. |
 | 🔁 | **Recurring payments** | Detects consistent weekly and monthly expenses and estimates the next due date. |
 | 👥 | **Split expenses & reimbursements** | Splits by exact amount or percentage across named participants, tracks partial repayments, links incoming reimbursements without double-counting, and summarizes shared spending by category. |
 | 🐷 | **Savings goals & sinking funds** | Tracks targets, money already saved, dated contributions, progress, remaining amount, and the monthly pace needed to reach an optional target date. |
@@ -187,17 +192,17 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.8.8-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.8/PaisaLens-v1.8.8-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.8.9-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9/PaisaLens-v1.8.9-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.8.8 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.8).
+You can also browse the [v1.8.9 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9).
 
 **APK SHA-256**
 
 ```text
-a017ca47b77f8bbc67a897ce554d6eabcc1e47e3f75c5463368bd761437c545e
+641236ac3e66e5ea49e9fd0d4f6e386465bd0f692b14091db21af510e8e387c7
 ```
 
 ## Build it yourself
@@ -208,7 +213,7 @@ Requirements: JDK 17, Android SDK Platform 36 and Android SDK Build Tools 35 or 
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The generated v1.8.8 APK will be available at:
+The generated APK will be available at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk

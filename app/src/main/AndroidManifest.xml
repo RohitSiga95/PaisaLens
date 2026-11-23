@@ -46,7 +46,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/launcher_shortcuts" />
         </activity>
+
+        <!-- Static shortcuts clear their target task. Give the invisible entry point its own task. -->
+        <activity
+            android:name=".LauncherShortcutActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -64,6 +64,7 @@ class MainActivity : FragmentActivity() {
     private var isUnlocked by mutableStateOf(true)
     private var widgetDestination by mutableStateOf<String?>(null)
     private var alertDestination by mutableStateOf<AlertDestination?>(null)
+    private var launcherShortcutRequest by mutableStateOf<LauncherShortcutRequest?>(null)
     private var authPromptVisible = false
     private var authenticationPurpose = AuthenticationPurpose.UNLOCK
 
@@ -179,6 +180,9 @@ class MainActivity : FragmentActivity() {
         widgetDestination = intent?.getStringExtra(WIDGET_DESTINATION_EXTRA)
         alertDestination = intent?.takeIf { it.hasExtra(ActionableAlertNotifier.EXTRA_DESTINATION) }
             ?.let(ActionableAlertNotifier::requestedDestination)
+        launcherShortcutRequest = LauncherShortcutActivity.takePendingRequest(intent)
+            ?: LauncherShortcut.fromAction(savedInstanceState?.getString(STATE_PENDING_LAUNCHER_SHORTCUT))
+                ?.let(::LauncherShortcutRequest)
         isUnlocked = !(application as PaisaLensApplication).preferences.appLockEnabled
 
         setContent {
@@ -201,6 +205,10 @@ class MainActivity : FragmentActivity() {
                     onAlertDestinationHandled = {
                         alertDestination = null
                         intent?.removeExtra(ActionableAlertNotifier.EXTRA_DESTINATION)
+                    },
+                    launcherShortcutRequest = launcherShortcutRequest,
+                    onLauncherShortcutHandled = { handled ->
+                        if (launcherShortcutRequest === handled) launcherShortcutRequest = null
                     },
                     hasSmsPermission = hasSmsPermission,
                     hasNotificationPermission = hasNotificationPermission,
@@ -305,11 +313,15 @@ class MainActivity : FragmentActivity() {
         widgetDestination = intent.getStringExtra(WIDGET_DESTINATION_EXTRA)
         alertDestination = intent.takeIf { it.hasExtra(ActionableAlertNotifier.EXTRA_DESTINATION) }
             ?.let(ActionableAlertNotifier::requestedDestination)
+        LauncherShortcutActivity.takePendingRequest(intent)?.let { launcherShortcutRequest = it }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         pendingNotificationPurpose?.let {
             outState.putString(STATE_PENDING_NOTIFICATION_PURPOSE, it.name)
+        }
+        launcherShortcutRequest?.let {
+            outState.putString(STATE_PENDING_LAUNCHER_SHORTCUT, it.shortcut.action)
         }
         super.onSaveInstanceState(outState)
     }
@@ -543,6 +555,7 @@ class MainActivity : FragmentActivity() {
 
     private companion object {
         const val STATE_PENDING_NOTIFICATION_PURPOSE = "pending_notification_purpose"
+        const val STATE_PENDING_LAUNCHER_SHORTCUT = "pending_launcher_shortcut"
 
         val SUPPORTED_UPI_APPS = listOf(
             UpiAppChoice("in.org.npci.upiapp", "BHIM"),

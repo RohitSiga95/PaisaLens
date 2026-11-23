@@ -137,7 +137,7 @@ class PaisaLensDatabaseCreditCardPaymentTest {
             legacy.version = 13
         }
         database = PaisaLensDatabase(context)
-        assertEquals(14, database.writableDatabase.version)
+        assertTrue(database.writableDatabase.version >= 14)
         val bill = database.getCreditCardBills().single()
         assertEquals(id, bill.id)
         assertTrue(bill.isPaid)

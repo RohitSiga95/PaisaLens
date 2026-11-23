@@ -29,6 +29,11 @@ class TransactionSmsReceiver : BroadcastReceiver() {
 
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
+                val utilityBill = UtilityBillSmsParser.parse(sender, body, timestamp)
+                if (utilityBill != null) {
+                    app.repository.ingestSms(emptyList(), emptyList(), utilityBills = listOf(utilityBill))
+                    return@launch
+                }
                 val creditCardPayment = CreditCardPaymentSmsParser.parse(sender, body, timestamp)
                 // A manifest receiver can cold-start the process before the ViewModel has loaded
                 // repository flows, so read durable rules before parsing this live message.

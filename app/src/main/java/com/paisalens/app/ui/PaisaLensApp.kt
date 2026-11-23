@@ -131,6 +131,8 @@ import com.paisalens.app.data.model.findUncategorizedMerchantGroups
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.suggestReconciliationStatus
 import com.paisalens.app.data.importer.CreditCardStatementAuditor
+import com.paisalens.app.LauncherShortcut
+import com.paisalens.app.LauncherShortcutRequest
 import com.paisalens.app.data.backup.takeScheduledBackupDestinationPermission
 import com.paisalens.app.notification.AlertDestination
 import com.paisalens.app.widget.WIDGET_DESTINATION_CARD_BILLS
@@ -209,13 +211,15 @@ private enum class AppDestination(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PaisaLensApp(
+internal fun PaisaLensApp(
     viewModel: PaisaLensViewModel,
     foregroundVisit: Int,
     initialWidgetDestination: String? = null,
     onWidgetDestinationHandled: () -> Unit = {},
     initialAlertDestination: AlertDestination? = null,
     onAlertDestinationHandled: () -> Unit = {},
+    launcherShortcutRequest: LauncherShortcutRequest? = null,
+    onLauncherShortcutHandled: (LauncherShortcutRequest) -> Unit = {},
     hasSmsPermission: Boolean,
     hasNotificationPermission: Boolean,
     hasActionableAlertPermission: Boolean,
@@ -257,6 +261,7 @@ fun PaisaLensApp(
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
     val balanceHistory by viewModel.balanceHistory.collectAsStateWithLifecycle()
     val bills by viewModel.bills.collectAsStateWithLifecycle()
+    val utilitySmsBills by viewModel.utilitySmsBills.collectAsStateWithLifecycle()
     val creditCardBills by viewModel.creditCardBills.collectAsStateWithLifecycle()
     val creditCardPaymentSuggestions by viewModel.creditCardPaymentSuggestions.collectAsStateWithLifecycle()
     val smsCoverageMessages by viewModel.smsCoverageMessages.collectAsStateWithLifecycle()
@@ -365,9 +370,11 @@ fun PaisaLensApp(
         activityNavigationRequest += 1
         destination = AppDestination.ACTIVITY
     }
-    LaunchedEffect(destination, foregroundVisit, onboardingComplete, initialWidgetDestination, initialAlertDestination) {
+    LaunchedEffect(
+        destination, foregroundVisit, onboardingComplete, initialWidgetDestination, initialAlertDestination, launcherShortcutRequest,
+    ) {
         if (destination == AppDestination.HOME && onboardingComplete &&
-            initialWidgetDestination == null && initialAlertDestination == null
+            initialWidgetDestination == null && initialAlertDestination == null && launcherShortcutRequest == null
         ) {
             viewModel.recordHomeVisit(foregroundVisit)
         }
@@ -438,6 +445,21 @@ fun PaisaLensApp(
             SmsResyncAction.REQUEST_PERMISSION -> onRequestSmsPermission()
             SmsResyncAction.IGNORE_WHILE_SCANNING -> Unit
         }
+    }
+    LaunchedEffect(launcherShortcutRequest, onboardingComplete) {
+        val request = launcherShortcutRequest ?: return@LaunchedEffect
+        if (!onboardingComplete) {
+            // Onboarding already lets the user grant SMS access and scan, or opt for manual mode.
+            if (request.shortcut == LauncherShortcut.SYNC_SMS) onLauncherShortcutHandled(request)
+            return@LaunchedEffect
+        }
+        when (request.shortcut) {
+            LauncherShortcut.ADD_EXPENSE -> showManualSheet = true
+            LauncherShortcut.SYNC_SMS -> requestSmsResync()
+            LauncherShortcut.BILLS_AND_DUES -> openPlanSection(PlanSection.BILLS)
+            LauncherShortcut.REMINDERS -> openPlanSection(PlanSection.REMINDERS)
+        }
+        onLauncherShortcutHandled(request)
     }
     val systemInDarkTheme = isSystemInDarkTheme()
     val reviewDate = rememberCurrentReviewDate()
@@ -774,6 +796,9 @@ fun PaisaLensApp(
                                 onConfirmCreditCardPayment = viewModel::confirmCreditCardPayment,
                                 onDismissCreditCardPayment = viewModel::dismissCreditCardPayment,
                                 onRemoveCreditCardPaymentMatch = viewModel::removeCreditCardPaymentMatch,
+                                utilitySmsBills = utilitySmsBills,
+                                onTrackUtilitySmsBill = viewModel::trackUtilitySmsBill,
+                                onDismissUtilitySmsBill = viewModel::dismissUtilitySmsBill,
                             )
                         }
                         AppDestination.INSIGHTS -> key(insightNavigationRequest) {

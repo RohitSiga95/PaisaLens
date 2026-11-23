@@ -56,6 +56,8 @@ import com.paisalens.app.data.model.TransactionLinkType
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.TransactionSmsSource
+import com.paisalens.app.data.model.UtilityBillKind
+import com.paisalens.app.data.model.UtilitySmsBill
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -566,6 +568,28 @@ object PaisaLensBackupCodec {
                     data.writeBoolean(payment.dismissed)
                 }
             }
+            if (formatVersion >= 12) {
+                data.writeInt(snapshot.utilitySmsBills.size)
+                snapshot.utilitySmsBills.forEach { bill ->
+                    data.writeLong(bill.id)
+                    data.writeUTF(bill.kind.name)
+                    data.writeUTF(bill.providerKey)
+                    data.writeUTF(bill.providerName)
+                    data.writeNullable(bill.accountKey)
+                    data.writeNullable(bill.accountLastFour)
+                    data.writeNullable(bill.referenceKey)
+                    data.writeNullable(bill.billingPeriod)
+                    data.writeLong(bill.amountMinor)
+                    data.writeLong(bill.dueDateEpochDay)
+                    data.writeLong(bill.detectedAt)
+                    data.writeInt(bill.noticeKeys.size)
+                    bill.noticeKeys.sorted().forEach(data::writeUTF)
+                    data.writeInt(bill.earlierDueDates.size)
+                    bill.earlierDueDates.sorted().forEach(data::writeLong)
+                    data.writeNullableLong(bill.trackedBillId)
+                    data.writeBoolean(bill.dismissed)
+                }
+            }
         }
         return bytes.toByteArray()
     }
@@ -1022,6 +1046,29 @@ object PaisaLensBackupCodec {
             } else {
                 emptyList()
             }
+            val utilitySmsBills = if (formatVersion >= 12) {
+                List(data.readSafeCount()) {
+                    UtilitySmsBill(
+                        id = data.readLong(),
+                        kind = UtilityBillKind.valueOf(data.readUTF()),
+                        providerKey = data.readUTF(),
+                        providerName = data.readUTF(),
+                        accountKey = data.readNullable(),
+                        accountLastFour = data.readNullable(),
+                        referenceKey = data.readNullable(),
+                        billingPeriod = data.readNullable(),
+                        amountMinor = data.readLong(),
+                        dueDateEpochDay = data.readLong(),
+                        detectedAt = data.readLong(),
+                        noticeKeys = List(data.readSafeCount()) { data.readUTF() }.toSet(),
+                        earlierDueDates = List(data.readSafeCount()) { data.readLong() }.toSet(),
+                        trackedBillId = data.readNullableLong(),
+                        dismissed = data.readBoolean(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
             val paymentsByBill = creditCardPayments.filter { it.billId != null }.groupBy(CreditCardPayment::billId)
             require(data.available() == 0) { "Backup contains unexpected trailing data" }
             return PaisaLensBackupSnapshot(
@@ -1052,6 +1099,7 @@ object PaisaLensBackupCodec {
                 paymentReminderRules = paymentReminderRules,
                 paymentReminderSettings = paymentReminderSettings,
                 creditCardPayments = creditCardPayments,
+                utilitySmsBills = utilitySmsBills,
             )
         }
     }
@@ -1097,6 +1145,7 @@ object PaisaLensBackupCodec {
             }
             if (formatVersion >= 10) data.writeInt(metadata.paymentReminderRuleCount)
             if (formatVersion >= 11) data.writeInt(metadata.creditCardPaymentCount)
+            if (formatVersion >= 12) data.writeInt(metadata.utilitySmsBillCount)
             data.writeUTF(metadata.contentSha256)
         }
         return bytes.toByteArray()
@@ -1139,6 +1188,7 @@ object PaisaLensBackupCodec {
             creditCardBillCount = if (expectedFormatVersion >= 7) data.readSafeCount() else 0,
             paymentReminderRuleCount = if (expectedFormatVersion >= 10) data.readSafeCount() else 0,
             creditCardPaymentCount = if (expectedFormatVersion >= 11) data.readSafeCount() else 0,
+            utilitySmsBillCount = if (expectedFormatVersion >= 12) data.readSafeCount() else 0,
             contentSha256 = data.readUTF(),
         )
         require(data.available() == 0) { "Backup contains unexpected verification data" }
@@ -1209,6 +1259,9 @@ object PaisaLensBackupCodec {
         require(metadata.creditCardPaymentCount == snapshot.creditCardPayments.size) {
             "Backup card payment count does not match its contents"
         }
+        require(metadata.utilitySmsBillCount == snapshot.utilitySmsBills.size) {
+            "Backup utility bill count does not match its contents"
+        }
     }
 
     private fun buildMetadata(
@@ -1244,6 +1297,7 @@ object PaisaLensBackupCodec {
         creditCardBillCount = if (formatVersion >= 7) snapshot.creditCardBills.size else 0,
         paymentReminderRuleCount = if (formatVersion >= 10) snapshot.paymentReminderRules.size else 0,
         creditCardPaymentCount = if (formatVersion >= 11) snapshot.creditCardPayments.size else 0,
+        utilitySmsBillCount = if (formatVersion >= 12) snapshot.utilitySmsBills.size else 0,
         contentSha256 = sha256(snapshotPayload),
     )
 
@@ -1334,7 +1388,7 @@ object PaisaLensBackupCodec {
         }
     }
 
-    private const val FORMAT_VERSION = 11
+    private const val FORMAT_VERSION = 12
     private const val MIN_PASSPHRASE_LENGTH = 8
     private const val SALT_BYTES = 16
     private const val IV_BYTES = 12

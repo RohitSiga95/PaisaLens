@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="add_expense"
+        android:icon="@mipmap/shortcut_add_expense"
+        android:shortcutShortLabel="@string/shortcut_add_expense">
+        <intent
+            android:action="com.paisalens.app.shortcut.ADD_EXPENSE"
+            android:targetPackage="com.paisalens.app"
+            android:targetClass="com.paisalens.app.LauncherShortcutActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="sync_sms"
+        android:icon="@mipmap/shortcut_sync_sms"
+        android:shortcutShortLabel="@string/shortcut_sync_sms">
+        <intent
+            android:action="com.paisalens.app.shortcut.SYNC_SMS"
+            android:targetPackage="com.paisalens.app"
+            android:targetClass="com.paisalens.app.LauncherShortcutActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="bills_and_dues"
+        android:icon="@mipmap/shortcut_bills_and_dues"
+        android:shortcutShortLabel="@string/shortcut_bills_and_dues">
+        <intent
+            android:action="com.paisalens.app.shortcut.BILLS_AND_DUES"
+            android:targetPackage="com.paisalens.app"
+            android:targetClass="com.paisalens.app.LauncherShortcutActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="reminders"
+        android:icon="@mipmap/shortcut_reminders"
+        android:shortcutShortLabel="@string/shortcut_reminders">
+        <intent
+            android:action="com.paisalens.app.shortcut.REMINDERS"
+            android:targetPackage="com.paisalens.app"
+            android:targetClass="com.paisalens.app.LauncherShortcutActivity" />
+    </shortcut>
+</shortcuts>

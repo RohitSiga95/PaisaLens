@@ -27,6 +27,7 @@ import com.paisalens.app.data.model.CreditCardBillPaymentResult
 import com.paisalens.app.data.model.CreditCardBillStatus
 import com.paisalens.app.data.model.CreditCardPayment
 import com.paisalens.app.data.model.CreditCardPaymentSuggestion
+import com.paisalens.app.data.model.UtilitySmsBill
 import com.paisalens.app.data.model.suggestCreditCardPayments
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExchangeRate
@@ -68,7 +69,10 @@ import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.normalizedMerchantKey
 import com.paisalens.app.data.model.normalizedAccountMergeName
 import com.paisalens.app.data.model.canonicalAccountId
+import com.paisalens.app.data.model.bankAccountIdentity
 import com.paisalens.app.data.model.consolidatedAccountProfiles
+import com.paisalens.app.data.model.recognizedAccountBank
+import com.paisalens.app.data.model.USER_ENTERED_UPI_BALANCE_SOURCE
 import com.paisalens.app.data.model.creditCardBillGroupKey
 import com.paisalens.app.data.model.creditCardReminderTargetKey
 import com.paisalens.app.data.model.manualBillReminderTargetKey
@@ -175,6 +179,7 @@ class PaisaLensDatabase(context: Context) :
         createV10Tables(db)
         createPaymentReminderTables(db)
         createCreditCardPaymentSchema(db)
+        UtilitySmsBillStore.createTable(db)
         createTransactionIndexes(db)
         createMerchantCategoriesTable(db)
         db.execSQL(
@@ -262,6 +267,10 @@ class PaisaLensDatabase(context: Context) :
         }
         if (oldVersion < 14) {
             createCreditCardPaymentSchema(db)
+        }
+        if (oldVersion < 15) {
+            UtilitySmsBillStore.createTable(db)
+            if (hasColumn(db, "accounts", "identity_key")) consolidateDuplicateBankAccounts(db)
         }
     }
 
@@ -1590,9 +1599,89 @@ class PaisaLensDatabase(context: Context) :
         }
     }
 
-    fun getAccounts(): List<AccountProfile> = consolidatedAccountProfiles(
-        getStoredAccounts(readableDatabase),
-    )
+    fun getAccounts(): List<AccountProfile> {
+        val db = readableDatabase
+        val accounts = getStoredAccounts(db)
+        val smsBalances = accounts.groupBy(::bankAccountIdentity)
+            .filter { (key, members) -> key != null && members.size > 1 && members.any { it.mergedIntoAccountId != null } }
+            .values.flatten().mapNotNull { account ->
+                latestSmsBankBalance(db, account.id)?.let { account.id to it }
+            }.toMap()
+        return consolidatedAccountProfiles(accounts, smsBalances)
+    }
+
+    private fun latestSmsBankBalance(db: SQLiteDatabase, accountId: Long): AccountBalanceSnapshot? = db.query(
+        "balance_history", arrayOf("id", "balance_minor", "recorded_at", "sender"),
+        "account_id = ? AND balance_minor IS NOT NULL AND sender != '' AND sender NOT GLOB ?",
+        arrayOf(accountId.toString(), "$USER_ENTERED_UPI_BALANCE_SOURCE*"),
+        null, null, "recorded_at DESC, id DESC", "1",
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) null else AccountBalanceSnapshot(
+            id = cursor.getLong(0),
+            accountId = accountId,
+            balanceMinor = cursor.getLong(1),
+            availableCreditMinor = null,
+            creditLimitMinor = null,
+            recordedAt = cursor.getLong(2),
+            sender = cursor.getString(3),
+        )
+    }
+
+    internal fun consolidateDuplicateBankAccounts() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            consolidateDuplicateBankAccounts(db)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun consolidateDuplicateBankAccounts(db: SQLiteDatabase) {
+        val accounts = getStoredAccounts(db)
+        val byId = accounts.associateBy(AccountProfile::id)
+        val roots = accounts.groupBy { canonicalAccountId(byId, it.id) }
+        val duplicates = roots.entries.groupBy { (_, members) ->
+            members.map(::bankAccountIdentity).distinct().singleOrNull()
+        }.filter { (identity, profiles) -> identity != null && profiles.size > 1 }
+        if (duplicates.isEmpty()) return
+
+        // Keep any existing reconciliation on its original row so editing, undo and backup
+        // still address the same statement. Never silently combine two statement histories.
+        val reconciled = db.query(
+            "monthly_reconciliations", arrayOf("DISTINCT account_id"), null, null, null, null, null,
+        ).use { cursor ->
+            buildSet { while (cursor.moveToNext()) add(cursor.getLong(0)) }
+        }
+        duplicates.values.forEach { profiles ->
+            val members = profiles.flatMap { it.value }
+            val reconciledIds = members.map(AccountProfile::id).filter { it in reconciled }
+            val canonical = when (reconciledIds.size) {
+                0 -> profiles.sortedWith(
+                    compareByDescending<Map.Entry<Long, List<AccountProfile>>> { it.value.size > 1 }
+                        .thenByDescending { entry ->
+                            val profile = byId.getValue(entry.key)
+                            profile.identityKey?.startsWith("manual:") == true || !profile.name.contains(" •")
+                        }
+                        .thenBy { it.key },
+                ).first().key
+                1 -> reconciledIds.single().takeIf { id -> profiles.any { it.key == id } } ?: return@forEach
+                else -> return@forEach
+            }
+            members.forEach { member ->
+                val values = ContentValues()
+                if (member.id != canonical) {
+                    values.put("merged_into_account_id", canonical)
+                }
+                // A name can be edited later. Keep the identified bank independent of it.
+                if (member.institution.isNullOrBlank()) {
+                    recognizedAccountBank(member)?.let { values.put("institution", BankSmsSupport.institutionName(it)) }
+                }
+                if (values.size() > 0) db.update("accounts", values, "id = ?", arrayOf(member.id.toString()))
+            }
+        }
+    }
 
     private fun getStoredAccounts(db: SQLiteDatabase): List<AccountProfile> {
         val result = mutableListOf<AccountProfile>()
@@ -2784,6 +2873,16 @@ class PaisaLensDatabase(context: Context) :
 
     fun getBills(): List<BillReminder> = getBills(readableDatabase, canonicalizeAccounts = true)
 
+    fun getUtilitySmsBills(): List<UtilitySmsBill> = UtilitySmsBillStore.readAll(readableDatabase)
+
+    internal fun ingestUtilitySmsBills(notices: List<UtilitySmsBill>): UtilitySmsIngestResult =
+        UtilitySmsBillStore.ingest(writableDatabase, notices)
+
+    fun trackUtilitySmsBill(bill: UtilitySmsBill): Long? =
+        UtilitySmsBillStore.track(writableDatabase, bill, ::upsertBill)
+
+    fun dismissUtilitySmsBill(id: Long): Boolean = UtilitySmsBillStore.dismiss(writableDatabase, id)
+
     private fun getBills(
         db: SQLiteDatabase,
         canonicalizeAccounts: Boolean,
@@ -2855,6 +2954,7 @@ class PaisaLensDatabase(context: Context) :
                 "target_type = ? AND target_key = ?",
                 arrayOf(PaymentReminderTargetType.MANUAL_BILL.name, "manual-bill:$id"),
             )
+            UtilitySmsBillStore.dismissDeletedBill(db, id)
             db.delete("bills", "id = ?", arrayOf(id.toString()))
             db.setTransactionSuccessful()
         } finally {
@@ -4079,6 +4179,7 @@ class PaisaLensDatabase(context: Context) :
                 loans = getLoans(db, canonicalizeAccounts = false),
                 balanceHistory = getBalanceHistory(db, canonicalizeAccounts = false),
                 bills = getBills(db, canonicalizeAccounts = false),
+                utilitySmsBills = UtilitySmsBillStore.readAll(db),
                 netWorthItems = getNetWorthItems(),
                 smartCategoryRules = getSmartCategoryRules(db, canonicalizeAccounts = false),
                 reconciliations = getMonthlyReconciliations(db, canonicalizeAccounts = false),
@@ -4398,6 +4499,7 @@ class PaisaLensDatabase(context: Context) :
                     },
                 )
             }
+            UtilitySmsBillStore.restore(db, snapshot.utilitySmsBills, snapshot.bills.mapTo(hashSetOf(), BillReminder::id))
             val canonicalReminderCardBills = getCreditCardBills(db, canonicalizeAccounts = true)
             val restoredCardTargetRemaps = buildMap {
                 val canonicalById = canonicalReminderCardBills.associateBy(CreditCardBill::id)
@@ -6060,13 +6162,21 @@ class PaisaLensDatabase(context: Context) :
             }
         }
         val sameType = candidates.filter { it.type == update.accountType }
-        update.accountHint?.let { hint ->
-            sameType.firstOrNull { it.hint == hint && it.bankKey == update.bankKey }?.let { return it.id }
-            sameType.filter { it.hint == hint }.singleOrNull()
-                ?.takeIf { it.institution.isNullOrBlank() && it.bankKey == null }
-                ?.let { return it.id }
+        val bankMatches = sameType.filter { candidate ->
+            candidate.bankKey == update.bankKey ||
+                (candidate.bankKey == null && candidate.institution.equals(update.institutionName, ignoreCase = true))
         }
-        return sameType.filter { it.bankKey == update.bankKey }.singleOrNull()?.id
+        update.accountHint?.let { hint ->
+            bankMatches.filter { it.hint == hint }.minByOrNull(Candidate::id)?.let { return it.id }
+            return sameType.filter { it.hint == hint }.singleOrNull()
+                ?.takeIf { it.institution.isNullOrBlank() && it.bankKey == null }
+                ?.id
+        }
+        // A suffix-less alert can only be attributed if the bank and type resolve to
+        // one physical account, including aliases with the same verified last four.
+        return bankMatches.groupBy { candidate ->
+            candidate.hint?.takeIf { it.length == 4 }?.let { "last4:$it" } ?: "account:${candidate.id}"
+        }.values.singleOrNull()?.minOfOrNull(Candidate::id)
     }
 
     private fun createAvailabilityAccount(
@@ -6832,6 +6942,7 @@ class PaisaLensDatabase(context: Context) :
         db.delete("merchant_aliases", null, null)
         db.delete("loans", null, null)
         db.delete("balance_history", null, null)
+        UtilitySmsBillStore.clear(db)
         db.delete("bills", null, null)
         db.delete("net_worth_items", null, null)
         db.delete("smart_category_rules", null, null)
@@ -6929,7 +7040,7 @@ class PaisaLensDatabase(context: Context) :
 
     private companion object {
         const val DATABASE_NAME = "paisalens.db"
-        const val DATABASE_VERSION = 14
+        const val DATABASE_VERSION = 15
         private const val UNREFERENCED_PAYMENT_DUPLICATE_WINDOW_MILLIS = 24L * 60L * 60L * 1000L
         private val PAYMENT_HASH = Regex("[a-f0-9]{64}")
         private val CARD_PAYMENT_SUFFIX = Regex("[0-9]{4}")

@@ -26,6 +26,17 @@ class AccountAvailabilitySmsParserTest {
     }
 
     @Test
+    fun prefersAnExplicitAvailableBalanceToAnEarlierLedgerBalance() {
+        val update = requireNotNull(parser.parse(
+            "VM-SBIINB",
+            "Ledger balance INR 5,000. Account XX0976. Available balance INR 4,500.50.",
+            1_700_000_000_000L,
+        ))
+        assertEquals("0976", update.accountHint)
+        assertEquals(450_050L, update.balanceMinor)
+    }
+
+    @Test
     fun extractsAvailableCreditFromCardAlert() {
         val update = parser.parse(
             sender = "JD-SBICRD",

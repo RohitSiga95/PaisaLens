@@ -115,6 +115,7 @@ import com.paisalens.app.data.model.calculateCreditUtilization
 import com.paisalens.app.data.model.buildSpendingCategoryTotals
 import com.paisalens.app.data.model.buildHomeDashboardSnapshot
 import com.paisalens.app.data.model.homeDashboardAccountKey
+import com.paisalens.app.data.model.isSmsBalanceSource
 import com.paisalens.app.data.model.transactionIdsAppliedAsExpenseOffsets
 import com.paisalens.app.data.model.transactionIdsExcludedFromSpending
 import com.paisalens.app.ui.components.CategoryIcon
@@ -1983,12 +1984,10 @@ private fun AccountAvailabilityTile(
                             "Some merged sources do not have a current value"
                         } else {
                             account.availabilityFetchedAt?.let {
-                                val action = if (
-                                    account.availabilitySender?.startsWith(USER_ENTERED_UPI_BALANCE_SOURCE) == true
-                                ) {
-                                    "Entered"
-                                } else {
-                                    "Fetched"
+                                val action = when {
+                                    account.availabilitySender?.startsWith(USER_ENTERED_UPI_BALANCE_SOURCE) == true -> "Entered"
+                                    account.type == AccountType.BANK_ACCOUNT && isSmsBalanceSource(account.availabilitySender) -> "SMS"
+                                    else -> "Fetched"
                                 }
                                 "$action ${formatAvailabilityTime(it)}"
                             } ?: "No balance saved yet"

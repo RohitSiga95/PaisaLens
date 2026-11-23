@@ -1,5 +1,9 @@
 <resources>
     <string name="app_name">PaisaLens</string>
+    <string name="shortcut_add_expense">Add expense</string>
+    <string name="shortcut_sync_sms">Sync SMS</string>
+    <string name="shortcut_bills_and_dues">Bills &amp; dues</string>
+    <string name="shortcut_reminders">Reminders</string>
     <string name="monthly_widget_name">PaisaLens · Monthly spend</string>
     <string name="category_widget_name">PaisaLens · Categories</string>
     <string name="due_bills_widget_name">PaisaLens · Bills due</string>

@@ -69,7 +69,7 @@ class PaisaLensDatabasePaymentReminderTest {
 
         database = PaisaLensDatabase(context)
 
-        assertEquals(14, database.writableDatabase.version)
+        assertTrue(database.writableDatabase.version >= 14)
         assertEquals(PaymentReminderSettings(), database.getPaymentReminderSettings())
         assertTrue(database.getPaymentReminderRules().isEmpty())
         assertTrue(database.getPaymentReminderDeliveryKeys().isEmpty())

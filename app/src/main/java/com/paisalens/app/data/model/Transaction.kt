@@ -206,6 +206,7 @@ data class PaisaLensBackupSnapshot(
     val paymentReminderRules: List<PaymentReminderRule> = emptyList(),
     val paymentReminderSettings: PaymentReminderSettings = PaymentReminderSettings(),
     val creditCardPayments: List<CreditCardPayment> = emptyList(),
+    val utilitySmsBills: List<UtilitySmsBill> = emptyList(),
 )
 
 data class CategoryBudget(

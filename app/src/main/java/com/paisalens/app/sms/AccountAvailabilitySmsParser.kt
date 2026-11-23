@@ -12,9 +12,9 @@ class AccountAvailabilitySmsParser {
         val availableCreditMinor = findAmount(body, availableCreditPatterns)
         val creditLimitMinor = findAmount(body, creditLimitPatterns)
         val senderBalancePatterns = if (senderBankKey == "hdfc") {
-            balancePatterns + hdfcDailyBalancePatterns
+            availableBalancePatterns + hdfcDailyBalancePatterns + otherBalancePatterns
         } else {
-            balancePatterns
+            availableBalancePatterns + otherBalancePatterns
         }
         val balanceMinor = if (availableCreditMinor == null) {
             findAmount(body, senderBalancePatterns)
@@ -77,9 +77,14 @@ class AccountAvailabilitySmsParser {
             Regex("(?i)your\\s+(?:card\\s+)?credit\\s+limit(?:\\s+(?:is|of))?[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
         )
 
-        val balancePatterns = listOf(
-            Regex("(?i)(?:(?:available|avail\\.?|avl|current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+(?:available|is))[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
-            Regex("(?i)(?:(?:available|avail\\.?|avl|current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+(?:available|is))[^0-9]{0,24}$AMOUNT\\s*(?:INR|Rupees?)"),
+        private const val AVAILABLE = "(?:(?:available|avail\\.?|avl)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+available)"
+        private const val OTHER_BALANCE = "(?:(?:current|closing|ledger)\\s+(?:a/c\\s+|account\\s+)?bal(?:ance)?|bal(?:ance)?\\s+is)"
+        val availableBalancePatterns = balancePatterns(AVAILABLE)
+        val otherBalancePatterns = balancePatterns(OTHER_BALANCE)
+
+        private fun balancePatterns(label: String) = listOf(
+            Regex("(?i)$label[^0-9₹]{0,24}$CURRENCY\\s*$AMOUNT"),
+            Regex("(?i)$label[^0-9]{0,24}$AMOUNT\\s*(?:INR|Rupees?)"),
         )
 
         // VM-HDFCBK-S daily alerts can place the masked account and an as-of timestamp

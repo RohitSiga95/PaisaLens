@@ -1,6 +1,7 @@
 package com.paisalens.app.data.model
 
 import com.paisalens.app.sms.BankSmsSupport
+import java.util.Locale
 
 enum class AccountMergeError {
     NAME_REQUIRED,
@@ -115,19 +116,48 @@ fun canonicalAccountId(accountsById: Map<Long, AccountProfile>, accountId: Long)
     return visited.minOrNull() ?: accountId
 }
 
+internal data class BankAccountIdentity(val institutionKey: String, val lastFour: String)
+
+internal fun recognizedAccountBank(account: AccountProfile): String? =
+    BankSmsSupport.bankKey(account.institution.orEmpty()) ?:
+        BankSmsSupport.bankKey(account.availabilitySender.orEmpty()) ?:
+        BankSmsSupport.bankKey(account.name).takeIf { account.institution.isNullOrBlank() }
+
+internal fun bankAccountIdentity(account: AccountProfile): BankAccountIdentity? {
+    if (account.type != AccountType.BANK_ACCOUNT) return null
+    val lastFour = account.accountHint?.filter(Char::isDigit)?.takeLast(4)?.takeIf { it.length == 4 }
+        ?: return null
+    val bank = recognizedAccountBank(account) ?: account.institution
+        ?.lowercase(Locale.ROOT)?.replace(Regex("[^a-z0-9]+"), "-")?.trim('-')?.takeIf(String::isNotBlank)
+        ?: return null
+    return BankAccountIdentity(bank, lastFour)
+}
+
+internal fun isSmsBalanceSource(sender: String?): Boolean =
+    !sender.isNullOrBlank() && !sender.startsWith(USER_ENTERED_UPI_BALANCE_SOURCE)
+
+private val snapshotRecency = compareBy<AccountBalanceSnapshot> { it.recordedAt }.thenBy { it.id }
+
 /**
  * Builds the normal user-facing account list while retaining physical members in storage.
  * Each retained physical identity contributes its latest current value. Historical snapshots are
  * never summed, and duplicate database aliases with the same institution/type/last-four contribute
  * only once.
  */
-fun consolidatedAccountProfiles(accounts: List<AccountProfile>): List<AccountProfile> {
+fun consolidatedAccountProfiles(
+    accounts: List<AccountProfile>,
+    latestSmsBalances: Map<Long, AccountBalanceSnapshot> = emptyMap(),
+): List<AccountProfile> {
     val accountsById = accounts.associateBy(AccountProfile::id)
     return accounts
         .groupBy { canonicalAccountId(accountsById, it.id) }
         .mapNotNull { (rootId, members) ->
             val root = accountsById[rootId] ?: return@mapNotNull null
             fun physicalIdentity(account: AccountProfile): String {
+                if (account.type == AccountType.BANK_ACCOUNT) {
+                    val bank = bankAccountIdentity(account) ?: return "account:${account.id}"
+                    return "bank:${bank.institutionKey}:${bank.lastFour}"
+                }
                 val institution = BankSmsSupport.accountBankKey(account.institution, account.name)
                     ?: account.institution
                     ?.lowercase()
@@ -142,6 +172,17 @@ fun consolidatedAccountProfiles(accounts: List<AccountProfile>): List<AccountPro
                 }
             }
             val physicalMembers = members.groupBy(::physicalIdentity).values
+            val bankBalances = if (root.type == AccountType.BANK_ACCOUNT) {
+                physicalMembers.map { aliases ->
+                    val latestSms = if (aliases.size < 2) null else aliases.flatMap { alias ->
+                        listOfNotNull(
+                            latestSmsBalances[alias.id]?.takeIf { it.balanceMinor != null && isSmsBalanceSource(it.sender) },
+                            alias.currentBalanceSnapshot()?.takeIf { isSmsBalanceSource(it.sender) },
+                        )
+                    }.maxWithOrNull(snapshotRecency)
+                    latestSms ?: aliases.mapNotNull(AccountProfile::currentBalanceSnapshot).maxWithOrNull(snapshotRecency)
+                }
+            } else null
             fun latestValue(
                 aliases: List<AccountProfile>,
                 selector: (AccountProfile) -> Long?,
@@ -173,7 +214,8 @@ fun consolidatedAccountProfiles(accounts: List<AccountProfile>): List<AccountPro
             val compositeAvailabilityAt = if (members.size == 1) {
                 root.availabilityFetchedAt
             } else {
-                val physicalAvailability = physicalMembers.map { aliases ->
+                val physicalAvailability = bankBalances?.map { it?.recordedAt?.takeIf { day -> day > 0L } }
+                    ?: physicalMembers.map { aliases ->
                     aliases.asSequence()
                         .filter(::hasRelevantCurrentValue)
                         .mapNotNull(AccountProfile::availabilityFetchedAt)
@@ -185,12 +227,14 @@ fun consolidatedAccountProfiles(accounts: List<AccountProfile>): List<AccountPro
                     null
                 }
             }
-            val commonHint = members.map(AccountProfile::accountHint)
+            val primaryBankIdentity = bankAccountIdentity(root)?.takeIf { physicalMembers.size == 1 && members.size > 1 }
+            val commonHint = primaryBankIdentity?.lastFour ?: members.map(AccountProfile::accountHint)
                 .map { it?.trim()?.takeIf(String::isNotBlank) }
                 .distinct()
                 .singleOrNull()
             val memberBankKeys = members.map {
-                BankSmsSupport.accountBankKey(it.institution, it.name)
+                if (it.type == AccountType.BANK_ACCOUNT) recognizedAccountBank(it)
+                else BankSmsSupport.accountBankKey(it.institution, it.name)
             }.distinct()
             val commonInstitution = memberBankKeys.singleOrNull()?.let { bankKey ->
                 bankKey?.let(BankSmsSupport::institutionName)
@@ -201,7 +245,9 @@ fun consolidatedAccountProfiles(accounts: List<AccountProfile>): List<AccountPro
             root.copy(
                 accountHint = commonHint,
                 institution = commonInstitution,
-                balanceMinor = consolidatedValue(AccountProfile::balanceMinor),
+                balanceMinor = if (bankBalances != null) {
+                    bankBalances.mapNotNull { it?.balanceMinor }.takeIf(List<Long>::isNotEmpty)?.sum()
+                } else consolidatedValue(AccountProfile::balanceMinor),
                 availableCreditMinor = consolidatedValue(AccountProfile::availableCreditMinor),
                 creditLimitMinor = if (root.type == AccountType.CREDIT_CARD) {
                     completeConsolidatedValue(AccountProfile::creditLimitMinor)
@@ -209,12 +255,27 @@ fun consolidatedAccountProfiles(accounts: List<AccountProfile>): List<AccountPro
                     consolidatedValue(AccountProfile::creditLimitMinor)
                 },
                 availabilityFetchedAt = compositeAvailabilityAt,
-                availabilitySender = root.availabilitySender.takeIf { members.size == 1 },
+                availabilitySender = if (primaryBankIdentity != null) {
+                    bankBalances?.singleOrNull()?.sender?.takeIf(String::isNotBlank)
+                } else root.availabilitySender.takeIf { members.size == 1 },
                 mergedIntoAccountId = null,
                 mergedMemberCount = members.size,
             )
         }
         .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, AccountProfile::name).thenBy(AccountProfile::id))
+}
+
+private fun AccountProfile.currentBalanceSnapshot(): AccountBalanceSnapshot? {
+    val value = balanceMinor ?: return null
+    return AccountBalanceSnapshot(
+        id = 0,
+        accountId = id,
+        balanceMinor = value,
+        availableCreditMinor = null,
+        creditLimitMinor = null,
+        recordedAt = availabilityFetchedAt ?: 0,
+        sender = availabilitySender.orEmpty(),
+    )
 }
 
 private val MERGEABLE_ACCOUNT_TYPES = setOf(AccountType.BANK_ACCOUNT, AccountType.CREDIT_CARD)

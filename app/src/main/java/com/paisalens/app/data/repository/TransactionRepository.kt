@@ -58,6 +58,7 @@ import com.paisalens.app.data.model.TransactionLinkValidation
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.UtilitySmsBill
 import com.paisalens.app.data.model.detectRecurringPayments
 import com.paisalens.app.data.model.buildExpenseSplitSummary
 import com.paisalens.app.data.model.buildOnDeviceInsights
@@ -76,6 +77,7 @@ import com.paisalens.app.data.model.creditCardBillGroupKey
 import com.paisalens.app.data.model.creditCardReminderTargetKey
 import com.paisalens.app.data.model.currentCreditCardBills
 import com.paisalens.app.data.model.manualBillReminderTargetKey
+import com.paisalens.app.data.model.isSmsBalanceSource
 import com.paisalens.app.data.model.validateTransactionLink as validateLinkCandidate
 import com.paisalens.app.data.network.FrankfurterRateService
 import com.paisalens.app.security.SensitiveDataCipher
@@ -129,6 +131,9 @@ class TransactionRepository(
 
     private val _bills = MutableStateFlow<List<BillReminder>>(emptyList())
     val bills: StateFlow<List<BillReminder>> = _bills.asStateFlow()
+
+    private val _utilitySmsBills = MutableStateFlow<List<UtilitySmsBill>>(emptyList())
+    val utilitySmsBills: StateFlow<List<UtilitySmsBill>> = _utilitySmsBills.asStateFlow()
 
     private val _creditCardBills = MutableStateFlow<List<CreditCardBill>>(emptyList())
     val creditCardBills: StateFlow<List<CreditCardBill>> = _creditCardBills.asStateFlow()
@@ -216,8 +221,9 @@ class TransactionRepository(
         coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
         creditCardBills: List<ParsedCreditCardBill> = emptyList(),
         creditCardPayments: List<CreditCardPayment> = emptyList(),
+        utilityBills: List<UtilitySmsBill> = emptyList(),
     ): SmsIngestResult = withContext(Dispatchers.IO) {
-        val reminderSchedulingFenced = creditCardBills.isNotEmpty()
+        val reminderSchedulingFenced = creditCardBills.isNotEmpty() || utilityBills.isNotEmpty()
         if (reminderSchedulingFenced) PaymentReminderScheduler.cancel(context)
         try {
             val cardBillsBefore = if (creditCardBills.isEmpty()) {
@@ -233,13 +239,16 @@ class TransactionRepository(
             val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
             val creditCardBillCount = database.upsertCreditCardBills(creditCardBills)
             val creditCardPaymentCount = database.insertCreditCardPayments(creditCardPayments)
+            val utilityResult = database.ingestUtilitySmsBills(utilityBills)
+            val changedTargets = utilityResult.changedTrackedIds.mapTo(mutableSetOf(), ::manualBillReminderTargetKey)
             if (creditCardBillCount > 0) {
                 val cardBillsAfter = currentCreditCardBills(database.getCreditCardBills())
                     .associateBy(CreditCardBill::creditCardBillGroupKey)
-                val changedTargets = (cardBillsBefore.keys + cardBillsAfter.keys).asSequence()
+                (cardBillsBefore.keys + cardBillsAfter.keys).asSequence()
                     .filter { cardBillsBefore[it] != cardBillsAfter[it] }
-                    .map(::creditCardReminderTargetKey)
-                    .toSet()
+                    .mapTo(changedTargets, ::creditCardReminderTargetKey)
+            }
+            if (changedTargets.isNotEmpty()) {
                 database.getPaymentReminderRules()
                     .filter { it.targetKey in changedTargets }
                     .forEach { PaymentReminderNotifier.cancelForRule(context, it.id) }
@@ -252,6 +261,7 @@ class TransactionRepository(
                 coverageMessagesAdded = coverageCount,
                 updatedCreditCardBills = creditCardBillCount,
                 addedCreditCardPayments = creditCardPaymentCount,
+                updatedUtilityBills = utilityResult.changedBills,
             )
         } catch (error: Throwable) {
             if (reminderSchedulingFenced) PaymentReminderScheduler.sync(context)
@@ -408,7 +418,11 @@ class TransactionRepository(
     ): AccountBalanceWriteResult = withContext(Dispatchers.IO) {
         val result = database.recordUserEnteredUpiBalance(accountId, balanceMinor, recordedAt, sourceLabel)
         refresh()
-        result
+        if (_accounts.value.any { it.id == accountId && it.mergedMemberCount > 1 && isSmsBalanceSource(it.availabilitySender) }) {
+            result.copy(currentBalanceUpdated = false)
+        } else {
+            result
+        }
     }
 
     suspend fun addManual(
@@ -636,6 +650,14 @@ class TransactionRepository(
             PaymentReminderScheduler.sync(context)
             throw error
         }
+    }
+
+    suspend fun trackUtilitySmsBill(bill: UtilitySmsBill): Long? = withContext(Dispatchers.IO) {
+        database.trackUtilitySmsBill(bill)?.also { refresh() }
+    }
+
+    suspend fun dismissUtilitySmsBill(id: Long): Boolean = withContext(Dispatchers.IO) {
+        database.dismissUtilitySmsBill(id).also { if (it) refresh() }
     }
 
     suspend fun markBillPaid(id: Long, paidOn: LocalDate = LocalDate.now()) = withContext(Dispatchers.IO) {
@@ -1011,6 +1033,7 @@ class TransactionRepository(
     }
 
     private fun refresh() {
+        database.consolidateDuplicateBankAccounts()
         val currentTransactions = database.getTransactions()
         val currentAccounts = database.getAccounts()
         val currentLinks = database.getTransactionLinks()
@@ -1047,6 +1070,7 @@ class TransactionRepository(
         _accounts.value = currentAccounts
         _balanceHistory.value = database.getBalanceHistory()
         _bills.value = database.getBills()
+        _utilitySmsBills.value = database.getUtilitySmsBills()
         val currentCardBills = database.getCreditCardBills()
         _creditCardBills.value = currentCardBills
         _creditCardPaymentSuggestions.value = suggestCreditCardPayments(
@@ -1135,4 +1159,5 @@ data class SmsIngestResult(
     val coverageMessagesAdded: Int = 0,
     val updatedCreditCardBills: Int = 0,
     val addedCreditCardPayments: Int = 0,
+    val updatedUtilityBills: Int = 0,
 )

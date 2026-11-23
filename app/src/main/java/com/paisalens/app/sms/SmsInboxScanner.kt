@@ -9,6 +9,7 @@ import com.paisalens.app.data.model.ParsedCreditCardBill
 import com.paisalens.app.data.model.SmsCoverageCandidate
 import com.paisalens.app.data.model.SmsCoverageRule
 import com.paisalens.app.data.model.TransactionType
+import com.paisalens.app.data.model.UtilitySmsBill
 import com.paisalens.app.data.model.smsCoverageReasonOrNull
 import com.paisalens.app.data.parser.TransactionSmsParser
 
@@ -27,6 +28,7 @@ class SmsInboxScanner(
         val coverageCandidates = mutableListOf<SmsCoverageCandidate>()
         val creditCardBills = mutableListOf<ParsedCreditCardBill>()
         val creditCardPayments = mutableListOf<CreditCardPayment>()
+        val utilityBills = mutableListOf<UtilitySmsBill>()
         val projection = arrayOf(
             Telephony.Sms._ID,
             Telephony.Sms.ADDRESS,
@@ -59,6 +61,11 @@ class SmsInboxScanner(
                     receivedAt = receivedAt,
                 )
                 val sourceMessageId = "sms-" + cursor.getLong(idIndex)
+                val utilityBill = UtilityBillSmsParser.parse(sender, body, timestamp)
+                if (utilityBill != null) {
+                    utilityBills.add(utilityBill)
+                    continue
+                }
                 val creditCardPayment = CreditCardPaymentSmsParser.parse(sender, body, timestamp)
                 val transaction = parser.parse(
                     sender = sender,
@@ -88,7 +95,7 @@ class SmsInboxScanner(
                 }
             }
         }
-        return SmsScanBatch(parsed, availability, coverageCandidates, creditCardBills, creditCardPayments)
+        return SmsScanBatch(parsed, availability, coverageCandidates, creditCardBills, creditCardPayments, utilityBills)
     }
 }
 
@@ -113,4 +120,5 @@ data class SmsScanBatch(
     val coverageCandidates: List<SmsCoverageCandidate> = emptyList(),
     val creditCardBills: List<ParsedCreditCardBill> = emptyList(),
     val creditCardPayments: List<CreditCardPayment> = emptyList(),
+    val utilityBills: List<UtilitySmsBill> = emptyList(),
 )
