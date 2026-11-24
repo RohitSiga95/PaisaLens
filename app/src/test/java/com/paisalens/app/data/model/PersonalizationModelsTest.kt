@@ -8,10 +8,12 @@ import org.junit.Test
 
 class PersonalizationModelsTest {
     @Test
-    fun `legacy layout gains daily snapshot modules once while v3 can hide them`() {
+    fun `legacy layout gains the new modules once while the current version can hide them`() {
         val migrated = HomeLayoutConfiguration.fromStorageString("monthly_spend,bank_balances")
         assertEquals(
             listOf(
+                HomeModule.DAILY_CHECK_IN,
+                HomeModule.UPCOMING_BILLS,
                 HomeModule.FINANCIAL_PULSE,
                 HomeModule.NEEDS_ATTENTION,
                 HomeModule.MONTHLY_SPEND,
@@ -45,6 +47,8 @@ class PersonalizationModelsTest {
 
         assertEquals(
             listOf(
+                HomeModule.DAILY_CHECK_IN,
+                HomeModule.UPCOMING_BILLS,
                 HomeModule.FINANCIAL_PULSE,
                 HomeModule.NEEDS_ATTENTION,
                 HomeModule.BANK_BALANCES,
@@ -54,6 +58,27 @@ class PersonalizationModelsTest {
                 HomeModule.CARD_HEALTH,
             ),
             parsed.orderedVisibleModules,
+        )
+    }
+
+    @Test
+    fun `version three upgrades without losing user order or choices`() {
+        val migrated = HomeLayoutConfiguration.fromStorageString(
+            "v3:comfortable|available_cash|spending_breakdown,bank_balances",
+        )
+        assertEquals(
+            listOf(HomeModule.DAILY_CHECK_IN, HomeModule.UPCOMING_BILLS, HomeModule.SPENDING_BREAKDOWN, HomeModule.BANK_BALANCES),
+            migrated.orderedVisibleModules,
+        )
+        assertEquals(HomeDashboardDensity.COMFORTABLE, migrated.density)
+        assertEquals(HomeHeroMetric.AVAILABLE_CASH, migrated.heroMetric)
+
+        val edited = migrated.withVisibility(HomeModule.BANK_BALANCES, false)
+            .withVisibility(HomeModule.DAILY_CHECK_IN, false)
+            .move(HomeModule.SPENDING_BREAKDOWN, 0)
+        assertEquals(
+            listOf(HomeModule.SPENDING_BREAKDOWN, HomeModule.UPCOMING_BILLS),
+            HomeLayoutConfiguration.fromStorageString(edited.toStorageString()).orderedVisibleModules,
         )
     }
 

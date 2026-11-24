@@ -132,6 +132,14 @@ import java.time.ZoneId
 class PaisaLensDatabase(context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
 
+    // SQLiteOpenHelper locks each instance, not the file. The app and background reminders
+    // may open separate helpers on first launch and must not race schema creation or upgrades.
+    override fun getWritableDatabase(): SQLiteDatabase =
+        synchronized(databaseOpenLock) { super.getWritableDatabase() }
+
+    override fun getReadableDatabase(): SQLiteDatabase =
+        synchronized(databaseOpenLock) { super.getReadableDatabase() }
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -274,7 +282,21 @@ class PaisaLensDatabase(context: Context) :
         }
     }
 
-    fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): SmsTransactionIngestResult {
+    fun insertAll(items: List<Pair<ParsedTransaction, ByteArray>>): SmsTransactionIngestResult =
+        insertSmsRows(items, { it.first }, { it.second })
+
+    internal fun insertSmsTransactions(
+        items: List<ParsedTransaction>,
+        matchesEncryptedBody: ((ByteArray, String) -> Boolean)? = null,
+        encrypt: (String) -> ByteArray,
+    ): SmsTransactionIngestResult = insertSmsRows(items, { it }, { encrypt(it.rawMessage) }, matchesEncryptedBody)
+
+    private fun <T> insertSmsRows(
+        items: List<T>,
+        parsed: (T) -> ParsedTransaction,
+        encryptedBody: (T) -> ByteArray,
+        matchesEncryptedBody: ((ByteArray, String) -> Boolean)? = null,
+    ): SmsTransactionIngestResult {
         if (items.isEmpty()) return SmsTransactionIngestResult(0, 0, 0)
         val db = writableDatabase
         val merchantCategories = getMerchantCategoryMap(db)
@@ -285,8 +307,8 @@ class PaisaLensDatabase(context: Context) :
         var ignoredSources = 0
         db.beginTransaction()
         try {
-            items.forEach { (incomingItem, encryptedBody) ->
-                val item = incomingItem
+            items.forEach { entry ->
+                val item = parsed(entry)
                 val canonicalMerchant = merchantAliases[normalizedMerchantKey(item.merchant)]?.canonicalName
                     ?: item.merchant
                 val duplicateFingerprint = smsDuplicateFingerprint(
@@ -321,6 +343,8 @@ class PaisaLensDatabase(context: Context) :
                     compatibleFingerprints = compatibleDuplicateFingerprints,
                     incomingFingerprint = duplicateFingerprint,
                     incomingOccurredAt = item.occurredAt,
+                    incoming = item,
+                    matchesEncryptedBody = matchesEncryptedBody,
                 )
                 val effectiveItem = if (effectiveSourceMessageId == item.sourceMessageId) {
                     item
@@ -428,7 +452,7 @@ class PaisaLensDatabase(context: Context) :
                 }
                 val values = transactionValues(
                     effectiveItem,
-                    encryptedBody,
+                    encryptedBody(entry),
                     accountId,
                     merchantRule,
                     smartRule,
@@ -455,38 +479,58 @@ class PaisaLensDatabase(context: Context) :
         return SmsTransactionIngestResult(inserted, duplicatesMerged, ignoredSources)
     }
 
-    fun insertSmsCoverage(items: List<Pair<SmsCoverageCandidate, ByteArray>>): Int {
+    fun insertSmsCoverage(items: List<Pair<SmsCoverageCandidate, ByteArray>>): Int =
+        insertCoverageRows(items, { it.first }, { it.second })
+
+    internal fun insertSmsCoverageCandidates(
+        items: List<SmsCoverageCandidate>,
+        encrypt: (String) -> ByteArray,
+    ): Int = insertCoverageRows(items, { it }, { encrypt(it.body) })
+
+    private fun <T> insertCoverageRows(
+        items: List<T>,
+        candidateFor: (T) -> SmsCoverageCandidate,
+        encryptedBody: (T) -> ByteArray,
+    ): Int {
         if (items.isEmpty()) return 0
         val db = writableDatabase
         var inserted = 0
         db.beginTransaction()
         try {
-            items.forEach { (candidate, encryptedBody) ->
+            items.forEach { entry ->
+                val candidate = candidateFor(entry)
                 val fingerprint = smsCoverageFingerprint(candidate.sender, candidate.body)
                 val alreadyStored = db.rawQuery(
                     """
                     SELECT 1 FROM sms_coverage_messages
-                    WHERE source_message_id = ? OR (
-                        body_fingerprint = ? AND received_at BETWEEN ? AND ?
-                    )
+                    WHERE body_fingerprint = ? AND received_at BETWEEN ? AND ?
                     LIMIT 1
                     """.trimIndent(),
                     arrayOf(
-                        candidate.sourceMessageId,
                         fingerprint,
                         (candidate.receivedAt - SMS_DUPLICATE_WINDOW_MILLIS).toString(),
                         (candidate.receivedAt + SMS_DUPLICATE_WINDOW_MILLIS).toString(),
                     ),
                 ).use { it.moveToFirst() }
                 if (alreadyStored) return@forEach
+                val sourceExists = db.query(
+                    "sms_coverage_messages", arrayOf("id"), "source_message_id = ?",
+                    arrayOf(candidate.sourceMessageId), null, null, null, "1",
+                ).use { it.moveToFirst() }
+                // An inbox reset can reuse an old row ID for a new unsupported alert.
+                // Retain the existing item and give the new content a distinct key.
+                val sourceMessageId = if (sourceExists) {
+                    if (!RAW_INBOX_SMS_SOURCE_ID_PATTERN.matches(candidate.sourceMessageId)) return@forEach
+                    candidate.sourceMessageId + "-" + fingerprint + "-" + candidate.receivedAt
+                } else candidate.sourceMessageId
                 val now = System.currentTimeMillis()
                 val rowId = db.insertWithOnConflict(
                     "sms_coverage_messages",
                     null,
                     ContentValues().apply {
-                        put("source_message_id", candidate.sourceMessageId)
+                        put("source_message_id", sourceMessageId)
                         put("sender", candidate.sender.take(64))
-                        put("body_cipher", encryptedBody)
+                        put("body_cipher", encryptedBody(entry))
                         put("body_fingerprint", fingerprint)
                         put("received_at", candidate.receivedAt)
                         put("reason", candidate.reason.name)
@@ -736,7 +780,7 @@ class PaisaLensDatabase(context: Context) :
     }
 
     /** Upserts a bill cycle while deliberately retaining any user-confirmed paid state. */
-    fun upsertCreditCardBills(items: List<ParsedCreditCardBill>): Int {
+    fun upsertCreditCardBills(items: List<ParsedCreditCardBill>, beforeChange: () -> Unit = {}): Int {
         if (items.isEmpty()) return 0
         val db = writableDatabase
         var changed = 0
@@ -783,7 +827,7 @@ class PaisaLensDatabase(context: Context) :
                 val billKey = "$cardIdentityKey:${item.dueDateEpochDay}"
                 val existing = db.query(
                     "credit_card_bills",
-                    arrayOf("id", "detected_at", "total_due_minor", "due_amount_observed_at"),
+                    arrayOf("id", "detected_at", "total_due_minor", "due_amount_observed_at", "account_id"),
                     "bill_key = ?",
                     arrayOf(billKey),
                     null,
@@ -792,10 +836,11 @@ class PaisaLensDatabase(context: Context) :
                     "1",
                 ).use { cursor ->
                     if (cursor.moveToFirst()) {
-                        StoredCardBillAmount(cursor.getLong(0), cursor.getLong(1), cursor.getLong(2), cursor.longOrNull(3))
+                        StoredCardBillAmount(cursor.getLong(0), cursor.getLong(1), cursor.getLong(2), cursor.longOrNull(3), cursor.longOrNull(4))
                     } else null
                 }
                 if (existing == null) {
+                    beforeChange()
                     val rowId = db.insertWithOnConflict(
                         "credit_card_bills",
                         null,
@@ -819,6 +864,7 @@ class PaisaLensDatabase(context: Context) :
                     )
                     if (rowId != -1L) changed += 1
                 } else if (item.detectedAt > existing.detectedAt) {
+                    beforeChange()
                     changed += db.update(
                         "credit_card_bills",
                         ContentValues().apply {
@@ -847,6 +893,7 @@ class PaisaLensDatabase(context: Context) :
                             it < existing.detectedAt
                     }
                     if (earlierObservation != null) {
+                        beforeChange()
                         changed += db.update(
                             "credit_card_bills",
                             ContentValues().apply { put("due_amount_observed_at", earlierObservation) },
@@ -854,7 +901,8 @@ class PaisaLensDatabase(context: Context) :
                             arrayOf(existing.id.toString()),
                         )
                     }
-                    if (accountId == null) return@forEach
+                    if (accountId == null || existing.accountId != null) return@forEach
+                    beforeChange()
                     changed += db.update(
                         "credit_card_bills",
                         ContentValues().apply { put("account_id", accountId) },
@@ -875,6 +923,7 @@ class PaisaLensDatabase(context: Context) :
         val detectedAt: Long,
         val totalDueMinor: Long,
         val dueAmountObservedAt: Long?,
+        val accountId: Long?,
     )
 
     private fun getCreditCardPayments(
@@ -2006,16 +2055,20 @@ class PaisaLensDatabase(context: Context) :
         ) { "Merged credit-card reminder could not be preserved" }
     }
 
-    fun applyAccountAvailability(updates: List<AccountAvailabilityUpdate>): Int {
-        if (updates.isEmpty()) return 0
+    fun applyAccountAvailability(updates: List<AccountAvailabilityUpdate>): Int =
+        applyAccountAvailabilityWithHistory(updates).accountsUpdated
+
+    internal fun applyAccountAvailabilityWithHistory(updates: List<AccountAvailabilityUpdate>): SmsBalanceWrites {
+        if (updates.isEmpty()) return SmsBalanceWrites(0, 0)
         val db = writableDatabase
         var changed = 0
+        var historyAdded = 0
         db.beginTransaction()
         try {
             updates.sortedBy { it.fetchedAt }.forEach { update ->
                 val accountId = findAvailabilityAccountId(db, update) ?: createAvailabilityAccount(db, update)
                 if (accountId != null) {
-                    insertBalanceSnapshot(db, accountId, update)
+                    if (insertBalanceSnapshot(db, accountId, update)) historyAdded += 1
                     if (applyAccountAvailability(db, accountId, update)) changed += 1
                 }
             }
@@ -2023,8 +2076,10 @@ class PaisaLensDatabase(context: Context) :
         } finally {
             db.endTransaction()
         }
-        return changed
+        return SmsBalanceWrites(changed, historyAdded)
     }
+
+    internal data class SmsBalanceWrites(val accountsUpdated: Int, val snapshotsAdded: Int)
 
     fun recordUserEnteredUpiBalance(
         accountId: Long,
@@ -2179,6 +2234,7 @@ class PaisaLensDatabase(context: Context) :
                     creditLimitMinor = cursor.longOrNull(4),
                     recordedAt = cursor.getLong(5),
                     sender = cursor.getString(6),
+                    physicalAccountId = storedAccountId.takeIf { it != exposedAccountId },
                 )
             }
         }
@@ -2875,8 +2931,11 @@ class PaisaLensDatabase(context: Context) :
 
     fun getUtilitySmsBills(): List<UtilitySmsBill> = UtilitySmsBillStore.readAll(readableDatabase)
 
-    internal fun ingestUtilitySmsBills(notices: List<UtilitySmsBill>): UtilitySmsIngestResult =
-        UtilitySmsBillStore.ingest(writableDatabase, notices)
+    internal fun ingestUtilitySmsBills(
+        notices: List<UtilitySmsBill>,
+        beforeTrackedChange: () -> Unit = {},
+    ): UtilitySmsIngestResult =
+        if (notices.isEmpty()) UtilitySmsIngestResult() else UtilitySmsBillStore.ingest(writableDatabase, notices, beforeTrackedChange)
 
     fun trackUtilitySmsBill(bill: UtilitySmsBill): Long? =
         UtilitySmsBillStore.track(writableDatabase, bill, ::upsertBill)
@@ -4879,6 +4938,8 @@ class PaisaLensDatabase(context: Context) :
         compatibleFingerprints: List<String>,
         incomingFingerprint: String,
         incomingOccurredAt: Long,
+        incoming: ParsedTransaction,
+        matchesEncryptedBody: ((ByteArray, String) -> Boolean)?,
     ): String {
         if (!RAW_INBOX_SMS_SOURCE_ID_PATTERN.matches(sourceMessageId)) return sourceMessageId
         val existingTransactionId = transactionIdForSmsSource(db, sourceMessageId)
@@ -4895,7 +4956,40 @@ class PaisaLensDatabase(context: Context) :
         ) {
             return sourceMessageId
         }
+        if (matchesEncryptedBody != null) {
+            // Updated parser rules may change a transaction's merchant, type, or amount
+            // fingerprint. The exact inbox row and original payload still identify one SMS.
+            if (timestampCanRepresentSameSms && inboxSourceHasSamePayload(db, existingTransactionId, incoming, matchesEncryptedBody)) {
+                return sourceMessageId
+            }
+            val existingAliases = db.query(
+                "transaction_sms_sources", arrayOf("source_message_id", "transaction_id"),
+                "source_message_id LIKE ? AND received_at = ?",
+                arrayOf("$sourceMessageId-%", incomingOccurredAt.toString()), null, null, null,
+            ).use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) add(cursor.getString(0) to cursor.getLong(1))
+                }
+            }
+            for ((alias, transactionId) in existingAliases) {
+                if (inboxSourceHasSamePayload(db, transactionId, incoming, matchesEncryptedBody)) return alias
+            }
+        }
         return "$sourceMessageId-$incomingFingerprint-$incomingOccurredAt"
+    }
+
+    private fun inboxSourceHasSamePayload(
+        db: SQLiteDatabase,
+        transactionId: Long,
+        incoming: ParsedTransaction,
+        matchesEncryptedBody: (ByteArray, String) -> Boolean,
+    ): Boolean = db.query(
+        "transactions", arrayOf("sender", "raw_message_cipher"), "id = ?",
+        arrayOf(transactionId.toString()), null, null, null, "1",
+    ).use { cursor ->
+        cursor.moveToFirst() && !cursor.isNull(1) &&
+            normalizedSmsSender(cursor.getString(0)) == normalizedSmsSender(incoming.sender) &&
+            matchesEncryptedBody(cursor.getBlob(1), incoming.rawMessage)
     }
 
     private fun isLocalInboxSourceMessageId(sourceMessageId: String): Boolean =
@@ -6256,7 +6350,7 @@ class PaisaLensDatabase(context: Context) :
         db: SQLiteDatabase,
         accountId: Long,
         update: AccountAvailabilityUpdate,
-    ) {
+    ): Boolean =
         db.insertWithOnConflict(
             "balance_history",
             null,
@@ -6269,8 +6363,7 @@ class PaisaLensDatabase(context: Context) :
                 put("sender", update.sender.take(64).ifBlank { "Balance alert" })
             },
             SQLiteDatabase.CONFLICT_IGNORE,
-        )
-    }
+        ) != -1L
 
     private fun backfillBalanceHistory(db: SQLiteDatabase) {
         db.execSQL(
@@ -7039,6 +7132,7 @@ class PaisaLensDatabase(context: Context) :
         enumValues<T>().firstOrNull { it.name == value } ?: default
 
     private companion object {
+        val databaseOpenLock = Any()
         const val DATABASE_NAME = "paisalens.db"
         const val DATABASE_VERSION = 15
         private const val UNREFERENCED_PAYMENT_DUPLICATE_WINDOW_MILLIS = 24L * 60L * 60L * 1000L

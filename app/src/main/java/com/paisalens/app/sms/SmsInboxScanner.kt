@@ -1,6 +1,7 @@
 package com.paisalens.app.sms
 
 import android.content.Context
+import android.database.Cursor
 import android.provider.Telephony
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.CreditCardPayment
@@ -12,90 +13,176 @@ import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.UtilitySmsBill
 import com.paisalens.app.data.model.smsCoverageReasonOrNull
 import com.paisalens.app.data.parser.TransactionSmsParser
+import java.security.MessageDigest
 
-class SmsInboxScanner(
+internal class SmsInboxScanner(
     private val context: Context,
     private val parser: TransactionSmsParser,
     private val availabilityParser: AccountAvailabilitySmsParser,
     private val creditCardBillParser: CreditCardBillSmsParser = CreditCardBillSmsParser(),
 ) {
+    /**
+     * Quickly revisit a small overlap and all newer IDs, ignoring content already processed.
+     * In recovery or Full mode, walk the entire inbox without a cap on the number of messages.
+     * The caller must persist the returned bookmark only after every batch has been stored.
+     */
     fun scan(
-        maxMessages: Int = 10_000,
+        mode: SmsSyncMode,
+        checkpoint: SmsInboxCheckpoint? = null,
         coverageRules: List<SmsCoverageRule> = emptyList(),
-    ): SmsScanBatch {
-        val parsed = mutableListOf<ParsedTransaction>()
-        val availability = mutableListOf<AccountAvailabilityUpdate>()
-        val coverageCandidates = mutableListOf<SmsCoverageCandidate>()
-        val creditCardBills = mutableListOf<ParsedCreditCardBill>()
-        val creditCardPayments = mutableListOf<CreditCardPayment>()
-        val utilityBills = mutableListOf<UtilitySmsBill>()
-        val projection = arrayOf(
-            Telephony.Sms._ID,
-            Telephony.Sms.ADDRESS,
-            Telephony.Sms.BODY,
-            Telephony.Sms.DATE,
-            Telephony.Sms.DATE_SENT,
-        )
+        checkCancelled: () -> Unit = {},
+        consumeBatch: (SmsScanBatch) -> Unit,
+    ): SmsInboxCheckpoint? {
+        val verified = checkpoint?.takeIf { mode == SmsSyncMode.QUICK && hasSameAnchor(it.anchor) }
+        val first = scanRange(verified, coverageRules, checkCancelled, consumeBatch)
+        if (first.anchorVerified) return first.checkpoint
+        // The anchor may have been replaced between the point check and the range query.
+        // A full walk is safe even if a prior batch already committed.
+        return scanRange(null, coverageRules, checkCancelled, consumeBatch).checkpoint
+    }
 
-        context.contentResolver.query(
-            Telephony.Sms.Inbox.CONTENT_URI,
-            projection,
-            null,
-            null,
-            Telephony.Sms.DATE + " DESC",
-        )?.use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(Telephony.Sms._ID)
-            val addressIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
-            val bodyIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.BODY)
-            val dateIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
-            val dateSentIndex = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE_SENT)
-            var scanned = 0
+    private fun hasSameAnchor(anchor: SmsInboxMarker): Boolean =
+        query("$ID = ?", arrayOf(anchor.rowId.toString())).use { cursor ->
+            cursor.moveToFirst() && InboxColumns(cursor).read(cursor).marker() == anchor
+        }
 
-            while (cursor.moveToNext() && scanned < maxMessages) {
-                scanned += 1
-                val body = cursor.getString(bodyIndex) ?: continue
-                val sender = cursor.getString(addressIndex).orEmpty()
-                val receivedAt = cursor.getLong(dateIndex)
-                val timestamp = preferredSmsTimestamp(
-                    sentAt = cursor.getLong(dateSentIndex),
-                    receivedAt = receivedAt,
-                )
-                val sourceMessageId = "sms-" + cursor.getLong(idIndex)
-                val utilityBill = UtilityBillSmsParser.parse(sender, body, timestamp)
-                if (utilityBill != null) {
-                    utilityBills.add(utilityBill)
-                    continue
+    private fun scanRange(
+        checkpoint: SmsInboxCheckpoint?,
+        coverageRules: List<SmsCoverageRule>,
+        checkCancelled: () -> Unit,
+        consumeBatch: (SmsScanBatch) -> Unit,
+    ): RangeResult {
+        val recent = ArrayDeque<InboxRow>(SmsInboxCheckpoint.OVERLAP_ROWS)
+        val known = checkpoint?.recentRows.orEmpty().associateBy(SmsInboxMarker::rowId)
+        val incomplete = mutableSetOf<Long>()
+        val retryIds = checkpoint?.incompleteRowIds.orEmpty()
+        var tooManyIncomplete = false
+        var anchorVerified = checkpoint == null
+        var batch = ScanBatchBuilder()
+        var rowsInBatch = 0
+        var lastId = 0L
+
+        val selection = checkpoint?.let {
+            "$ID >= ?" + if (retryIds.isEmpty()) "" else " OR $ID IN (${retryIds.joinToString(",") { "?" }})"
+        }
+        val args = checkpoint?.let {
+            (listOf(it.recentRows.first().rowId) + retryIds).map(Long::toString).toTypedArray()
+        }
+        query(selection, args).use { cursor ->
+            val columns = InboxColumns(cursor)
+            while (cursor.moveToNext()) {
+                checkCancelled()
+                val row = columns.read(cursor)
+                check(row.id > lastId) { "Android returned inbox rows out of order" }
+                lastId = row.id
+                val alreadySeen = known[row.id]?.let { it == row.marker() } == true
+                if (row.id == checkpoint?.anchor?.rowId) anchorVerified = alreadySeen
+                if (row.body.isNullOrBlank()) {
+                    if (incomplete.size < SmsInboxCheckpoint.MAX_INCOMPLETE_ROWS) incomplete.add(row.id)
+                    else tooManyIncomplete = true
+                } else if (!alreadySeen || row.id in retryIds) {
+                    parseRow(row, coverageRules, batch)
                 }
-                val creditCardPayment = CreditCardPaymentSmsParser.parse(sender, body, timestamp)
-                val transaction = parser.parse(
-                    sender = sender,
-                    body = body,
-                    timestamp = timestamp,
-                    messageId = sourceMessageId,
-                    coverageRules = coverageRules,
-                )?.takeIf { creditCardPayment == null || it.type == TransactionType.TRANSFER }
-                val availabilityUpdate = availabilityParser.parse(sender, body, timestamp)
-                val creditCardBill = if (creditCardPayment == null) {
-                    creditCardBillParser.parse(sender, body, timestamp, sourceMessageId)
-                } else null
-                transaction?.let(parsed::add)
-                availabilityUpdate?.let(availability::add)
-                creditCardBill?.let(creditCardBills::add)
-                creditCardPayment?.let(creditCardPayments::add)
-                if (transaction == null && availabilityUpdate == null && creditCardBill == null && creditCardPayment == null) {
-                    smsCoverageReasonOrNull(sender, body)?.let { reason ->
-                        coverageCandidates += SmsCoverageCandidate(
-                            sourceMessageId = sourceMessageId,
-                            sender = sender.ifBlank { "Unknown sender" },
-                            body = body,
-                            receivedAt = timestamp,
-                            reason = reason,
-                        )
-                    }
+                if (recent.size == SmsInboxCheckpoint.OVERLAP_ROWS) recent.removeFirst()
+                recent.addLast(row)
+                rowsInBatch++
+                if (rowsInBatch >= SCAN_BATCH_ROWS) {
+                    batch.build()?.let(consumeBatch)
+                    batch = ScanBatchBuilder()
+                    rowsInBatch = 0
                 }
             }
         }
-        return SmsScanBatch(parsed, availability, coverageCandidates, creditCardBills, creditCardPayments, utilityBills)
+        batch.build()?.let(consumeBatch)
+        val next = if (recent.isNotEmpty() && !tooManyIncomplete) {
+            SmsInboxCheckpoint(recent.map(InboxRow::marker), incomplete.toSet())
+        } else null
+        return RangeResult(next, anchorVerified)
+    }
+
+    private fun parseRow(row: InboxRow, coverageRules: List<SmsCoverageRule>, batch: ScanBatchBuilder) {
+        val body = checkNotNull(row.body)
+        val timestamp = preferredSmsTimestamp(row.sentAt, row.receivedAt)
+        val sourceMessageId = "sms-" + row.id
+        val utilityBill = UtilityBillSmsParser.parse(row.sender, body, timestamp)
+        if (utilityBill != null) {
+            batch.utilityBills.add(utilityBill)
+            return
+        }
+        val cardPayment = CreditCardPaymentSmsParser.parse(row.sender, body, timestamp)
+        val transaction = parser.parse(
+            sender = row.sender,
+            body = body,
+            timestamp = timestamp,
+            messageId = sourceMessageId,
+            coverageRules = coverageRules,
+        )?.takeIf { cardPayment == null || it.type == TransactionType.TRANSFER }
+        val availability = availabilityParser.parse(row.sender, body, timestamp)
+        val cardBill = if (cardPayment == null) creditCardBillParser.parse(row.sender, body, timestamp, sourceMessageId) else null
+        transaction?.let(batch.transactions::add)
+        availability?.let(batch.availability::add)
+        cardBill?.let(batch.cardBills::add)
+        cardPayment?.let(batch.cardPayments::add)
+        if (transaction == null && availability == null && cardBill == null && cardPayment == null) {
+            smsCoverageReasonOrNull(row.sender, body)?.let { reason ->
+                batch.coverage.add(SmsCoverageCandidate(sourceMessageId, row.sender.ifBlank { "Unknown sender" }, body, timestamp, reason))
+            }
+        }
+    }
+
+    private fun query(selection: String?, args: Array<String>?): Cursor = checkNotNull(
+        context.contentResolver.query(Telephony.Sms.Inbox.CONTENT_URI, PROJECTION, selection, args, "$ID ASC"),
+    ) { "Android's SMS inbox is unavailable" }
+
+    private data class RangeResult(val checkpoint: SmsInboxCheckpoint?, val anchorVerified: Boolean)
+
+    private class InboxColumns(cursor: Cursor) {
+        private val id = cursor.getColumnIndexOrThrow(ID)
+        private val sender = cursor.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
+        private val body = cursor.getColumnIndexOrThrow(Telephony.Sms.BODY)
+        private val date = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
+        private val sent = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE_SENT)
+
+        fun read(cursor: Cursor) = InboxRow(
+            cursor.getLong(id),
+            cursor.getString(sender).orEmpty(),
+            cursor.getString(body),
+            cursor.getLong(date),
+            cursor.getLong(sent),
+        )
+    }
+
+    private class InboxRow(val id: Long, val sender: String, val body: String?, val receivedAt: Long, val sentAt: Long) {
+        private var fingerprint: String? = null
+
+        fun marker(): SmsInboxMarker {
+            val value = fingerprint ?: MessageDigest.getInstance("SHA-256")
+                .digest("$receivedAt:$sentAt:${sender.length}:$sender:${body?.length ?: -1}:${body.orEmpty()}".toByteArray(Charsets.UTF_8))
+                .joinToString("") { byte -> HEX[(byte.toInt() and 255) shr 4].toString() + HEX[byte.toInt() and 15] }
+                .also { fingerprint = it }
+            return SmsInboxMarker(id, value)
+        }
+    }
+
+    private class ScanBatchBuilder {
+        val transactions = mutableListOf<ParsedTransaction>()
+        val availability = mutableListOf<AccountAvailabilityUpdate>()
+        val coverage = mutableListOf<SmsCoverageCandidate>()
+        val cardBills = mutableListOf<ParsedCreditCardBill>()
+        val cardPayments = mutableListOf<CreditCardPayment>()
+        val utilityBills = mutableListOf<UtilitySmsBill>()
+
+        fun build(): SmsScanBatch? = if (
+            transactions.isEmpty() && availability.isEmpty() && coverage.isEmpty() &&
+            cardBills.isEmpty() && cardPayments.isEmpty() && utilityBills.isEmpty()
+        ) null else SmsScanBatch(transactions, availability, coverage, cardBills, cardPayments, utilityBills)
+    }
+
+    private companion object {
+        const val ID = Telephony.Sms._ID
+        const val SCAN_BATCH_ROWS = 256
+        const val HEX = "0123456789abcdef"
+        val PROJECTION = arrayOf(ID, Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE, Telephony.Sms.DATE_SENT)
     }
 }
 

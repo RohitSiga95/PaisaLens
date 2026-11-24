@@ -15,7 +15,6 @@ import com.paisalens.app.notification.PrivateDigestNotifier
 import com.paisalens.app.notification.PrivateDigestScheduler
 import com.paisalens.app.notification.ActionableAlertNotifier
 import com.paisalens.app.notification.PaymentReminderNotifier
-import com.paisalens.app.notification.PaymentReminderScheduler
 
 class PaisaLensApplication : Application() {
     lateinit var repository: TransactionRepository
@@ -41,7 +40,7 @@ class PaisaLensApplication : Application() {
         // Restore after a force-stop/relaunch without replacing an inexact delivery
         // already queued by Android for today.
         PrivateDigestScheduler.ensure(this, preferences.notificationDigest.value)
-        PaymentReminderScheduler.ensure(this)
+        // MainActivity and repository load already reconcile reminders off the main thread.
         repository = TransactionRepository(
             context = this,
             database = PaisaLensDatabase(this),

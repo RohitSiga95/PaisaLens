@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WifiOff
@@ -96,6 +97,7 @@ fun SettingsScreen(
     onSmsCoverage: () -> Unit,
     onRequestSms: () -> Unit,
     onScan: () -> Unit,
+    onFullRescan: () -> Unit,
     transactionCount: Int,
     accountCount: Int,
     customCategoryCount: Int,
@@ -190,13 +192,14 @@ fun SettingsScreen(
             SettingsSection("SMS analysis") {
                 SettingsActionRow(
                     icon = Icons.Rounded.MarkEmailRead,
-                    title = if (hasSmsPermission) "SMS access enabled" else "Enable SMS access",
+                    title = if (hasSmsPermission) "Sync new SMS" else "Enable SMS access",
                     subtitle = if (hasSmsPermission) {
-                        "Incoming transaction alerts are analyzed automatically."
+                        "Check for messages added since the last successful sync."
                     } else {
                         "Required only to detect bank, card and UPI alerts."
                     },
                     onClick = if (hasSmsPermission) onScan else onRequestSms,
+                    enabled = !isScanning,
                     trailing = {
                         if (hasSmsPermission) {
                             Icon(
@@ -208,6 +211,15 @@ fun SettingsScreen(
                             Icon(Icons.Rounded.ChevronRight, contentDescription = null)
                         }
                     },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SettingsActionRow(
+                    icon = Icons.Rounded.History,
+                    title = "Full rescan",
+                    subtitle = "Check the entire inbox for older or previously unsupported alerts.",
+                    onClick = onFullRescan,
+                    enabled = !isScanning,
+                    trailing = { Icon(Icons.Rounded.ChevronRight, contentDescription = null) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SettingsInfoRow(
@@ -580,9 +592,11 @@ private fun SettingsActionRow(
     onClick: () -> Unit,
     trailing: @Composable () -> Unit,
     danger: Boolean = false,
+    enabled: Boolean = true,
 ) {
     Surface(
         onClick = onClick,
+        enabled = enabled,
         color = androidx.compose.ui.graphics.Color.Transparent,
         shape = MaterialTheme.shapes.medium,
     ) {

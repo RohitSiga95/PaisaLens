@@ -126,6 +126,9 @@ import com.paisalens.app.data.model.StatementAuditMetadata
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.calculateReconciliationMetrics
+import com.paisalens.app.data.model.AccountBalanceSourceGroup
+import com.paisalens.app.data.model.buildBillsTimeline
+import com.paisalens.app.data.model.currentBalanceReading
 import com.paisalens.app.data.model.buildWeeklyReview
 import com.paisalens.app.data.model.findUncategorizedMerchantGroups
 import com.paisalens.app.data.model.normalizedMerchantKey
@@ -133,6 +136,7 @@ import com.paisalens.app.data.model.suggestReconciliationStatus
 import com.paisalens.app.data.importer.CreditCardStatementAuditor
 import com.paisalens.app.LauncherShortcut
 import com.paisalens.app.LauncherShortcutRequest
+import com.paisalens.app.sms.SmsSyncMode
 import com.paisalens.app.data.backup.takeScheduledBackupDestinationPermission
 import com.paisalens.app.notification.AlertDestination
 import com.paisalens.app.widget.WIDGET_DESTINATION_CARD_BILLS
@@ -151,6 +155,7 @@ import com.paisalens.app.ui.screens.OnboardingScreen
 import com.paisalens.app.ui.screens.SettingsScreen
 import com.paisalens.app.ui.screens.TransactionsScreen
 import com.paisalens.app.ui.screens.TransactionFilter
+import com.paisalens.app.ui.screens.activityAccountFilterOptions
 import com.paisalens.app.ui.privacy.SecurePrivacyWindowEffect
 import com.paisalens.app.ui.theme.PaisaLensTheme
 import java.math.BigDecimal
@@ -224,7 +229,7 @@ internal fun PaisaLensApp(
     hasNotificationPermission: Boolean,
     hasActionableAlertPermission: Boolean,
     hasPaymentReminderPermission: Boolean,
-    onRequestSmsPermission: () -> Unit,
+    onRequestSmsPermission: (SmsSyncMode) -> Unit,
     onRequestDigestNotificationPermission: () -> Unit,
     onRequestActionableAlertPermission: () -> Unit,
     onOpenActionableAlertSettings: () -> Unit,
@@ -323,7 +328,7 @@ internal fun PaisaLensApp(
     var showManualSheet by remember { mutableStateOf(false) }
     var selectedTransaction by remember { mutableStateOf<TransactionRecord?>(null) }
     var selectedMerchantGroup by remember { mutableStateOf<MerchantTransactionGroup?>(null) }
-    var selectedAccount by remember { mutableStateOf<AccountProfile?>(null) }
+    var selectedAccount by remember { mutableStateOf<Pair<AccountProfile, Set<Long>>?>(null) }
     var showAccountManager by remember { mutableStateOf(false) }
     var showAccountMerge by remember { mutableStateOf(false) }
     var accountMergeSaving by remember { mutableStateOf(false) }
@@ -352,6 +357,7 @@ internal fun PaisaLensApp(
     var requestedPlanSection by rememberSaveable { mutableStateOf(PlanSection.BUDGETS) }
     var requestedInsightSection by rememberSaveable { mutableStateOf(InsightSection.OVERVIEW) }
     var activityFilter by remember { mutableStateOf(TransactionFilter.ALL) }
+    var activityInitialAccountKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var planNavigationRequest by remember { mutableIntStateOf(0) }
     var insightNavigationRequest by remember { mutableIntStateOf(0) }
     var activityNavigationRequest by remember { mutableIntStateOf(0) }
@@ -367,6 +373,7 @@ internal fun PaisaLensApp(
     }
     val openActivityFilter: (TransactionFilter) -> Unit = { filter ->
         activityFilter = filter
+        activityInitialAccountKeys = emptyList()
         activityNavigationRequest += 1
         destination = AppDestination.ACTIVITY
     }
@@ -439,13 +446,15 @@ internal fun PaisaLensApp(
     val snackbarHostState = remember { SnackbarHostState() }
     val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
-    val requestSmsResync: () -> Unit = {
+    val requestSmsScan: (SmsSyncMode) -> Unit = { mode ->
         when (smsResyncAction(hasSmsPermission, isScanning)) {
-            SmsResyncAction.START_SCAN -> viewModel.scanSms()
-            SmsResyncAction.REQUEST_PERMISSION -> onRequestSmsPermission()
+            SmsResyncAction.START_SCAN -> viewModel.scanSms(mode)
+            SmsResyncAction.REQUEST_PERMISSION -> onRequestSmsPermission(mode)
             SmsResyncAction.IGNORE_WHILE_SCANNING -> Unit
         }
     }
+    val requestSmsResync: () -> Unit = { requestSmsScan(SmsSyncMode.QUICK) }
+    val requestQuickSmsPermission: () -> Unit = { onRequestSmsPermission(SmsSyncMode.QUICK) }
     LaunchedEffect(launcherShortcutRequest, onboardingComplete) {
         val request = launcherShortcutRequest ?: return@LaunchedEffect
         if (!onboardingComplete) {
@@ -463,6 +472,21 @@ internal fun PaisaLensApp(
     }
     val systemInDarkTheme = isSystemInDarkTheme()
     val reviewDate = rememberCurrentReviewDate()
+    val billsTimeline = remember(
+        bills, utilitySmsBills, creditCardBills, recurringPayments, paymentCommitments, loans, accounts, reviewDate,
+    ) {
+        buildBillsTimeline(
+            bills = bills,
+            utilitySmsBills = utilitySmsBills,
+            creditCardBills = creditCardBills,
+            recurringPayments = recurringPayments,
+            paymentCommitments = paymentCommitments,
+            loans = loans,
+            accounts = accounts,
+            today = reviewDate.date,
+            zoneId = reviewDate.zoneId,
+        )
+    }
     val weeklyReview = remember(
         transactions,
         accounts,
@@ -581,7 +605,7 @@ internal fun PaisaLensApp(
             OnboardingScreen(
                 onAllowSms = {
                     viewModel.completeOnboarding()
-                    onRequestSmsPermission()
+                    requestQuickSmsPermission()
                 },
                 onManualOnly = viewModel::completeOnboarding,
             )
@@ -661,6 +685,7 @@ internal fun PaisaLensApp(
                             customCategories = customCategories,
                             accounts = accounts,
                             bills = bills,
+                            billsTimeline = billsTimeline,
                             recurringPayments = recurringPayments,
                             loans = loans,
                             creditCardBills = creditCardBills,
@@ -677,7 +702,7 @@ internal fun PaisaLensApp(
                             hasSmsPermission = hasSmsPermission,
                             onScan = requestSmsResync,
                             onTogglePrivacy = viewModel::toggleSessionPrivacy,
-                            onRequestPermission = onRequestSmsPermission,
+                            onRequestPermission = requestQuickSmsPermission,
                             onAdd = { showManualSheet = true },
                             onCustomizeHome = { showHomeCustomization = true },
                             onOpenSavingsGoals = { showSavingsGoals = true },
@@ -707,7 +732,7 @@ internal fun PaisaLensApp(
                                 onUpiBalanceSavingChange(false)
                                 onUpiBalanceErrorChange(null)
                             },
-                            onAccountClick = { selectedAccount = it },
+                            onAccountClick = { account, groupIds -> selectedAccount = account to groupIds },
                             onTransactionClick = { homeRecord ->
                                 selectedTransaction = transactions.firstOrNull { it.id == homeRecord.id } ?: homeRecord
                             },
@@ -719,6 +744,7 @@ internal fun PaisaLensApp(
                                 uncategorizedMerchants = uncategorizedMerchants,
                                 customCategories = customCategories,
                                 initialFilter = activityFilter,
+                                initialAccountKeys = activityInitialAccountKeys,
                                 onCategorizeMerchant = { selectedMerchantGroup = it },
                                 onTrustCenter = { showTrustCenter = true },
                                 onSharedExpenses = { showSharedExpenses = true },
@@ -736,6 +762,7 @@ internal fun PaisaLensApp(
                                 advancedBudgets = advancedBudgets,
                                 customCategories = customCategories,
                                 bills = bills,
+                                billsTimeline = billsTimeline,
                                 recurringPayments = recurringPayments,
                                 loans = loans,
                                 accounts = accounts,
@@ -807,6 +834,10 @@ internal fun PaisaLensApp(
                                 transactions = transactions,
                                 transactionLinks = transactionLinks,
                                 expenseSplits = expenseSplits,
+                                effectiveExpenseTransactions = effectiveExpenseTransactions,
+                                customCategories = customCategories,
+                                today = reviewDate.date,
+                                zoneId = reviewDate.zoneId,
                                 accounts = accounts,
                                 balanceHistory = balanceHistory,
                                 bills = bills,
@@ -837,8 +868,9 @@ internal fun PaisaLensApp(
                             onPrivacyMode = { showPrivacyMode = true },
                             onScheduledBackup = { showScheduledBackup = true },
                             onSmsCoverage = { showSmsCoverage = true },
-                            onRequestSms = onRequestSmsPermission,
+                            onRequestSms = requestQuickSmsPermission,
                             onScan = requestSmsResync,
+                            onFullRescan = { requestSmsScan(SmsSyncMode.FULL) },
                             transactionCount = transactions.size,
                             accountCount = accounts.size,
                             customCategoryCount = customCategories.size,
@@ -989,6 +1021,7 @@ internal fun PaisaLensApp(
                 onAdd = viewModel::addAccount,
                 onUpdate = viewModel::updateAccount,
                 onDelete = viewModel::deleteAccount,
+                onOpenHistory = { selectedAccount = it to setOf(it.id) },
                 onMerge = {
                     accountMergeError = null
                     showAccountManager = false
@@ -1091,36 +1124,58 @@ internal fun PaisaLensApp(
             }
         }
 
-        selectedAccount?.let { selected ->
-            val current = accounts.firstOrNull { it.id == selected.id }?.let { raw ->
-                raw.copy(
-                    accountHint = raw.accountHint ?: selected.accountHint,
-                    institution = raw.institution?.takeIf(String::isNotBlank) ?: selected.institution,
-                    balanceMinor = raw.balanceMinor ?: selected.balanceMinor,
-                    availableCreditMinor = raw.availableCreditMinor ?: selected.availableCreditMinor,
-                    creditLimitMinor = raw.creditLimitMinor ?: selected.creditLimitMinor,
-                    availabilityFetchedAt = raw.availabilityFetchedAt ?: selected.availabilityFetchedAt,
-                    availabilitySender = raw.availabilitySender ?: selected.availabilitySender,
-                )
-            } ?: selected
-            val relatedAccountIds = current.accountHint
-                ?.filter(Char::isDigit)
-                ?.takeLast(4)
-                ?.takeIf(String::isNotBlank)
-                ?.let { lastFour ->
-                    accounts.filter {
-                        it.type == current.type && it.accountHint?.filter(Char::isDigit)?.takeLast(4) == lastFour
-                    }.map { it.id }.toSet()
+        selectedAccount?.let { (selected, openedIds) ->
+            val current = accounts.firstOrNull { it.id == selected.id }
+            if (current == null) {
+                LaunchedEffect(selected.id) { selectedAccount = null }
+            } else {
+                val related = remember(accounts, current, openedIds) {
+                    if (current.balanceSourceGroups.size > 1) listOf(current)
+                    else accounts.filter { it.id in openedIds && it.balanceSourceGroups.size <= 1 }
+                }.ifEmpty { listOf(current) }
+                val relatedIds = remember(related) { related.mapTo(hashSetOf(), AccountProfile::id) }
+                val sources = remember(related, current) {
+                    if (current.balanceSourceGroups.size > 1) current.balanceSourceGroups
+                    else listOf(
+                        AccountBalanceSourceGroup(
+                            accountIds = related.flatMapTo(linkedSetOf()) {
+                                it.balanceSourceGroups.singleOrNull()?.accountIds ?: setOf(it.id)
+                            },
+                            label = current.name,
+                            preferSmsBalance = current.balanceSourceGroups.singleOrNull()?.preferSmsBalance == true,
+                        ),
+                    )
                 }
-                ?: setOf(current.id)
-            AccountFinanceSheet(
-                account = current,
-                history = balanceHistory
-                    .filter { it.accountId in relatedAccountIds }
-                    .map { if (it.accountId == current.id) it else it.copy(accountId = current.id) },
-                onUpdateAccount = viewModel::updateAccount,
-                onDismiss = { selectedAccount = null },
-            )
+                val latest = related.filter { it.currentBalanceReading() != null }
+                    .maxByOrNull { it.availabilityFetchedAt ?: Long.MIN_VALUE }
+                val displayed = if (latest == null || latest.id == current.id) current else current.copy(
+                    balanceMinor = latest.balanceMinor,
+                    availableCreditMinor = latest.availableCreditMinor,
+                    availabilityFetchedAt = latest.availabilityFetchedAt,
+                    availabilitySender = latest.availabilitySender,
+                )
+                val accountHistory = remember(balanceHistory, relatedIds) {
+                    balanceHistory.filter { it.accountId in relatedIds }
+                }
+                AccountFinanceSheet(
+                    account = displayed,
+                    history = accountHistory,
+                    sources = sources,
+                    today = reviewDate.date,
+                    zoneId = reviewDate.zoneId,
+                    onUpdateAccount = viewModel::updateAccount,
+                    onViewTransactions = {
+                        val keys = activityAccountFilterOptions(accounts, transactions)
+                            .filter { option -> option.accountIds.any(relatedIds::contains) }
+                            .map { it.key }
+                        selectedAccount = null
+                        showAccountManager = false
+                        openActivityFilter(TransactionFilter.ALL)
+                        activityInitialAccountKeys = keys
+                    },
+                    onDismiss = { selectedAccount = null },
+                )
+            }
         }
 
         if (showCategoryManager) {
@@ -1316,7 +1371,7 @@ internal fun PaisaLensApp(
                 isScanning = isScanning,
                 isVerifyingBackup = isVerifyingBackup,
                 undoInProgressBatchId = undoInProgressBatchId,
-                onRequestSmsPermission = onRequestSmsPermission,
+                onRequestSmsPermission = requestQuickSmsPermission,
                 onScanSms = requestSmsResync,
                 onReviewTransactions = {
                     showDataHealth = false
@@ -1422,6 +1477,7 @@ internal fun PaisaLensApp(
         if (showHomeCustomization) {
             HomeCustomizationSheet(
                 configuration = homeLayout,
+                today = reviewDate.date,
                 onConfigurationChange = viewModel::setHomeLayout,
                 onDismiss = { showHomeCustomization = false },
             )

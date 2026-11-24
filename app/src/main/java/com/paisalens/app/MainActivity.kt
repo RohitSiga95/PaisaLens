@@ -37,6 +37,7 @@ import com.paisalens.app.notification.PaymentReminderNotifier
 import com.paisalens.app.notification.PaymentReminderScheduler
 import com.paisalens.app.notification.AlertDestination
 import com.paisalens.app.sms.BankSmsSupport
+import com.paisalens.app.sms.SmsSyncMode
 import com.paisalens.app.widget.WIDGET_DESTINATION_EXTRA
 import java.io.File
 import java.time.LocalDate
@@ -54,6 +55,7 @@ class MainActivity : FragmentActivity() {
     private var hasPaymentReminderPermission by mutableStateOf(false)
     private var foregroundVisit by mutableStateOf(0)
     private var pendingNotificationPurpose: NotificationPermissionPurpose? = null
+    private var pendingSmsSyncMode = SmsSyncMode.QUICK
     private var pendingBackupPassphrase: CharArray? = null
     private var pendingRestorePassphrase: CharArray? = null
     private var pendingVerifyPassphrase: CharArray? = null
@@ -71,9 +73,11 @@ class MainActivity : FragmentActivity() {
     private val smsPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
+        val requestedMode = pendingSmsSyncMode
+        pendingSmsSyncMode = SmsSyncMode.QUICK
         hasSmsPermission = grants[Manifest.permission.READ_SMS] == true
         if (hasSmsPermission) {
-            viewModel.scanSms()
+            viewModel.scanSms(requestedMode)
         } else {
             Toast.makeText(
                 this,
@@ -174,6 +178,9 @@ class MainActivity : FragmentActivity() {
         pendingNotificationPurpose = savedInstanceState
             ?.getString(STATE_PENDING_NOTIFICATION_PURPOSE)
             ?.let { stored -> NotificationPermissionPurpose.entries.firstOrNull { it.name == stored } }
+        pendingSmsSyncMode = savedInstanceState?.getString(STATE_PENDING_SMS_SYNC_MODE)
+            ?.let { stored -> SmsSyncMode.entries.firstOrNull { it.name == stored } }
+            ?: SmsSyncMode.QUICK
         enableEdgeToEdge()
         updatePermissionState()
         refreshAvailableUpiApps()
@@ -214,14 +221,7 @@ class MainActivity : FragmentActivity() {
                     hasNotificationPermission = hasNotificationPermission,
                     hasActionableAlertPermission = hasActionableAlertPermission,
                     hasPaymentReminderPermission = hasPaymentReminderPermission,
-                    onRequestSmsPermission = {
-                        smsPermissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.READ_SMS,
-                                Manifest.permission.RECEIVE_SMS,
-                            ),
-                        )
-                    },
+                    onRequestSmsPermission = ::requestSmsPermission,
                     onRequestDigestNotificationPermission = {
                         requestNotificationPermission(NotificationPermissionPurpose.DIGEST)
                     },
@@ -320,6 +320,7 @@ class MainActivity : FragmentActivity() {
         pendingNotificationPurpose?.let {
             outState.putString(STATE_PENDING_NOTIFICATION_PURPOSE, it.name)
         }
+        outState.putString(STATE_PENDING_SMS_SYNC_MODE, pendingSmsSyncMode.name)
         launcherShortcutRequest?.let {
             outState.putString(STATE_PENDING_LAUNCHER_SHORTCUT, it.shortcut.action)
         }
@@ -361,6 +362,11 @@ class MainActivity : FragmentActivity() {
             Manifest.permission.READ_SMS,
         ) == PackageManager.PERMISSION_GRANTED
         updateNotificationPermissionState()
+    }
+
+    private fun requestSmsPermission(mode: SmsSyncMode) {
+        pendingSmsSyncMode = mode
+        smsPermissionLauncher.launch(arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS))
     }
 
     private fun updateNotificationPermissionState() {
@@ -470,9 +476,7 @@ class MainActivity : FragmentActivity() {
     private fun composeBalanceSms(account: AccountProfile) {
         if (!hasSmsPermission) {
             Toast.makeText(this, "Enable SMS access so PaisaLens can read the bank reply", Toast.LENGTH_LONG).show()
-            smsPermissionLauncher.launch(
-                arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS),
-            )
+            requestSmsPermission(SmsSyncMode.QUICK)
             return
         }
         val command = BankSmsSupport.commandFor(account)
@@ -555,6 +559,7 @@ class MainActivity : FragmentActivity() {
 
     private companion object {
         const val STATE_PENDING_NOTIFICATION_PURPOSE = "pending_notification_purpose"
+        const val STATE_PENDING_SMS_SYNC_MODE = "pending_sms_sync_mode"
         const val STATE_PENDING_LAUNCHER_SHORTCUT = "pending_launcher_shortcut"
 
         val SUPPORTED_UPI_APPS = listOf(

@@ -8,6 +8,8 @@ enum class HomeModule(
     val storageId: String,
     val label: String,
 ) {
+    DAILY_CHECK_IN("daily_check_in", "Daily check-in"),
+    UPCOMING_BILLS("upcoming_bills", "Upcoming bills"),
     FINANCIAL_PULSE("financial_pulse", "Financial pulse"),
     NEEDS_ATTENTION("needs_attention", "Needs your attention"),
     MONEY_TIMELINE("money_timeline", "Next 14 days"),
@@ -24,6 +26,8 @@ enum class HomeModule(
 
     companion object {
         val defaultOrder: List<HomeModule> = listOf(
+            DAILY_CHECK_IN,
+            UPCOMING_BILLS,
             FINANCIAL_PULSE,
             NEEDS_ATTENTION,
             MONEY_TIMELINE,
@@ -137,15 +141,21 @@ data class HomeLayoutConfiguration(
     companion object {
         fun fromStorageString(value: String?): HomeLayoutConfiguration {
             if (value.isNullOrBlank()) return HomeLayoutConfiguration()
-            if (value.startsWith(STORAGE_VERSION_PREFIX)) {
-                val sections = value.removePrefix(STORAGE_VERSION_PREFIX).split(STORAGE_SECTION_SEPARATOR, limit = 3)
+            val structuredPrefix = listOf(STORAGE_VERSION_PREFIX, SNAPSHOT_STORAGE_VERSION_PREFIX)
+                .firstOrNull(value::startsWith)
+            if (structuredPrefix != null) {
+                val sections = value.removePrefix(structuredPrefix).split(STORAGE_SECTION_SEPARATOR, limit = 3)
                 val parsed = sections.getOrNull(2)
                     ?.split(',')
                     ?.mapNotNull(HomeModule::fromStorageId)
                     ?.distinct()
                     .orEmpty()
                 return HomeLayoutConfiguration(
-                    orderedVisibleModules = parsed.ifEmpty { HomeModule.defaultOrder },
+                    orderedVisibleModules = when {
+                        parsed.isEmpty() -> HomeModule.defaultOrder
+                        structuredPrefix == SNAPSHOT_STORAGE_VERSION_PREFIX -> withFlexibleModules(parsed)
+                        else -> parsed
+                    },
                     density = HomeDashboardDensity.fromStorageId(sections.getOrNull(0)),
                     heroMetric = HomeHeroMetric.fromStorageId(sections.getOrNull(1)),
                 )
@@ -170,7 +180,7 @@ data class HomeLayoutConfiguration(
                     ).filterNot(withAttention::contains)).distinct()
                 }
             return HomeLayoutConfiguration(
-                orderedVisibleModules = parsed.ifEmpty { HomeModule.defaultOrder },
+                orderedVisibleModules = if (parsed.isEmpty()) HomeModule.defaultOrder else withFlexibleModules(parsed),
             )
         }
 
@@ -184,7 +194,7 @@ data class HomeLayoutConfiguration(
             heroMetric = heroMetric,
         )
 
-        private fun modulesForPreset(preset: HomeDashboardPreset): List<HomeModule> = when (preset) {
+        private fun modulesForPreset(preset: HomeDashboardPreset): List<HomeModule> = withFlexibleModules(when (preset) {
             HomeDashboardPreset.EVERYDAY -> HomeModule.defaultOrder
             HomeDashboardPreset.BUDGET_FOCUS -> listOf(
                 HomeModule.FINANCIAL_PULSE,
@@ -207,9 +217,13 @@ data class HomeLayoutConfiguration(
                 HomeModule.NEEDS_ATTENTION,
                 HomeModule.MONEY_TIMELINE,
             )
-        }
+        })
 
-        private const val STORAGE_VERSION_PREFIX = "v3:"
+        private fun withFlexibleModules(modules: List<HomeModule>): List<HomeModule> =
+            (listOf(HomeModule.DAILY_CHECK_IN, HomeModule.UPCOMING_BILLS).filterNot(modules::contains) + modules)
+
+        private const val STORAGE_VERSION_PREFIX = "v4:"
+        private const val SNAPSHOT_STORAGE_VERSION_PREFIX = "v3:"
         private const val PREVIOUS_STORAGE_VERSION_PREFIX = "v2:"
         private const val STORAGE_SECTION_SEPARATOR = "|"
     }

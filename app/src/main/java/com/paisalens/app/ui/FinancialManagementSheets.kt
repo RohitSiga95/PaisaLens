@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -23,25 +24,39 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.automirrored.rounded.Rule
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreditCard
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Sms
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -51,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,9 +75,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.paisalens.app.data.model.AccountBalanceDay
 import com.paisalens.app.data.model.AccountBalanceSnapshot
+import com.paisalens.app.data.model.AccountBalanceSourceGroup
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.CustomCategory
@@ -69,268 +90,264 @@ import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.SmartCategoryRule
 import com.paisalens.app.data.model.SmartRuleMatchType
 import com.paisalens.app.data.model.TransactionRecord
-import com.paisalens.app.data.model.buildDailyBalanceHistory
 import com.paisalens.app.data.model.balanceSourceDisplayName
 import com.paisalens.app.data.model.calculateCreditUtilization
+import com.paisalens.app.data.model.currentBalanceReading
+import com.paisalens.app.data.model.currentBalanceReadingDate
+import com.paisalens.app.data.model.dailyAccountBalances
+import com.paisalens.app.data.model.isSmsBalanceSource
 import com.paisalens.app.data.model.previewSmartCategoryRuleApplication
 import com.paisalens.app.sms.BankSmsSupport
 import com.paisalens.app.ui.components.CategoryIcon
 import com.paisalens.app.ui.components.CreditUtilizationBar
 import com.paisalens.app.ui.components.CustomCategoryIcon
-import com.paisalens.app.ui.components.MoneyChartPoint
-import com.paisalens.app.ui.components.MoneyLineChart
+import com.paisalens.app.ui.components.DailyBalanceChart
+import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.categoryColor
 import com.paisalens.app.ui.components.customCategoryColor
+import com.paisalens.app.ui.components.dashboardWidth
 import com.paisalens.app.ui.components.formatMoney
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
-private enum class BalanceHistoryRange(val label: String, val days: Int?) {
-    WEEK("7D", 7),
-    MONTH("30D", 30),
-    QUARTER("3M", 90),
-    ALL("All", null),
+private enum class BalanceHistoryRange(val label: String, val days: Int) {
+    WEEK("7 days", 7),
+    MONTH("30 days", 30),
+    QUARTER("90 days", 90),
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AccountFinanceSheet(
     account: AccountProfile,
     history: List<AccountBalanceSnapshot>,
+    sources: List<AccountBalanceSourceGroup>,
+    today: LocalDate,
+    zoneId: ZoneId,
     onUpdateAccount: (AccountProfile) -> Unit,
+    onViewTransactions: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var selectedRange by remember { mutableStateOf(BalanceHistoryRange.MONTH) }
+    var selectedRangeName by rememberSaveable(account.id) { mutableStateOf(BalanceHistoryRange.MONTH.name) }
+    var selectedEpochDay by rememberSaveable(account.id) { mutableStateOf<Long?>(null) }
+    var selectedSourceId by rememberSaveable(account.id) { mutableStateOf<Long?>(null) }
+    var showAllDays by rememberSaveable(account.id) { mutableStateOf(false) }
+    var showRawReadings by rememberSaveable(account.id) { mutableStateOf(false) }
     var showLimitDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    val accountHistory = remember(history, account.id) {
-        history.filter { it.accountId == account.id }.sortedByDescending { it.recordedAt }
+    var showOptions by remember { mutableStateOf(false) }
+    val range = BalanceHistoryRange.valueOf(selectedRangeName)
+    val scheme = MaterialTheme.colorScheme
+    val credit = account.type == AccountType.CREDIT_CARD
+    val valueLabel = if (credit) "Available credit" else "Available balance"
+    val current = account.currentBalanceReading()
+    val partial = sources.size > 1 && current != null && account.availabilityFetchedAt == null
+    val sourceView = sources.firstOrNull { it.accountIds.minOrNull() == selectedSourceId }
+    val chartSources = if (sourceView != null) listOf(sourceView) else sources
+    val chartHistory = remember(history, account, sources) {
+        val sourceId = sources.singleOrNull()?.accountIds?.singleOrNull()
+        val recordedAt = account.availabilityFetchedAt
+        if (sourceId != null && recordedAt != null && current != null &&
+            history.none { (it.physicalAccountId ?: it.accountId) == sourceId && it.recordedAt == recordedAt && it.chartAmount(account.type) != null }
+        ) {
+            history + AccountBalanceSnapshot(
+                accountId = sourceId,
+                balanceMinor = account.balanceMinor,
+                availableCreditMinor = account.availableCreditMinor,
+                creditLimitMinor = account.creditLimitMinor,
+                recordedAt = recordedAt,
+                sender = account.availabilitySender,
+            )
+        } else history
     }
-    val filteredHistory = remember(accountHistory, selectedRange) {
-        val cutoff = selectedRange.days?.let { System.currentTimeMillis() - it * DAY_MILLIS }
-        accountHistory.filter { cutoff == null || it.recordedAt >= cutoff }
+    val days = remember(chartHistory, account.type, chartSources, today, range, zoneId) {
+        dailyAccountBalances(chartHistory, account.type, chartSources, today, range.days, zoneId)
     }
-    val chartPoints = remember(filteredHistory, account.id, account.type) {
-        val daily = buildDailyBalanceHistory(filteredHistory, ZoneId.systemDefault(), account.id)
-        evenlySample(daily, maximumPoints = 36)
-            .mapNotNull { point ->
-                val amount = if (account.type == AccountType.CREDIT_CARD) point.availableCreditMinor else point.balanceMinor
-                amount?.let {
-                    MoneyChartPoint(shortDate(point.recordedAt), it)
-                }
-            }
-    }
-    val isPartialMergedValue = account.mergedMemberCount > 1 &&
-        account.currentFinanceAmount() != null && account.availabilityFetchedAt == null
-    val utilization = remember(account, isPartialMergedValue) {
+    val hasReadings = days.any { it.amountMinor != null }
+    val selectedDate = selectedEpochDay?.let(LocalDate::ofEpochDay)?.takeIf { it in days.first().date..today } ?: today
+    val utilization = remember(account, partial) {
         calculateCreditUtilization(
             accountId = account.id,
-            availableCreditMinor = account.availableCreditMinor.takeUnless { isPartialMergedValue },
+            availableCreditMinor = account.availableCreditMinor.takeUnless { partial },
             creditLimitMinor = account.creditLimitMinor,
         )
     }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.94f)
-                .navigationBarsPadding(),
-        ) {
-            FinancialSheetHeader(
-                title = account.name,
-                subtitle = account.financeSubtitle(),
-                onEditTitle = { showRenameDialog = true },
-                editTitleDescription = "Rename ${account.name}",
-                onDismiss = onDismiss,
-            )
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                item {
-                    PrivateDataNotice("Balance history stays in PaisaLens' private app storage and never leaves this phone.")
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = scheme.background) {
+            Column(Modifier.dashboardWidth(860.dp).fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back from account details") }
+                    Text(
+                        account.name,
+                        modifier = Modifier.weight(1f).padding(start = 4.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Box {
+                        IconButton(onClick = { showOptions = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = "Account options")
+                        }
+                        DropdownMenu(expanded = showOptions, onDismissRequest = { showOptions = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Rename account") },
+                                onClick = { showOptions = false; showRenameDialog = true },
+                            )
+                            if (credit && account.mergedMemberCount <= 1) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit total credit limit") },
+                                    onClick = { showOptions = false; showLimitDialog = true },
+                                )
+                            }
+                            if (history.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text(if (showRawReadings) "Daily history" else "All saved readings") },
+                                    onClick = { showOptions = false; showRawReadings = !showRawReadings },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("View transactions") },
+                                onClick = { showOptions = false; onViewTransactions() },
+                            )
+                        }
+                    }
                 }
-                item {
-                    PaisaCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier.padding(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                buildString {
-                                    append(if (account.type == AccountType.CREDIT_CARD) "Available credit" else "Current balance")
-                                    if (isPartialMergedValue) append(" · partial")
-                                },
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                account.currentFinanceAmount()?.let(::formatMoney) ?: "Not available",
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                if (isPartialMergedValue) {
-                                    "Some merged sources do not have a current value"
-                                } else account.availabilityFetchedAt?.let { timestamp ->
-                                    val action = if (
-                                        balanceSourceDisplayName(account.availabilitySender)
-                                            ?.startsWith("User entered") == true
-                                    ) {
-                                        "Entered"
-                                    } else {
-                                        "Fetched"
-                                    }
-                                    "$action ${fullDateTime(timestamp)}"
-                                } ?: "No balance update has been saved yet",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            balanceSourceDisplayName(account.availabilitySender)
-                                ?.takeIf(String::isNotBlank)
-                                ?.let { sender ->
-                                Text(
-                                    "Source: $sender",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    item(key = "account-balance-header") {
+                        AccountBalanceHeader(account, valueLabel, today, zoneId, partial, sources.size > 1)
+                    }
+                    item(key = "account-balance-ranges") {
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            BalanceHistoryRange.entries.forEachIndexed { index, option ->
+                                SegmentedButton(
+                                    selected = option == range,
+                                    onClick = {
+                                        selectedRangeName = option.name
+                                        selectedEpochDay = null
+                                        showAllDays = false
+                                    },
+                                    shape = SegmentedButtonDefaults.itemShape(index, BalanceHistoryRange.entries.size),
+                                    colors = SegmentedButtonDefaults.colors(
+                                        activeContainerColor = scheme.primary,
+                                        activeContentColor = scheme.onPrimary,
+                                    ),
+                                    label = { Text(option.label, textAlign = TextAlign.Center) },
                                 )
                             }
                         }
                     }
-                }
-                if (account.type == AccountType.CREDIT_CARD) {
-                    item {
-                        PaisaCard(modifier = Modifier.fillMaxWidth()) {
-                            Column(
-                                modifier = Modifier.padding(18.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("Credit utilisation", style = MaterialTheme.typography.titleMedium)
-                                        Text(
-                                            account.creditLimitMinor?.let { "Limit ${formatMoney(it)}" }
-                                                ?: "Add the total card limit for accurate tracking",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
+                    if (sources.size > 1) {
+                        item(key = "account-balance-sources") {
+                            var chooseSource by remember { mutableStateOf(false) }
+                            Box {
+                                OutlinedButton(onClick = { chooseSource = true }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                    Text(sourceView?.label ?: "Combined balance")
+                                    Icon(Icons.Rounded.ExpandMore, contentDescription = "Choose a source account")
+                                }
+                                DropdownMenu(expanded = chooseSource, onDismissRequest = { chooseSource = false }) {
+                                    DropdownMenuItem(text = { Text("Combined balance") }, onClick = {
+                                        selectedSourceId = null
+                                        chooseSource = false
+                                    })
+                                    sources.forEach { source ->
+                                        DropdownMenuItem(text = { Text(source.label) }, onClick = {
+                                            selectedSourceId = source.accountIds.minOrNull()
+                                            chooseSource = false
+                                        })
                                     }
-                                    if (account.mergedMemberCount <= 1) {
-                                        IconButton(onClick = { showLimitDialog = true }) {
-                                            Icon(Icons.Rounded.Edit, contentDescription = "Edit total credit limit")
+                                }
+                            }
+                            if (sourceView == null) {
+                                Text(
+                                    "Combined history starts once every account has a saved reading. See each source separately above.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = scheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    item(key = "account-balance-chart") {
+                        DailyBalanceChart(days, selectedDate, valueLabel) { selectedEpochDay = it.toEpochDay() }
+                    }
+                    item(key = "account-balance-history-heading") {
+                        Text(
+                            if (showRawReadings) "Saved readings" else "Balance history",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    if (showRawReadings) {
+                        items(history, key = AccountBalanceSnapshot::id) { reading ->
+                            BalanceHistoryRow(reading, account.type)
+                        }
+                    } else if (hasReadings) {
+                        val visibleDays = days.asReversed().let { if (showAllDays) it else it.take(3) }
+                        items(visibleDays, key = { it.date.toEpochDay() }) { day ->
+                            AccountDailyBalanceRow(
+                                day = day,
+                                selected = selectedDate == day.date,
+                                today = today,
+                                onClick = { selectedEpochDay = day.date.toEpochDay() },
+                            )
+                        }
+                        item(key = "account-balance-show-all") {
+                            TextButton(onClick = { showAllDays = !showAllDays }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                Text(if (showAllDays) "Show recent days" else "Show all ${range.days} days")
+                            }
+                        }
+                    } else {
+                        item(key = "account-balance-empty-history") {
+                            Text("No dated balance readings yet.", color = scheme.onSurfaceVariant)
+                        }
+                    }
+                    item(key = "account-view-transactions") {
+                        FilledTonalButton(
+                            onClick = onViewTransactions,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.ReceiptLong, contentDescription = null)
+                            Text("View transactions", modifier = Modifier.weight(1f).padding(start = 10.dp))
+                            Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null)
+                        }
+                    }
+                    if (credit) {
+                        item(key = "account-credit-utilization") {
+                            PaisaCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("Credit utilisation", style = MaterialTheme.typography.titleMedium)
+                                    utilization.utilizationBasisPoints?.let { basisPoints ->
+                                        CreditUtilizationBar(basisPoints, utilization.band, Modifier.fillMaxWidth())
+                                    } ?: Text(
+                                        if (partial) "Credit usage needs a reading from every merged card."
+                                        else "Add the total credit limit to calculate credit use.",
+                                        color = scheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    if (account.creditLimitMinor != null) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        ) {
+                                            Column(Modifier.weight(1f)) { FinanceValue("Used", utilization.usedMinor) }
+                                            Column(Modifier.weight(1f)) { FinanceValue("Credit limit", account.creditLimitMinor) }
                                         }
                                     }
                                 }
-                                utilization.utilizationBasisPoints?.let { basisPoints ->
-                                    CreditUtilizationBar(
-                                        basisPoints = basisPoints,
-                                        band = utilization.band,
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                } ?: Text(
-                                    if (isPartialMergedValue) {
-                                        "Utilisation is hidden until every merged card has a current available-credit value."
-                                    } else {
-                                        "Utilisation will appear after a total limit and available credit are known."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (account.creditLimitMinor != null) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                    ) {
-                                        FinanceValue("Used", utilization.usedMinor)
-                                        FinanceValue("Available", utilization.availableCreditMinor)
-                                    }
-                                }
                             }
                         }
-                    }
-                }
-                item {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                if (account.mergedMemberCount > 1) "Source balance history" else "Balance trend",
-                                style = MaterialTheme.typography.titleLarge,
-                            )
-                            Icon(Icons.Rounded.History, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        }
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(BalanceHistoryRange.entries) { range ->
-                                FilterChip(
-                                    selected = selectedRange == range,
-                                    onClick = { selectedRange = range },
-                                    modifier = Modifier.heightIn(min = 48.dp),
-                                    label = { Text(range.label) },
-                                )
-                            }
-                        }
-                    }
-                }
-                item {
-                    PaisaCard(modifier = Modifier.fillMaxWidth()) {
-                        if (account.mergedMemberCount > 1) {
-                            EmptyFinanceState(
-                                title = "Combined trend not drawn",
-                                detail = "The current total combines ${account.mergedMemberCount} sources, but they update at different times. Individual snapshots remain listed below.",
-                            )
-                        } else if (chartPoints.isEmpty()) {
-                            EmptyFinanceState(
-                                title = "No history in this range",
-                                detail = "New SMS and user-entered balance updates will add points to this chart.",
-                            )
-                        } else {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(
-                                    if (account.type == AccountType.CREDIT_CARD) "Available credit over time" else "Balance over time",
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
-                                Spacer(Modifier.height(14.dp))
-                                MoneyLineChart(points = chartPoints, modifier = Modifier.fillMaxWidth())
-                            }
-                        }
-                    }
-                }
-                item {
-                    Text(
-                        if (account.mergedMemberCount > 1) "Individual source snapshots" else "Balance history",
-                        style = MaterialTheme.typography.titleLarge,
-                    )
-                }
-                if (filteredHistory.isEmpty()) {
-                    item {
-                        Text(
-                            "There are no saved balance updates for ${selectedRange.label}.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                } else {
-                    items(filteredHistory.take(60), key = { it.id }) { snapshot ->
-                        BalanceHistoryRow(snapshot = snapshot, accountType = account.type)
                     }
                 }
             }
@@ -347,7 +364,6 @@ internal fun AccountFinanceSheet(
             },
         )
     }
-
     if (showRenameDialog) {
         AccountRenameDialog(
             account = account,
@@ -357,6 +373,102 @@ internal fun AccountFinanceSheet(
                 showRenameDialog = false
             },
         )
+    }
+}
+
+@Composable
+private fun AccountBalanceHeader(
+    account: AccountProfile,
+    valueLabel: String,
+    today: LocalDate,
+    zoneId: ZoneId,
+    partial: Boolean,
+    combined: Boolean,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val amount = account.currentBalanceReading()
+    val date = account.currentBalanceReadingDate(zoneId)
+    val asOf = when (date) {
+        today -> "Today"
+        today.minusDays(1) -> "Yesterday"
+        null -> null
+        else -> date.format(DateTimeFormatter.ofPattern("d MMM uuuu"))
+    }
+    val source = when {
+        partial -> "Partial · missing source readings"
+        amount == null -> "No saved reading"
+        combined -> listOfNotNull("Combined readings", asOf?.let { "oldest $it" }).joinToString(" · ")
+        isSmsBalanceSource(account.availabilitySender) -> listOfNotNull("From SMS", asOf).joinToString(" · ")
+        else -> listOfNotNull("Saved balance", asOf).joinToString(" · ")
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                color = scheme.primaryContainer,
+                contentColor = scheme.onPrimaryContainer,
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Icon(
+                    if (account.type == AccountType.CREDIT_CARD) Icons.Rounded.CreditCard else Icons.Rounded.AccountBalance,
+                    contentDescription = null,
+                    modifier = Modifier.padding(12.dp).size(26.dp),
+                )
+            }
+            Text(account.financeSubtitle(), modifier = Modifier.weight(1f), color = scheme.onSurfaceVariant)
+        }
+        Column {
+            Text(valueLabel, style = MaterialTheme.typography.titleMedium, color = scheme.onSurfaceVariant)
+            if (amount == null) Text("Not available", style = MaterialTheme.typography.headlineMedium)
+            else MoneyText(amount, style = MaterialTheme.typography.displaySmall, color = scheme.onSurface)
+        }
+        Surface(color = scheme.secondaryContainer, contentColor = scheme.onSecondaryContainer, shape = CircleShape) {
+            Row(
+                Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Sms, contentDescription = null, modifier = Modifier.size(17.dp))
+                Text(source, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountDailyBalanceRow(
+    day: AccountBalanceDay,
+    selected: Boolean,
+    today: LocalDate,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        shape = MaterialTheme.shapes.small,
+        color = if (selected) scheme.primaryContainer.copy(alpha = 0.5f) else scheme.surface,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(day.date.format(DateTimeFormatter.ofPattern("d MMM uuuu")), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    when {
+                        day.amountMinor == null -> "No saved reading"
+                        !day.allReadingsFromThisDay -> "Carried forward"
+                        day.date == today -> "Current reading"
+                        else -> "Saved reading"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurfaceVariant,
+                )
+            }
+            if (day.amountMinor == null) Text("—")
+            else MoneyText(day.amountMinor, style = MaterialTheme.typography.titleSmall)
+        }
     }
 }
 
@@ -1042,18 +1154,5 @@ private fun String.filterAmountInput(): String {
     }
 }
 
-private fun <T> evenlySample(values: List<T>, maximumPoints: Int): List<T> {
-    if (values.size <= maximumPoints) return values
-    val lastIndex = values.lastIndex
-    return (0 until maximumPoints).map { slot ->
-        values[(slot.toLong() * lastIndex / (maximumPoints - 1)).toInt()]
-    }.distinct()
-}
-
-private fun shortDate(timestamp: Long): String =
-    SimpleDateFormat("d MMM", Locale.getDefault()).format(Date(timestamp))
-
 private fun fullDateTime(timestamp: Long): String =
     SimpleDateFormat("d MMM yyyy, h:mm a", Locale.getDefault()).format(Date(timestamp))
-
-private const val DAY_MILLIS = 24L * 60L * 60L * 1000L

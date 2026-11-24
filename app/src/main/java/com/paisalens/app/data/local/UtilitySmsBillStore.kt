@@ -51,7 +51,11 @@ internal object UtilitySmsBillStore {
         TABLE, columns, "id = ?", arrayOf(id.toString()), null, null, null, "1",
     ).use { cursor -> if (cursor.moveToFirst()) cursor.readUtilityBill() else null }
 
-    fun ingest(db: SQLiteDatabase, notices: List<UtilitySmsBill>): UtilitySmsIngestResult {
+    fun ingest(
+        db: SQLiteDatabase,
+        notices: List<UtilitySmsBill>,
+        beforeTrackedChange: () -> Unit = {},
+    ): UtilitySmsIngestResult {
         if (notices.isEmpty()) return UtilitySmsIngestResult()
         db.beginTransaction()
         try {
@@ -69,7 +73,7 @@ internal object UtilitySmsBillStore {
                 } else {
                     val updated = match.withNotice(notice)
                     db.update(TABLE, values(updated), "id = ?", arrayOf(match.id.toString()))
-                    if (updateTrackedBill(db, match, updated)) tracked.add(checkNotNull(match.trackedBillId))
+                    if (updateTrackedBill(db, match, updated, beforeTrackedChange)) tracked.add(checkNotNull(match.trackedBillId))
                     updated
                 }
                 stored[saved.id] = saved
@@ -87,7 +91,12 @@ internal object UtilitySmsBillStore {
      * Refresh amount/date independently, and only while each still matches the last SMS value.
      * An edit or paid state made in the ordinary bill flow is preserved.
      */
-    private fun updateTrackedBill(db: SQLiteDatabase, old: UtilitySmsBill, updated: UtilitySmsBill): Boolean {
+    private fun updateTrackedBill(
+        db: SQLiteDatabase,
+        old: UtilitySmsBill,
+        updated: UtilitySmsBill,
+        beforeTrackedChange: () -> Unit,
+    ): Boolean {
         val id = old.trackedBillId ?: return false
         if (old.amountMinor == updated.amountMinor && old.dueDateEpochDay == updated.dueDateEpochDay) return false
         val current = db.query(
@@ -104,6 +113,7 @@ internal object UtilitySmsBillStore {
             values.put("due_date_epoch_day", updated.dueDateEpochDay)
         }
         if (values.size() == 0) return false
+        beforeTrackedChange()
         values.put("updated_at", System.currentTimeMillis())
         return db.update("bills", values, "id = ?", arrayOf(id.toString())) == 1
     }

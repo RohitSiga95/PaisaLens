@@ -39,22 +39,15 @@ fun buildSpendingCategoryTotals(
     transactions: List<TransactionRecord>,
     customCategories: List<CustomCategory> = emptyList(),
 ): List<SpendingCategoryTotal> {
+    val customById = customCategories.associateBy(CustomCategory::id)
     val transactionTotals = transactions.groupBy { transaction ->
-        SpendingCategoryKey(
-            builtIn = transaction.category,
-            customCategoryId = transaction.customCategoryId,
-            customCategoryName = transaction.customCategoryName?.takeIf(String::isNotBlank),
-        ).let { key ->
-            // A persisted custom id is the durable identity even if older rows carry a stale label.
-            if (key.customCategoryId != null) key.copy(customCategoryName = null) else key
-        }
-    }
-    .map { (groupedKey, records) ->
-        val currentLabel = records.firstNotNullOfOrNull {
-            it.customCategoryName?.takeIf(String::isNotBlank)
-        }
+        transaction.spendingCategoryKey().stableId
+    }.values.map { records ->
+        val key = records.first().spendingCategoryKey()
+        val label = key.customCategoryId?.let { customById[it]?.name }
+            ?: records.firstNotNullOfOrNull { it.customCategoryName?.trim()?.takeIf(String::isNotBlank) }
         SpendingCategoryTotal(
-            key = groupedKey.copy(customCategoryName = currentLabel ?: groupedKey.customCategoryName),
+            key = key.copy(customCategoryName = label),
             amountMinor = records.sumOf(TransactionRecord::amountMinor),
         )
     }
@@ -76,3 +69,10 @@ fun buildSpendingCategoryTotals(
             .thenBy { it.key.label.lowercase(Locale.ROOT) },
     )
 }
+
+private fun TransactionRecord.spendingCategoryKey(): SpendingCategoryKey =
+    SpendingCategoryKey(
+        builtIn = category,
+        customCategoryId = customCategoryId,
+        customCategoryName = customCategoryName?.trim()?.takeIf(String::isNotBlank),
+    )

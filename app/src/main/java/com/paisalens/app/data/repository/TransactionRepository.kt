@@ -4,6 +4,7 @@ import android.content.Context
 import com.paisalens.app.data.backup.PaisaLensBackupCodec
 import com.paisalens.app.data.importer.StatementImporter
 import com.paisalens.app.data.local.PaisaLensDatabase
+import com.paisalens.app.data.local.SmsInboxProgressStore
 import com.paisalens.app.data.model.AccountAvailabilityUpdate
 import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountBalanceWriteResult
@@ -78,9 +79,13 @@ import com.paisalens.app.data.model.creditCardReminderTargetKey
 import com.paisalens.app.data.model.currentCreditCardBills
 import com.paisalens.app.data.model.manualBillReminderTargetKey
 import com.paisalens.app.data.model.isSmsBalanceSource
+import com.paisalens.app.data.model.refreshDataHealthBalances
 import com.paisalens.app.data.model.validateTransactionLink as validateLinkCandidate
 import com.paisalens.app.data.network.FrankfurterRateService
 import com.paisalens.app.security.SensitiveDataCipher
+import com.paisalens.app.sms.SmsInboxScanner
+import com.paisalens.app.sms.SmsScanBatch
+import com.paisalens.app.sms.SmsSyncMode
 import com.paisalens.app.notification.PaymentReminderScheduler
 import com.paisalens.app.notification.PaymentReminderNotifier
 import com.paisalens.app.widget.PaisaLensWidgetProvider
@@ -91,9 +96,12 @@ import java.time.YearMonth
 import java.time.ZoneId
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class TransactionRepository(
@@ -102,6 +110,10 @@ class TransactionRepository(
     private val cipher: SensitiveDataCipher,
     private val rateService: FrankfurterRateService = FrankfurterRateService(),
 ) {
+    private val smsInboxMutex = Mutex()
+    private val smsInboxProgress = SmsInboxProgressStore(context)
+    private var hasRefreshed = false
+
     private val _transactions = MutableStateFlow<List<TransactionRecord>>(emptyList())
     val transactions: StateFlow<List<TransactionRecord>> = _transactions.asStateFlow()
 
@@ -215,6 +227,27 @@ class TransactionRepository(
 
     suspend fun load() = withContext(Dispatchers.IO) { refresh() }
 
+    internal suspend fun syncSmsInbox(scanner: SmsInboxScanner, mode: SmsSyncMode): SmsIngestResult =
+        withContext(Dispatchers.IO) {
+            smsInboxMutex.withLock {
+                val saved = smsInboxProgress.read()
+                // If a full scan is interrupted, the next quick sync must finish
+                // rechecking history instead of trusting an earlier bookmark.
+                if (mode == SmsSyncMode.FULL && saved != null) smsInboxProgress.write(null)
+                val previous = saved.takeIf { mode == SmsSyncMode.QUICK }
+                val rules = database.getSmsCoverageRules().filter(SmsCoverageRule::enabled)
+                val changes = SmsChanges()
+                val next = applySmsChanges(changes) {
+                    scanner.scan(mode, previous, rules, checkCancelled = { coroutineContext.ensureActive() }) { batch ->
+                        ingestSmsBatch(batch, changes)
+                    }
+                }
+                coroutineContext.ensureActive()
+                if (next != previous) smsInboxProgress.write(next)
+                changes.result()
+            }
+        }
+
     suspend fun ingestSms(
         items: List<ParsedTransaction>,
         availabilityUpdates: List<AccountAvailabilityUpdate>,
@@ -223,23 +256,50 @@ class TransactionRepository(
         creditCardPayments: List<CreditCardPayment> = emptyList(),
         utilityBills: List<UtilitySmsBill> = emptyList(),
     ): SmsIngestResult = withContext(Dispatchers.IO) {
-        val reminderSchedulingFenced = creditCardBills.isNotEmpty() || utilityBills.isNotEmpty()
-        if (reminderSchedulingFenced) PaymentReminderScheduler.cancel(context)
-        try {
-            val cardBillsBefore = if (creditCardBills.isEmpty()) {
+        val changes = SmsChanges()
+        applySmsChanges(changes) {
+            ingestSmsBatch(SmsScanBatch(items, availabilityUpdates, coverageCandidates, creditCardBills, creditCardPayments, utilityBills), changes)
+        }
+        changes.result()
+    }
+
+    private fun ingestSmsBatch(batch: SmsScanBatch, changes: SmsChanges) {
+        val transactionResult = database.insertSmsTransactions(
+            batch.transactions,
+            matchesEncryptedBody = { payload, plain -> runCatching { cipher.decrypt(payload) == plain }.getOrDefault(false) },
+            encrypt = cipher::encrypt,
+        )
+        changes.insertedTransactions += transactionResult.inserted
+        changes.mergedDuplicates += transactionResult.duplicatesMerged
+        changes.coverageAdded += database.insertSmsCoverageCandidates(batch.coverageCandidates, cipher::encrypt)
+        val balance = database.applyAccountAvailabilityWithHistory(batch.availabilityUpdates)
+        changes.updatedAccounts += balance.accountsUpdated
+        changes.balanceSnapshotsAdded += balance.snapshotsAdded
+        changes.cardPaymentsAdded += database.insertCreditCardPayments(batch.creditCardPayments)
+
+        if (batch.creditCardBills.isEmpty() && batch.utilityBills.isEmpty()) return
+        // Acquire the scheduler monitor before opening the SQLite write. Delivery uses
+        // the same order when checking its token and writing delivery history.
+        synchronized(PaymentReminderScheduler) {
+            var batchFenced = false
+            val fence = {
+                if (!batchFenced) {
+                    PaymentReminderScheduler.cancel(context)
+                    batchFenced = true
+                    changes.remindersFenced = true
+                }
+            }
+            val cardBillsBefore = if (batch.creditCardBills.isEmpty()) {
                 emptyMap()
             } else {
                 currentCreditCardBills(database.getCreditCardBills())
                     .associateBy(CreditCardBill::creditCardBillGroupKey)
             }
-            val encrypted = items.map { it to cipher.encrypt(it.rawMessage) }
-            val transactionResult = database.insertAll(encrypted)
-            val encryptedCoverage = coverageCandidates.map { it to cipher.encrypt(it.body) }
-            val coverageCount = database.insertSmsCoverage(encryptedCoverage)
-            val availabilityCount = database.applyAccountAvailability(availabilityUpdates)
-            val creditCardBillCount = database.upsertCreditCardBills(creditCardBills)
-            val creditCardPaymentCount = database.insertCreditCardPayments(creditCardPayments)
-            val utilityResult = database.ingestUtilitySmsBills(utilityBills)
+            val creditCardBillCount = database.upsertCreditCardBills(batch.creditCardBills, fence)
+            changes.cardBillsChanged += creditCardBillCount
+            val utilityResult = database.ingestUtilitySmsBills(batch.utilityBills, fence)
+            changes.utilityBillsChanged += utilityResult.changedBills
+            changes.trackedUtilityChanged = changes.trackedUtilityChanged || utilityResult.changedTrackedIds.isNotEmpty()
             val changedTargets = utilityResult.changedTrackedIds.mapTo(mutableSetOf(), ::manualBillReminderTargetKey)
             if (creditCardBillCount > 0) {
                 val cardBillsAfter = currentCreditCardBills(database.getCreditCardBills())
@@ -253,20 +313,20 @@ class TransactionRepository(
                     .filter { it.targetKey in changedTargets }
                     .forEach { PaymentReminderNotifier.cancelForRule(context, it.id) }
             }
-            refresh()
-            SmsIngestResult(
-                insertedTransactions = transactionResult.inserted,
-                updatedAccounts = availabilityCount,
-                mergedDuplicateTransactions = transactionResult.duplicatesMerged,
-                coverageMessagesAdded = coverageCount,
-                updatedCreditCardBills = creditCardBillCount,
-                addedCreditCardPayments = creditCardPaymentCount,
-                updatedUtilityBills = utilityResult.changedBills,
-            )
+        }
+    }
+
+    private fun <T> applySmsChanges(changes: SmsChanges, write: () -> T): T {
+        val result = try {
+            write()
         } catch (error: Throwable) {
-            if (reminderSchedulingFenced) PaymentReminderScheduler.sync(context)
+            // Earlier batches may already be committed. Show them, but leave the inbox
+            // bookmark unchanged so the next sync safely replays the unfinished scan.
+            runCatching { refresh(changes) }.exceptionOrNull()?.let(error::addSuppressed)
             throw error
         }
+        refresh(changes)
+        return result
     }
 
     suspend fun insertParsed(items: List<ParsedTransaction>): Int =
@@ -302,28 +362,39 @@ class TransactionRepository(
     }
 
     suspend fun saveSmsCoverageRule(rule: SmsCoverageRule): Long = withContext(Dispatchers.IO) {
-        val id = database.upsertSmsCoverageRule(rule)
-        if (rule.enabled) {
-            val matchingIds = _smsCoverageMessages.value
-                .asSequence()
-                .filter { it.status == SmsCoverageStatus.NEEDS_REVIEW && rule.matches(it.sender, it.body) }
-                .map(SmsCoverageMessage::id)
-                .toList()
-            database.deleteSmsCoverageMessages(matchingIds)
+        smsInboxMutex.withLock {
+            // A rule can recognize messages that a previous successful sync ignored.
+            smsInboxProgress.write(null)
+            val id = database.upsertSmsCoverageRule(rule)
+            if (rule.enabled) {
+                val matchingIds = _smsCoverageMessages.value
+                    .asSequence()
+                    .filter { it.status == SmsCoverageStatus.NEEDS_REVIEW && rule.matches(it.sender, it.body) }
+                    .map(SmsCoverageMessage::id)
+                    .toList()
+                database.deleteSmsCoverageMessages(matchingIds)
+            }
+            refresh()
+            id
         }
-        refresh()
-        id
     }
 
     suspend fun deleteSmsCoverageRule(id: Long) = withContext(Dispatchers.IO) {
-        database.deleteSmsCoverageRule(id)
-        refresh()
+        smsInboxMutex.withLock {
+            smsInboxProgress.write(null)
+            database.deleteSmsCoverageRule(id)
+            refresh()
+        }
     }
 
     suspend fun updateAccountAvailability(update: AccountAvailabilityUpdate): Int = withContext(Dispatchers.IO) {
-        val count = database.applyAccountAvailability(listOf(update))
-        refresh()
-        count
+        val changes = SmsChanges()
+        applySmsChanges(changes) {
+            val stored = database.applyAccountAvailabilityWithHistory(listOf(update))
+            changes.updatedAccounts = stored.accountsUpdated
+            changes.balanceSnapshotsAdded = stored.snapshotsAdded
+        }
+        changes.updatedAccounts
     }
 
     suspend fun saveAdvancedBudget(plan: AdvancedBudgetPlan): Long = withContext(Dispatchers.IO) {
@@ -990,17 +1061,21 @@ class TransactionRepository(
     suspend fun restoreBackup(input: InputStream, passphrase: CharArray): Int = withContext(Dispatchers.IO) {
         try {
             val snapshot = PaisaLensBackupCodec.read(passphrase, input)
-            // Fence any receiver that claimed an alarm for the old dataset before mutating the DB.
-            PaymentReminderScheduler.cancel(context)
-            PaymentReminderNotifier.cancelAll(context)
-            try {
-                database.restore(snapshot)
-            } catch (error: Throwable) {
-                // Database.restore is transactional. Replan the intact old dataset on rollback.
-                PaymentReminderScheduler.sync(context)
-                throw error
+            smsInboxMutex.withLock {
+                // A portable backup can be older or from another inbox.
+                smsInboxProgress.write(null)
+                // Fence any receiver that claimed an alarm for the old dataset before mutating the DB.
+                PaymentReminderScheduler.cancel(context)
+                PaymentReminderNotifier.cancelAll(context)
+                try {
+                    database.restore(snapshot)
+                } catch (error: Throwable) {
+                    // Database.restore is transactional. Replan the intact old dataset on rollback.
+                    PaymentReminderScheduler.sync(context)
+                    throw error
+                }
+                refresh()
             }
-            refresh()
             snapshot.transactions.size
         } finally {
             passphrase.fill('\u0000')
@@ -1019,26 +1094,90 @@ class TransactionRepository(
     }
 
     suspend fun clearAll() = withContext(Dispatchers.IO) {
-        PaymentReminderScheduler.cancel(context)
-        PaymentReminderNotifier.cancelAll(context)
-        try {
-            database.clearAll()
-            // Also remove a card posted by a worker that finished immediately before the fence.
+        smsInboxMutex.withLock {
+            smsInboxProgress.write(null)
+            PaymentReminderScheduler.cancel(context)
             PaymentReminderNotifier.cancelAll(context)
-            refresh()
-        } catch (error: Throwable) {
-            PaymentReminderScheduler.sync(context)
-            throw error
+            try {
+                database.clearAll()
+                // Also remove a card posted by a worker that finished immediately before the fence.
+                PaymentReminderNotifier.cancelAll(context)
+                refresh()
+            } catch (error: Throwable) {
+                PaymentReminderScheduler.sync(context)
+                throw error
+            }
         }
     }
 
-    private fun refresh() {
-        database.consolidateDuplicateBankAccounts()
-        val currentTransactions = database.getTransactions()
-        val currentAccounts = database.getAccounts()
-        val currentLinks = database.getTransactionLinks()
-        _smsCoverageRules.value = database.getSmsCoverageRules()
-        database.deleteHandledSmsCoverageMessages()
+    @Synchronized
+    private fun refresh(changes: SmsChanges? = null) {
+        if (changes != null && !changes.hasWrites) {
+            if (changes.remindersFenced) PaymentReminderScheduler.sync(context)
+            return
+        }
+        val all = changes == null || !hasRefreshed
+        val previousAccounts = _accounts.value
+        val readAccounts = all || changes?.accountsMayHaveChanged == true
+        if (readAccounts) {
+            database.consolidateDuplicateBankAccounts()
+            _accounts.value = database.getAccounts()
+        }
+        val currentAccounts = _accounts.value
+        val accountIdentityChanged = all || readAccounts &&
+            previousAccounts.map(AccountProfile::identityForRefresh) != currentAccounts.map(AccountProfile::identityForRefresh)
+        val readLedger = accountIdentityChanged || changes?.ledgerChanged == true
+        val readBills = accountIdentityChanged || changes?.trackedUtilityChanged == true
+        val readCardBills = accountIdentityChanged || (changes?.cardBillsChanged ?: 0) > 0
+
+        if (all) {
+            _smsCoverageRules.value = database.getSmsCoverageRules()
+            database.deleteHandledSmsCoverageMessages()
+            _budgets.value = database.getBudgets()
+            _advancedBudgets.value = database.getAdvancedBudgetPlans()
+            _netWorthItems.value = database.getNetWorthItems()
+            _smartCategoryRules.value = database.getSmartCategoryRules()
+            _customCategories.value = database.getCustomCategories()
+            _loans.value = database.getLoans()
+            _exchangeRates.value = database.getExchangeRates()
+            _merchantAliases.value = database.getMerchantAliases()
+            _categorizedMerchantKeys.value = database.getCategorizedMerchantKeys()
+            _savingsGoals.value = database.getSavingsGoals()
+            _savingsContributions.value = database.getSavingsContributions()
+            _paymentCommitments.value = database.getPaymentCommitments()
+        }
+        if (all || (changes?.coverageAdded ?: 0) > 0) refreshCoverageMessages()
+        if (accountIdentityChanged || (changes?.balanceSnapshotsAdded ?: 0) > 0) {
+            _balanceHistory.value = database.getBalanceHistory()
+        }
+        if (readBills) _bills.value = database.getBills()
+        if (all || (changes?.utilityBillsChanged ?: 0) > 0) _utilitySmsBills.value = database.getUtilitySmsBills()
+        if (readCardBills) _creditCardBills.value = database.getCreditCardBills()
+        if (readCardBills || (changes?.cardPaymentsAdded ?: 0) > 0) {
+            _creditCardPaymentSuggestions.value = suggestCreditCardPayments(
+                database.getPendingCreditCardPayments(),
+                _creditCardBills.value,
+            )
+        }
+
+        if (readLedger) {
+            refreshLedger(currentAccounts)
+        } else if (previousAccounts != currentAccounts) {
+            _dataHealth.value = refreshDataHealthBalances(_dataHealth.value, currentAccounts)
+        }
+
+        if (readBills || readCardBills) refreshReminderOccurrences()
+        if (readBills || readCardBills || changes?.remindersFenced == true) PaymentReminderScheduler.sync(context)
+        if (all) {
+            PaisaLensWidgetProvider.updateAll(context)
+        } else if (readLedger || readBills || readCardBills) {
+            // Widget data is unchanged for a balance-only or coverage-only SMS.
+            PaisaLensWidgetProvider.scheduleUpdateAll(context, delayMillis = 150)
+        }
+        hasRefreshed = true
+    }
+
+    private fun refreshCoverageMessages() {
         _smsCoverageMessages.value = database.getEncryptedSmsCoverageMessages().mapNotNull { stored ->
             runCatching {
                 SmsCoverageMessage(
@@ -1054,6 +1193,11 @@ class TransactionRepository(
                 )
             }.getOrNull()
         }
+    }
+
+    private fun refreshLedger(currentAccounts: List<AccountProfile>) {
+        val currentTransactions = database.getTransactions()
+        val currentLinks = database.getTransactionLinks()
         var currentReconciliations = database.getMonthlyReconciliations()
         val invalidatedReconciliationIds = findReconciliationsInvalidatedByLedger(
             reconciliations = currentReconciliations,
@@ -1065,20 +1209,6 @@ class TransactionRepository(
             currentReconciliations = database.getMonthlyReconciliations()
         }
         _transactions.value = currentTransactions
-        _budgets.value = database.getBudgets()
-        _advancedBudgets.value = database.getAdvancedBudgetPlans()
-        _accounts.value = currentAccounts
-        _balanceHistory.value = database.getBalanceHistory()
-        _bills.value = database.getBills()
-        _utilitySmsBills.value = database.getUtilitySmsBills()
-        val currentCardBills = database.getCreditCardBills()
-        _creditCardBills.value = currentCardBills
-        _creditCardPaymentSuggestions.value = suggestCreditCardPayments(
-            database.getPendingCreditCardPayments(),
-            currentCardBills,
-        )
-        _netWorthItems.value = database.getNetWorthItems()
-        _smartCategoryRules.value = database.getSmartCategoryRules()
         _reconciliations.value = currentReconciliations
         _transactionLinks.value = currentLinks
         _expenseSplits.value = database.getExpenseSplits()
@@ -1105,26 +1235,21 @@ class TransactionRepository(
             transactionLinks = _transactionLinks.value,
             expenseSplits = _expenseSplits.value,
         )
-        _customCategories.value = database.getCustomCategories()
         _recurringPayments.value = detectRecurringPayments(_effectiveExpenseTransactions.value)
-        _loans.value = database.getLoans()
-        _exchangeRates.value = database.getExchangeRates()
-        _merchantAliases.value = database.getMerchantAliases()
         _insights.value = buildOnDeviceInsights(
             currentTransactions,
             _recurringPayments.value,
             transactionLinks = _transactionLinks.value,
             expenseSplits = _expenseSplits.value,
         )
-        _categorizedMerchantKeys.value = database.getCategorizedMerchantKeys()
-        _savingsGoals.value = database.getSavingsGoals()
-        _savingsContributions.value = database.getSavingsContributions()
-        _paymentCommitments.value = database.getPaymentCommitments()
         _paymentCommitmentSuggestions.value = suggestPaymentCommitments(
             recurringPayments = _recurringPayments.value,
             existingCommitments = _paymentCommitments.value,
             accounts = _accounts.value,
         )
+    }
+
+    private fun refreshReminderOccurrences() {
         _paymentReminderRules.value = database.getPaymentReminderRules()
         _paymentReminderSettings.value = database.getPaymentReminderSettings()
         _paymentReminderOccurrences.value = resolvePaymentReminderOccurrences(
@@ -1138,9 +1263,43 @@ class TransactionRepository(
             manualBills = _bills.value,
             nowMillis = System.currentTimeMillis(),
         )
-        PaymentReminderScheduler.sync(context)
-        PaisaLensWidgetProvider.updateAll(context)
     }
+}
+
+private fun AccountProfile.identityForRefresh(): AccountProfile = copy(
+    balanceMinor = null,
+    availableCreditMinor = null,
+    creditLimitMinor = null,
+    availabilityFetchedAt = null,
+    availabilitySender = null,
+)
+
+private class SmsChanges {
+    var insertedTransactions = 0
+    var mergedDuplicates = 0
+    var coverageAdded = 0
+    var updatedAccounts = 0
+    var balanceSnapshotsAdded = 0
+    var cardBillsChanged = 0
+    var cardPaymentsAdded = 0
+    var utilityBillsChanged = 0
+    var trackedUtilityChanged = false
+    var remindersFenced = false
+
+    val ledgerChanged get() = insertedTransactions > 0 || mergedDuplicates > 0
+    val accountsMayHaveChanged get() = ledgerChanged || updatedAccounts > 0 || balanceSnapshotsAdded > 0 || cardBillsChanged > 0
+    val hasWrites get() = accountsMayHaveChanged || coverageAdded > 0 || cardPaymentsAdded > 0 || utilityBillsChanged > 0
+
+    fun result() = SmsIngestResult(
+        insertedTransactions = insertedTransactions,
+        updatedAccounts = updatedAccounts,
+        mergedDuplicateTransactions = mergedDuplicates,
+        coverageMessagesAdded = coverageAdded,
+        updatedCreditCardBills = cardBillsChanged,
+        addedCreditCardPayments = cardPaymentsAdded,
+        updatedUtilityBills = utilityBillsChanged,
+        balanceSnapshotsAdded = balanceSnapshotsAdded,
+    )
 }
 
 private fun anchoredBillOccurrence(anchor: LocalDate, monthsAfterAnchor: Long): LocalDate {
@@ -1160,4 +1319,5 @@ data class SmsIngestResult(
     val updatedCreditCardBills: Int = 0,
     val addedCreditCardPayments: Int = 0,
     val updatedUtilityBills: Int = 0,
+    val balanceSnapshotsAdded: Int = 0,
 )

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9"><img alt="Release v1.8.9" src="https://img.shields.io/badge/release-v1.8.9-5965E8?style=for-the-badge"></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1"><img alt="Release v1.8.9 UI refresh" src="https://img.shields.io/badge/release-v1.8.9%20UI%20refresh-5965E8?style=for-the-badge"></a>
   <img alt="Source v1.8.9" src="https://img.shields.io/badge/source-v1.8.9-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9/PaisaLens-v1.8.9-debug.apk"><strong>⬇ Download PaisaLens v1.8.9 APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9-ui-refresh.1/PaisaLens-v1.8.9-debug.apk"><strong>⬇ Download PaisaLens v1.8.9 UI refresh APK</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9">View release notes</a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1">View release notes</a>
   &nbsp;·&nbsp;
   <a href="PRIVACY.md">Privacy notice</a>
 </p>
@@ -26,7 +26,17 @@
 > [!IMPORTANT]
 > The downloadable file is the current **debug APK** for direct installation and testing. Android may ask you to allow installation from your browser or file manager. Requires Android 8.0 (API 26) or newer.
 
-## What's new in v1.8.9
+## What's new in the v1.8.9 UI refresh
+
+| | Update | Highlights |
+|---|---|---|
+| 📉 | **Daily balance graphs** | Open an account from Home or **Settings → Accounts & cards**. Tap or drag through 7, 30, or 90 days of bank balances or available card credit. Merged accounts can show each source or the combined amount. New SMS update open charts. |
+| 🏠 | **Responsive Home and Spending Lens** | Reorder, hide, or show Home sections, choose a density, and tap categories to see their transactions. Home adapts to wider screens with multiple columns. |
+| 🔎 | **Smart Activity** | Group transactions by day, remove individual account filters, save views, and see merged SMS counts without adding extra ledger rows. |
+| 🗓️ | **Unified bill timeline** | See utility bills, card statements, and other payments together. Expand a bill to set a reminder or mark it paid, and check the Paid tab for history. |
+| ⚡ | **Faster SMS sync** | Normal sync checks new messages. **Settings → SMS analysis → Full rescan** still checks the whole inbox. |
+
+### Also in v1.8.9
 
 | | Update | Highlights |
 |---|---|---|
@@ -75,7 +85,7 @@
 </table>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9"><strong>Read the complete v1.8.9 release notes →</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1"><strong>Read the v1.8.9 UI refresh release notes →</strong></a>
 </p>
 
 ## See PaisaLens in action
@@ -99,13 +109,13 @@
 
 | | Feature | What it does |
 |---|---|---|
-| 🔎 | **Local SMS detection** | Finds debits, credits, refunds, card purchases, ATM withdrawals, UPI and wallet alerts without uploading messages; a deliberate pull down on any main screen resyncs the inbox. |
+| 🔎 | **Local SMS detection** | Pull down on any main screen to sync new messages. To revisit the entire inbox after a restore or to apply new detection rules, use **Settings → SMS analysis → Full rescan**. |
 | ⚡ | **Android app shortcuts** | Press and hold the PaisaLens icon for **Add expense**, **Sync SMS**, **Bills & dues**, or **Reminders**. On supported launchers, you can also drag a shortcut onto your home screen. |
 | 🏷️ | **Merchant category rules** | Groups matching merchants, shows their spending history and trend, asks you once for the category, updates their existing expenses and remembers the answer. |
 | 📝 | **Expense notes** | Adds a specific note to a deducted transaction and shows it beneath the item in recent activity and search results. |
 | 📊 | **Focused Home dashboard** | Moves month by month with arrow navigation and updates the spend summary, overview, category breakdown, daily chart, and expense list together. |
 | 💡 | **Financial Pulse** | Turns fresh bank balances, bills, card dues, budgets, goals, expected income and a safety buffer into an explainable safe-to-spend figure, a 14-day timeline, budget pace and card-health snapshot. |
-| 🧱 | **Customisable Home** | Shows, hides, and reorders twelve private dashboard modules, switches Compact or Comfortable density, chooses the hero metric, and offers Everyday, Budget, Debt and Minimal presets stored only on the device. |
+| 🧱 | **Customisable Home** | Shows, hides, and reorders dashboard modules, switches Compact or Comfortable density, chooses the hero metric, and offers Everyday, Budget, Debt and Minimal presets stored only on the device. |
 | 🧭 | **Needs Your Attention & Weekly Review** | Prioritizes uncertain transactions, stale balances, upcoming bills, goal pacing and backup health, then turns them into direct, local actions. |
 | 🧰 | **Advanced Activity filters & saved views** | Combines account, date, amount, source, bank/card, category, tag, duplicate and review filters; saves reusable local views and clears them with Erase all. |
 | 🎯 | **Budgeting 2.0** | Supports calendar-month or payday periods, annual and irregular-event plans, positive/full rollover, custom warning thresholds, and custom categories. |
@@ -134,7 +144,7 @@
 | 🏦 | **EMI & loan tracker** | Calculates reducing-balance EMI, tracks paid installments, progress, and next due dates. |
 | ✈️ | **Travel mode** | Stores original foreign amounts and converts them with an explicitly refreshed HTTPS reference rate. |
 | ✨ | **On-device insights** | Detects possible duplicates, unusual charges, price increases, spending pace, and concentration without uploading data. |
-| 📉 | **Balance history** | Saves each distinct bank-balance and available-credit SMS snapshot and shows accessible 7-day, 30-day, 3-month, or all-time trends. |
+| 📉 | **Balance history** | Shows interactive 7-, 30-, and 90-day graphs and saved readings. Days without a fresh SMS carry the last known value forward and are labeled as such. |
 | 💳 | **Credit utilisation tracker** | Combines the real available credit with a detected or manually entered total limit, then highlights healthy, moderate, high, and critical usage. |
 | 🗓️ | **Bills & due-date centre** | Brings manual reminders, locally detected recurring payments, card bills, subscriptions and loan EMIs into one overdue and upcoming timeline. |
 | ⏰ | **Custom bill-payment reminders** | Adds one-time or recurring reminders to saved utility bills and detected credit-card statements, with multiple advance alerts, local time and timezone, snooze choices, overdue repeats, skip-next, priority, private amount controls, categories, colors, notes, search, grouped views, quiet hours and an optional daily summary. |
@@ -192,12 +202,12 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 
 ## Download and install
 
-1. Download **[PaisaLens-v1.8.9-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9/PaisaLens-v1.8.9-debug.apk)** on your Android phone.
+1. Download **[PaisaLens-v1.8.9-debug.apk](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9-ui-refresh.1/PaisaLens-v1.8.9-debug.apk)** on your Android phone.
 2. Open the downloaded file.
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-You can also browse the [v1.8.9 release page](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9).
+The UI refresh keeps the app version at 1.8.9. The [original v1.8.9 release](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9) is still available.
 
 **APK SHA-256**
 

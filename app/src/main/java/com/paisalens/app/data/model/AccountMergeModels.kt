@@ -260,6 +260,17 @@ fun consolidatedAccountProfiles(
                 } else root.availabilitySender.takeIf { members.size == 1 },
                 mergedIntoAccountId = null,
                 mergedMemberCount = members.size,
+                balanceSourceGroups = if (members.size <= 1) emptyList() else physicalMembers.map { aliases ->
+                    val first = aliases.first()
+                    val institution = first.institution?.takeIf(String::isNotBlank) ?: first.name
+                    val suffix = first.accountHint?.filter(Char::isDigit)?.takeLast(4)
+                        ?.takeIf { it.length == 4 && !institution.endsWith(it) }
+                    AccountBalanceSourceGroup(
+                        accountIds = aliases.mapTo(linkedSetOf(), AccountProfile::id),
+                        label = if (suffix == null) institution else "$institution · ••$suffix",
+                        preferSmsBalance = root.type == AccountType.BANK_ACCOUNT && aliases.size > 1,
+                    )
+                },
             )
         }
         .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, AccountProfile::name).thenBy(AccountProfile::id))

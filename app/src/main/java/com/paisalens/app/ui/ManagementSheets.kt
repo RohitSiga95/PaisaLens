@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -79,6 +80,7 @@ internal fun AccountManagerSheet(
     onAdd: (String, AccountType, String?) -> Unit,
     onUpdate: (AccountProfile) -> Unit,
     onDelete: (Long) -> Unit,
+    onOpenHistory: (AccountProfile) -> Unit,
     onMerge: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -104,7 +106,7 @@ internal fun AccountManagerSheet(
             item(key = "accounts-header") {
                 SheetHeader(
                     "Accounts & cards",
-                    "Rename or merge bank accounts and cards; your chosen names stay attached to matching SMS.",
+                    "Tap an account for its daily balance chart, or use the controls to edit or merge accounts.",
                     onDismiss,
                 )
             }
@@ -202,15 +204,32 @@ internal fun AccountManagerSheet(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                ManagementIcon(Icons.Rounded.AccountBalanceWallet)
-                                Spacer(Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(account.name, style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        account.managementSubtitle(),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                                Surface(
+                                    onClick = { onOpenHistory(account) },
+                                    modifier = Modifier.weight(1f),
+                                    color = Color.Transparent,
+                                    shape = MaterialTheme.shapes.medium,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.heightIn(min = 48.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        ManagementIcon(Icons.Rounded.AccountBalanceWallet)
+                                        Column(Modifier.weight(1f)) {
+                                            Text(account.name, style = MaterialTheme.typography.titleMedium)
+                                            Text(
+                                                account.managementSubtitle(),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            Text(
+                                                "Balance history",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
+                                    }
                                 }
                                 IconButton(onClick = { editing = account }) {
                                     Icon(Icons.Rounded.Edit, contentDescription = "Rename or edit ${account.name}")

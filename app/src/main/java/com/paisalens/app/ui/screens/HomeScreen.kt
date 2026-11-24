@@ -18,6 +18,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -28,7 +32,6 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.CalendarMonth
-import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreditCard
@@ -56,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +83,7 @@ import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.BillReminder
+import com.paisalens.app.data.model.BillsTimelineSnapshot
 import com.paisalens.app.data.model.BudgetHealth
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CreditCardBill
@@ -106,7 +111,6 @@ import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.SavingsContribution
 import com.paisalens.app.data.model.SavingsGoal
 import com.paisalens.app.data.model.SpendingCategoryKey
-import com.paisalens.app.data.model.SpendingCategoryTotal
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionType
@@ -123,11 +127,8 @@ import com.paisalens.app.ui.components.CustomCategoryIcon
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.SectionHeader
-import com.paisalens.app.ui.components.SpendingDonut
-import com.paisalens.app.ui.components.SpendingDonutSlice
 import com.paisalens.app.ui.components.TransactionRow
-import com.paisalens.app.ui.components.categoryColor
-import com.paisalens.app.ui.components.customCategoryColor
+import com.paisalens.app.ui.components.dashboardWidth
 import com.paisalens.app.ui.components.formatCompactMoney
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.privacy.PrivacyModeToggleButton
@@ -180,6 +181,7 @@ fun HomeScreen(
     budgets: List<CategoryBudget>,
     advancedBudgets: List<AdvancedBudgetPlan>,
     bills: List<BillReminder>,
+    billsTimeline: BillsTimelineSnapshot,
     recurringPayments: List<RecurringPayment>,
     loans: List<LoanAccount>,
     creditCardBills: List<CreditCardBill>,
@@ -211,35 +213,34 @@ fun HomeScreen(
     onAttentionAction: (AttentionItem) -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
     onCheckBalanceViaUpi: (AccountProfile, Set<Long>) -> Unit,
-    onAccountClick: (AccountProfile) -> Unit,
+    onAccountClick: (AccountProfile, Set<Long>) -> Unit,
     onTransactionClick: (TransactionRecord) -> Unit,
 ) {
     val now = rememberHomeNow()
     val currentMonth = remember(now) { YearMonth.from(now) }
-    var selectedMonth by remember { mutableStateOf(currentMonth) }
-    var lastObservedCurrentMonth by remember { mutableStateOf(currentMonth) }
+    var selectedMonthKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val availableMonths = remember(effectiveExpenseTransactions, currentMonth, now.zone) {
+        spendingMonths(effectiveExpenseTransactions, currentMonth, now.zone)
+    }
+    val selectedMonth = remember(selectedMonthKey, availableMonths) {
+        selectedMonthKey?.let(YearMonth::parse)?.coerceIn(availableMonths.last(), currentMonth) ?: currentMonth
+    }
     var selectedCategory by remember { mutableStateOf<SpendingCategoryKey?>(null) }
     var unavailableAccountsExpanded by remember { mutableStateOf(false) }
-    LaunchedEffect(homeLayout, currentMonth) {
-        if (currentMonth != lastObservedCurrentMonth && selectedMonth == lastObservedCurrentMonth) {
-            selectedMonth = currentMonth
+    LaunchedEffect(homeLayout) {
+        if (!homeLayout.isVisible(HomeModule.SPENDING_BREAKDOWN)) {
+            selectedMonthKey = null
+            selectedCategory = null
         }
-        if (!homeLayout.isVisible(HomeModule.SPENDING_BREAKDOWN)) selectedMonth = currentMonth
-        lastObservedCurrentMonth = currentMonth
     }
     val confirmedTransactions = remember(transactions) {
         transactions.filter { it.reviewStatus == ReviewStatus.CONFIRMED }
     }
-    val earliestMonth = remember(effectiveExpenseTransactions, currentMonth) {
-        effectiveExpenseTransactions.minOfOrNull {
-            YearMonth.from(Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault()))
-        } ?: currentMonth
+    val monthly = remember(confirmedTransactions, selectedMonth, now.zone) {
+        transactionsForMonth(confirmedTransactions, selectedMonth, now.zone)
     }
-    val monthly = remember(confirmedTransactions, selectedMonth) {
-        transactionsForMonth(confirmedTransactions, selectedMonth)
-    }
-    val monthlyExpenses = remember(effectiveExpenseTransactions, selectedMonth) {
-        transactionsForMonth(effectiveExpenseTransactions, selectedMonth)
+    val monthlyExpenses = remember(effectiveExpenseTransactions, selectedMonth, now.zone) {
+        transactionsForMonth(effectiveExpenseTransactions, selectedMonth, now.zone)
     }
     val excludedFromSpending = remember(transactionLinks) {
         transactionIdsExcludedFromSpending(transactionLinks)
@@ -320,14 +321,15 @@ fun HomeScreen(
         )
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    val compact = normalizedHomeLayout.density == HomeDashboardDensity.COMPACT
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 320.dp),
+        modifier = Modifier.dashboardWidth(1080.dp).fillMaxSize(),
         contentPadding = PaddingValues(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(
-            if (normalizedHomeLayout.density == HomeDashboardDensity.COMPACT) 14.dp else 18.dp,
-        ),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 22.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 22.dp),
     ) {
-        item {
+        item(key = "home-header", span = { GridItemSpan(maxLineSpan) }) {
             HomeHeader(
                 isScanning = isScanning,
                 hasSmsPermission = hasSmsPermission,
@@ -341,23 +343,30 @@ fun HomeScreen(
                 onTogglePrivacy = onTogglePrivacy,
             )
         }
-        item(key = "daily_check_in") {
-            HomeDailyCheckInCard(
-                checkIn = checkIn,
-                onOpenTransaction = onTransactionClick,
-                onOpenDueBill = { bill ->
-                    when (bill.source) {
-                        HomeTimelineSource.CREDIT_CARD_BILL -> onOpenCreditCardBills()
-                        HomeTimelineSource.PAYMENT_COMMITMENT -> onOpenCommitments()
-                        else -> onOpenBills()
-                    }
-                },
-                onReviewTransactions = onReviewTransactions,
-                onReviewCardPayments = onOpenCreditCardBills,
-            )
-        }
         normalizedHomeLayout.orderedVisibleModules.forEach { module ->
             when (module) {
+                HomeModule.DAILY_CHECK_IN -> item(key = module.storageId) {
+                    HomeDailyCheckInCard(
+                        checkIn = checkIn,
+                        onOpenTransaction = onTransactionClick,
+                        onOpenDueBill = { bill ->
+                            when (bill.source) {
+                                HomeTimelineSource.CREDIT_CARD_BILL -> onOpenCreditCardBills()
+                                HomeTimelineSource.PAYMENT_COMMITMENT -> onOpenCommitments()
+                                else -> onOpenBills()
+                            }
+                        },
+                        onReviewTransactions = onReviewTransactions,
+                        onReviewCardPayments = onOpenCreditCardBills,
+                    )
+                }
+                HomeModule.UPCOMING_BILLS -> item(key = module.storageId) {
+                    UpcomingBillsHomeModule(
+                        timeline = billsTimeline,
+                        compact = compact,
+                        onOpenBills = onOpenBills,
+                    )
+                }
                 HomeModule.FINANCIAL_PULSE -> item(key = module.storageId) {
                     FinancialPulseHomeModule(
                         pulse = dashboardSnapshot.pulse,
@@ -414,21 +423,27 @@ fun HomeScreen(
                         month = selectedMonth,
                     )
                 }
-                HomeModule.SPENDING_BREAKDOWN -> item(key = module.storageId) {
-                    CategorySpendCard(
+                HomeModule.SPENDING_BREAKDOWN -> item(key = module.storageId, span = { GridItemSpan(maxLineSpan) }) {
+                    SpendingLens(
                         categoryTotals = categoryTotals,
                         customCategoriesById = customCategoriesById,
-                        expenseTotal = expenseTotal,
+                        expenses = monthlyExpenses,
                         month = selectedMonth,
-                        canGoPrevious = selectedMonth > earliestMonth,
-                        canGoNext = selectedMonth < currentMonth,
-                        onPreviousMonth = { selectedMonth = selectedMonth.minusMonths(1) },
-                        onNextMonth = { selectedMonth = selectedMonth.plusMonths(1) },
-                        onCategoryClick = { selectedCategory = it },
+                        availableMonths = availableMonths,
+                        today = now.toLocalDate(),
+                        onMonthChange = { month ->
+                            selectedCategory = null
+                            selectedMonthKey = month.takeUnless { it == currentMonth }?.toString()
+                        },
+                        onTransactionClick = onTransactionClick,
+                        onOpenCategory = { selectedCategory = it },
+                        compact = compact,
                     )
                 }
                 HomeModule.BANK_BALANCES -> {
-                    item(key = "${module.storageId}-header") { SectionHeader("Bank balances") }
+                    item(key = "${module.storageId}-header", span = { GridItemSpan(maxLineSpan) }) {
+                        SectionHeader("Bank balances")
+                    }
                     when {
                         bankAccountGroups.isEmpty() -> item(key = "${module.storageId}-empty") {
                             AvailabilityEmptyCard(
@@ -453,13 +468,15 @@ fun HomeScreen(
                                 onCheckViaUpi = if (group.profileCount > 1) null else {
                                     { onCheckBalanceViaUpi(group.account, group.accountIds) }
                                 },
-                                onClick = { onAccountClick(group.account) },
+                                onClick = { onAccountClick(group.account, group.accountIds) },
                             )
                         }
                     }
                 }
                 HomeModule.CREDIT_AVAILABLE -> {
-                    item(key = "${module.storageId}-header") { SectionHeader("Credit available") }
+                    item(key = "${module.storageId}-header", span = { GridItemSpan(maxLineSpan) }) {
+                        SectionHeader("Credit available")
+                    }
                     when {
                         creditCardGroups.isEmpty() -> item(key = "${module.storageId}-empty") {
                             AvailabilityEmptyCard(
@@ -482,7 +499,7 @@ fun HomeScreen(
                                 icon = Icons.Rounded.CreditCard,
                                 onRefresh = { onRefreshAccount(group.account) },
                                 onCheckViaUpi = null,
-                                onClick = { onAccountClick(group.account) },
+                                onClick = { onAccountClick(group.account, group.accountIds) },
                             )
                         }
                     }
@@ -507,7 +524,7 @@ fun HomeScreen(
         val visibleUnavailableBanks = if (showBankUnavailable) unavailableBankAccounts else emptyList()
         val visibleUnavailableCards = if (showCardUnavailable) unavailableCreditCards else emptyList()
         if (visibleUnavailableBanks.isNotEmpty() || visibleUnavailableCards.isNotEmpty()) {
-            item {
+            item(key = "unavailable-accounts", span = { GridItemSpan(maxLineSpan) }) {
                 UnavailableAccountsPanel(
                     bankAccounts = visibleUnavailableBanks,
                     creditCards = visibleUnavailableCards,
@@ -1489,155 +1506,6 @@ private fun OverviewRow(label: String, amountMinor: Long, signed: Boolean = fals
     }
 }
 
-@Composable
-private fun CategorySpendCard(
-    categoryTotals: List<SpendingCategoryTotal>,
-    customCategoriesById: Map<Long, CustomCategory>,
-    expenseTotal: Long,
-    month: YearMonth,
-    canGoPrevious: Boolean,
-    canGoNext: Boolean,
-    onPreviousMonth: () -> Unit,
-    onNextMonth: () -> Unit,
-    onCategoryClick: (SpendingCategoryKey) -> Unit,
-) {
-    Column {
-        SectionHeader("Spending breakdown")
-        Spacer(Modifier.height(8.dp))
-        MonthNavigator(
-            month = month,
-            canGoPrevious = canGoPrevious,
-            canGoNext = canGoNext,
-            onPreviousMonth = onPreviousMonth,
-            onNextMonth = onNextMonth,
-        )
-        Spacer(Modifier.height(8.dp))
-        PaisaCard(Modifier.fillMaxWidth()) {
-            if (categoryTotals.isEmpty()) {
-                Text(
-                    text = "No categorized expenses in ${month.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH))}.",
-                    modifier = Modifier.padding(18.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 18.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    SpendingDonut(
-                        values = categoryTotals.take(5).map { total ->
-                            val custom = total.key.customCategoryId?.let(customCategoriesById::get)
-                            SpendingDonutSlice(
-                                label = total.key.label,
-                                valueMinor = total.amountMinor,
-                                color = custom?.let { customCategoryColor(it.colorHex) }
-                                    ?: categoryColor(total.key.builtIn),
-                            )
-                        },
-                        totalMinor = expenseTotal,
-                        periodLabel = month.format(DateTimeFormatter.ofPattern("MMM yyyy", Locale.ENGLISH)),
-                    )
-                    Spacer(Modifier.height(14.dp))
-                    Text(
-                        text = "Tap a category to see its daily trend and expenses",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    categoryTotals.forEach { total ->
-                        CategoryLegend(
-                            category = total.key,
-                            customCategory = total.key.customCategoryId?.let(customCategoriesById::get),
-                            amountMinor = total.amountMinor,
-                            totalMinor = expenseTotal,
-                            onClick = { onCategoryClick(total.key) },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MonthNavigator(
-    month: YearMonth,
-    canGoPrevious: Boolean,
-    canGoNext: Boolean,
-    onPreviousMonth: () -> Unit,
-    onNextMonth: () -> Unit,
-) {
-    val monthFormatter = remember { DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH) }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onPreviousMonth, enabled = canGoPrevious) {
-                Icon(Icons.Rounded.ChevronLeft, contentDescription = "Previous month")
-            }
-            Text(
-                text = month.format(monthFormatter),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-            )
-            IconButton(onClick = onNextMonth, enabled = canGoNext) {
-                Icon(Icons.Rounded.ChevronRight, contentDescription = "Next month")
-            }
-        }
-    }
-}
-
-@Composable
-private fun CategoryLegend(
-    category: SpendingCategoryKey,
-    customCategory: CustomCategory?,
-    amountMinor: Long,
-    totalMinor: Long,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        color = Color.Transparent,
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (customCategory != null) {
-                CustomCategoryIcon(customCategory, modifier = Modifier.size(40.dp), iconSize = 19)
-            } else {
-                CategoryIcon(category.builtIn, modifier = Modifier.size(40.dp), iconSize = 19)
-            }
-            Spacer(Modifier.width(11.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(category.label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                Text(
-                    if (totalMinor > 0) "${amountMinor * 100 / totalMinor}% of spend" else "No spend",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(formatMoney(amountMinor), style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                imageVector = Icons.Rounded.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
 
 private data class CategoryDailySpend(
     val date: LocalDate,
@@ -1646,7 +1514,7 @@ private data class CategoryDailySpend(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CategorySpendingSheet(
+internal fun CategorySpendingSheet(
     category: SpendingCategoryKey,
     customCategory: CustomCategory?,
     month: YearMonth,
@@ -2074,7 +1942,7 @@ private fun UnavailableAccountsPanel(
     onExpandedChange: (Boolean) -> Unit,
     onRefreshAccount: (AccountProfile) -> Unit,
     onCheckBalanceViaUpi: (AccountProfile, Set<Long>) -> Unit,
-    onAccountClick: (AccountProfile) -> Unit,
+    onAccountClick: (AccountProfile, Set<Long>) -> Unit,
 ) {
     val total = bankAccounts.size + creditCards.size
     PaisaCard(Modifier.fillMaxWidth()) {
@@ -2139,7 +2007,7 @@ private fun UnavailableAccountsPanel(
                                 onCheckViaUpi = if (group.profileCount > 1) null else {
                                     { onCheckBalanceViaUpi(group.account, group.accountIds) }
                                 },
-                                onClick = { onAccountClick(group.account) },
+                                onClick = { onAccountClick(group.account, group.accountIds) },
                             )
                         }
                     }
@@ -2159,7 +2027,7 @@ private fun UnavailableAccountsPanel(
                                 icon = Icons.Rounded.CreditCard,
                                 onRefresh = { onRefreshAccount(group.account) },
                                 onCheckViaUpi = null,
-                                onClick = { onAccountClick(group.account) },
+                                onClick = { onAccountClick(group.account, group.accountIds) },
                             )
                         }
                     }

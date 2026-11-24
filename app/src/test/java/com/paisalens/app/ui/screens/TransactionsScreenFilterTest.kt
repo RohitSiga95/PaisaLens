@@ -136,12 +136,33 @@ class TransactionsScreenFilterTest {
             ),
         )
 
-        assertEquals(3, options.size)
+        assertEquals(3, options.count { it.type == AccountType.BANK_ACCOUNT || it.type == AccountType.CREDIT_CARD })
+        assertEquals(setOf(5L), options.single { it.type == AccountType.CASH }.accountIds)
         val salary = options.single { it.type == AccountType.BANK_ACCOUNT && it.lastFour == "0801" }
         assertEquals(setOf(1L, 2L), salary.accountIds)
         assertTrue(salary.label.contains("Salary"))
         assertTrue(salary.label.contains("HDFC Bank"))
         assertTrue(salary.label.contains("0801"))
+    }
+
+    @Test
+    fun filtersManualCashTransactionsByAccountWithoutMatchingOtherCashProfiles() {
+        val options = activityAccountFilterOptions(
+            listOf(
+                account(1, "Cash", AccountType.CASH, null, null),
+                account(2, "Cash", AccountType.CASH, null, null),
+            ),
+        )
+        val selected = options.single { 1L in it.accountIds }
+        val rows = listOf(
+            transaction(1, 1L, "Groceries", TransactionSource.MANUAL, AccountType.CASH, null, null),
+            transaction(2, 2L, "Coffee", TransactionSource.MANUAL, AccountType.CASH, null, null),
+            transaction(3, null, "Lunch", TransactionSource.MANUAL, null, null, null),
+        )
+        assertEquals(
+            listOf(1L),
+            filterActivityTransactions(rows, "", TransactionFilter.ALL, setOf(selected.key), options).map(TransactionRecord::id),
+        )
     }
 
     @Test

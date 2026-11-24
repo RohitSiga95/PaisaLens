@@ -101,7 +101,6 @@ import com.paisalens.app.data.model.PaymentReminderStatus
 import com.paisalens.app.data.model.PaymentReminderTarget
 import com.paisalens.app.data.model.PaymentReminderTargetType
 import com.paisalens.app.data.model.buildPaymentReminderTargets
-import com.paisalens.app.data.model.manualBillReminderTargetKey
 import com.paisalens.app.data.model.resolvePaymentReminderOccurrences
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
@@ -224,7 +223,7 @@ fun PaymentReminderCenterContent(
     onSkipNext: suspend (ruleId: Long, occurrenceEpochDay: Long, expectedGeneration: Long) -> Unit,
     onSettingsChange: suspend (PaymentReminderSettings) -> Unit,
     modifier: Modifier = Modifier,
-    requestedBillId: Long? = null,
+    requestedTargetKey: String? = null,
     onReminderRequestHandled: () -> Unit = {},
 ) {
     val systemZone = remember { ZoneId.systemDefault() }
@@ -270,9 +269,8 @@ fun PaymentReminderCenterContent(
     var editorRule by remember { mutableStateOf<PaymentReminderRule?>(null) }
     var editorTarget by remember { mutableStateOf<PaymentReminderTarget?>(null) }
     var showEditor by remember { mutableStateOf(false) }
-    LaunchedEffect(requestedBillId, targets, rules) {
-        val billId = requestedBillId ?: return@LaunchedEffect
-        val key = manualBillReminderTargetKey(billId)
+    LaunchedEffect(requestedTargetKey, targets, rules) {
+        val key = requestedTargetKey ?: return@LaunchedEffect
         val target = targets.firstOrNull { it.targetKey == key } ?: return@LaunchedEffect
         editorTarget = target
         editorRule = rules.firstOrNull { it.targetKey == target.targetKey }

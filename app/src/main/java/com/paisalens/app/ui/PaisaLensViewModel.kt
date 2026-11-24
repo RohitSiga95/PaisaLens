@@ -57,6 +57,7 @@ import com.paisalens.app.data.importer.CreditCardStatementAuditor
 import com.paisalens.app.data.ocr.ReceiptOcrProcessor
 import com.paisalens.app.data.parser.ReceiptTextParser
 import com.paisalens.app.sms.SmsInboxScanner
+import com.paisalens.app.sms.SmsSyncMode
 import com.paisalens.app.notification.ActionableAlertDeliveryStore
 import com.paisalens.app.notification.PaymentReminderNotifier
 import com.paisalens.app.notification.PaymentReminderScheduler
@@ -639,7 +640,7 @@ class PaisaLensViewModel(
         PaisaLensWidgetProvider.scheduleUpdateAll(app)
     }
 
-    fun scanSms() {
+    internal fun scanSms(mode: SmsSyncMode = SmsSyncMode.QUICK) {
         if (
             ContextCompat.checkSelfPermission(app, Manifest.permission.READ_SMS) !=
             PackageManager.PERMISSION_GRANTED
@@ -652,21 +653,14 @@ class PaisaLensViewModel(
         viewModelScope.launch {
             try {
                 runCatching {
-                    val scan = withContext(Dispatchers.IO) {
-                        SmsInboxScanner(
+                    app.repository.syncSmsInbox(
+                        scanner = SmsInboxScanner(
                             app,
                             app.parser,
                             app.availabilityParser,
                             app.creditCardBillParser,
-                        ).scan(coverageRules = app.repository.smsCoverageRulesForParsing())
-                    }
-                    app.repository.ingestSms(
-                        items = scan.transactions,
-                        availabilityUpdates = scan.availabilityUpdates,
-                        coverageCandidates = scan.coverageCandidates,
-                        creditCardBills = scan.creditCardBills,
-                        creditCardPayments = scan.creditCardPayments,
-                        utilityBills = scan.utilityBills,
+                        ),
+                        mode = mode,
                     )
                 }.onSuccess { result ->
                     val now = System.currentTimeMillis()
@@ -696,12 +690,13 @@ class PaisaLensViewModel(
                                     if (result.updatedUtilityBills > 0) {
                                         add("utility bills updated")
                                     }
-                                    if (result.updatedAccounts > 0) {
-                                        add("balances updated")
-                                    }
+                                    if (result.updatedAccounts > 0) add("balances updated")
+                                    else if (result.balanceSnapshotsAdded > 0) add("balance history updated")
                                 }.joinToString(" · ")
                             }
                             result.updatedAccounts > 0 -> "Account balances updated"
+                            result.balanceSnapshotsAdded > 0 -> "Balance history updated"
+                            mode == SmsSyncMode.FULL -> "Full rescan complete. You're up to date"
                             else -> "You're up to date"
                         },
                     )

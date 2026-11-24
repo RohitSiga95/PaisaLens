@@ -20,30 +20,22 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
-import androidx.compose.material.icons.automirrored.rounded.FactCheck
 import androidx.compose.material.icons.rounded.AccountBalance
-import androidx.compose.material.icons.rounded.BookmarkAdd
-import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreditCard
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Groups
-import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -73,12 +65,11 @@ import com.paisalens.app.data.model.MerchantTransactionGroup
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionSource
-import com.paisalens.app.data.model.TransactionType
 import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.sms.BankSmsSupport
 import com.paisalens.app.ui.components.EmptyState
 import com.paisalens.app.ui.components.PaisaCard
-import com.paisalens.app.ui.components.TransactionRow
+import com.paisalens.app.ui.components.dashboardWidth
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -104,6 +95,7 @@ fun TransactionsScreen(
     uncategorizedMerchants: List<MerchantTransactionGroup>,
     customCategories: List<CustomCategory> = emptyList(),
     initialFilter: TransactionFilter = TransactionFilter.ALL,
+    initialAccountKeys: List<String> = emptyList(),
     onCategorizeMerchant: (MerchantTransactionGroup) -> Unit,
     onTrustCenter: () -> Unit,
     onSharedExpenses: () -> Unit,
@@ -112,7 +104,7 @@ fun TransactionsScreen(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var selectedFilterName by rememberSaveable { mutableStateOf(initialFilter.name) }
-    var selectedAccountKeysList by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var selectedAccountKeysList by rememberSaveable { mutableStateOf(initialAccountKeys) }
     var dateRangeName by rememberSaveable { mutableStateOf(ActivityDateRange.ANY_TIME.name) }
     var customStartEpochDay by rememberSaveable { mutableStateOf<Long?>(null) }
     var customEndEpochDay by rememberSaveable { mutableStateOf<Long?>(null) }
@@ -229,100 +221,42 @@ fun TransactionsScreen(
         )
     }
 
+    val grouped = remember(filtered, activityClock.zoneId) { activityTransactionsByDay(filtered, activityClock.zoneId) }
+    val resultTotal = remember(filtered) { filtered.sumOf(TransactionRecord::amountMinor) }
+    val customById = remember(customCategories) { customCategories.associateBy(CustomCategory::id) }
+    val filterCount = filterState.activeFilterCount() + (selectedAccountKeys.size - 1).coerceAtLeast(0)
+    val merchantToCategorize = uncategorizedMerchants.firstOrNull()
     LazyColumn(
         modifier = Modifier
+            .dashboardWidth(860.dp)
             .fillMaxSize()
             .padding(top = 12.dp),
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 88.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item(key = "activity-header") {
-            Column {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = "Activity",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = "Every transaction, easy to find",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = onTrustCenter) {
-                    Icon(Icons.AutoMirrored.Rounded.FactCheck, contentDescription = "Open Trust Center")
-                }
-                IconButton(onClick = onSharedExpenses) {
-                    Icon(Icons.Rounded.Groups, contentDescription = "Open shared expenses")
-                }
-                IconButton(onClick = onCalendar) {
-                    Icon(Icons.Rounded.CalendarMonth, contentDescription = "Open spending calendar")
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it.take(80) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                leadingIcon = {
-                    Icon(Icons.Rounded.Search, contentDescription = null)
+            SmartActivityHeader(
+                query = query,
+                onQueryChange = { query = it.take(80) },
+                accountOptions = accountOptions,
+                accountSelection = accountSelectionResolution,
+                activeFilterCount = filterCount,
+                onRemoveAccount = { key ->
+                    selectedAccountKeysList = (accountSelectionResolution.selectionKeys - key).toList()
                 },
-                label = { Text("Search transactions") },
-                shape = MaterialTheme.shapes.medium,
+                onOpenFilters = { showAdvancedFilters = true },
+                onReset = if (filterState.activeFilterCount(includeQuery = true) > 0) {
+                    { applyFilterState(ActivityFilterState()) }
+                } else null,
+                onCategorize = merchantToCategorize?.let { merchant -> { onCategorizeMerchant(merchant) } },
+                onTrustCenter = onTrustCenter,
+                onSharedExpenses = onSharedExpenses,
+                onCalendar = onCalendar,
             )
-            Spacer(Modifier.height(10.dp))
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                val compactActions = maxWidth < 400.dp
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedButton(
-                        onClick = { showAdvancedFilters = true },
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    ) {
-                        Icon(Icons.Rounded.Tune, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            text = filterState.activeFilterCount().let { count ->
-                                if (count == 0) "Filters" else "Filters ($count)"
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    FilledTonalButton(
-                        onClick = { showSaveViewDialog = true },
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    ) {
-                        Icon(Icons.Rounded.BookmarkAdd, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            text = if (compactActions) "Save" else "Save view",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (filterState.activeFilterCount(includeQuery = true) > 0) {
-                        IconButton(
-                            onClick = { applyFilterState(ActivityFilterState()) },
-                            modifier = Modifier.semantics { contentDescription = "Reset all Activity filters" },
-                        ) {
-                            Icon(Icons.Rounded.RestartAlt, contentDescription = null)
-                        }
-                    }
-                }
-            }
-            }
         }
 
         if (savedViews.isNotEmpty()) {
             item(key = "saved-views") {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = "Saved views",
                         style = MaterialTheme.typography.labelLarge,
@@ -355,190 +289,22 @@ fun TransactionsScreen(
             }
         }
 
-        item(key = "transaction-type-filters") {
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(TransactionFilter.entries) { filter ->
-                    val filterCount = when (filter) {
-                        TransactionFilter.REVIEW -> transactions.count { it.reviewStatus == ReviewStatus.NEEDS_REVIEW }
-                        TransactionFilter.UNCATEGORIZED -> transactions.count {
-                            it.type == TransactionType.EXPENSE &&
-                                it.category == ExpenseCategory.OTHER &&
-                                it.customCategoryId == null
-                        }
-                        TransactionFilter.UNASSIGNED -> transactions.count { it.accountId == null }
-                        else -> 0
-                    }
-                    FilterChip(
-                        selected = selectedFilter == filter,
-                        onClick = { selectedFilterName = filter.name },
-                        label = {
-                            Text(
-                                if (filterCount > 0) {
-                                    "${filter.label} ($filterCount)"
-                                } else {
-                                    filter.label
-                                },
-                            )
-                        },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    )
-                }
-            }
-        }
-
-        item(key = "account-filter-heading") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        if (accountSelectionResolution.unavailableKeys.isNotEmpty()) {
+            item(key = "unavailable-account-filters") {
                 Text(
-                    text = if (selectedAccountKeys.isEmpty()) {
-                        "Bank & card"
-                    } else {
-                        buildString {
-                            append("Bank & card (${selectedAccountKeys.size} selected")
-                            if (accountSelectionResolution.unavailableKeys.isNotEmpty()) {
-                                append(" · ${accountSelectionResolution.unavailableKeys.size} unavailable")
-                            }
-                            append(')')
-                        }
-                    },
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (selectedAccountKeys.isNotEmpty()) {
-                    TextButton(onClick = { selectedAccountKeysList = emptyList() }) {
-                        Text("Clear")
-                    }
-                }
-            }
-        }
-
-        item(key = "account-filters") {
-            if (accountOptions.isEmpty()) {
-                Text(
-                    text = "Add a bank account or credit card in Settings to filter activity.",
-                    modifier = Modifier.padding(vertical = 4.dp),
+                    "Some saved accounts couldn’t be found. They won’t match any transactions.",
+                    modifier = Modifier.padding(top = 8.dp),
+                    color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            } else {
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    item(key = "all-accounts") {
-                        FilterChip(
-                            selected = selectedAccountKeys.isEmpty(),
-                            onClick = { selectedAccountKeysList = emptyList() },
-                            label = { Text("All accounts") },
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .semantics {
-                                    contentDescription = "Show activity from all bank accounts and credit cards"
-                                },
-                        )
-                    }
-                    items(accountOptions, key = { it.key }) { option ->
-                        val isSelected = option.key in accountSelectionResolution.resolvedKeys
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = {
-                                val safeSelections = accountSelectionResolution.selectionKeys
-                                selectedAccountKeysList = if (isSelected) {
-                                    safeSelections - option.key
-                                } else {
-                                    safeSelections + option.key
-                                }.toList()
-                            },
-                            label = {
-                                Text(
-                                    text = option.label,
-                                    modifier = Modifier.widthIn(max = 200.dp),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = if (option.type == AccountType.CREDIT_CARD) {
-                                        Icons.Rounded.CreditCard
-                                    } else {
-                                        Icons.Rounded.AccountBalance
-                                    },
-                                    contentDescription = null,
-                                )
-                            },
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .semantics {
-                                    contentDescription = "${option.type.label}: ${option.accessibilityLabel}"
-                                },
-                        )
-                    }
-                }
-            }
-            if (accountSelectionResolution.unavailableKeys.isNotEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(
-                        text = "This view includes ${accountSelectionResolution.unavailableKeys.size} " +
-                            "account selection" +
-                            (if (accountSelectionResolution.unavailableKeys.size == 1) "" else "s") +
-                            " that could not be mapped after an account changed. " +
-                            "Unavailable accounts match no activity.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    TextButton(
-                        onClick = {
-                            selectedAccountKeysList = accountSelectionResolution.resolvedKeys.toList()
-                        },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) {
-                        Text(
-                            if (accountSelectionResolution.resolvedKeys.isEmpty()) {
-                                "Use all accounts"
-                            } else {
-                                "Remove unavailable"
-                            },
-                        )
-                    }
-                }
+                TextButton(
+                    onClick = { selectedAccountKeysList = accountSelectionResolution.resolvedKeys.toList() },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("Remove unavailable account filters") }
             }
         }
-
-        uncategorizedMerchants.firstOrNull()?.let { merchant ->
-            item(key = "uncategorized-merchant") {
-                PaisaCard(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Categorize ${merchant.merchant}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = "${uncategorizedMerchants.size} merchant" +
-                                    (if (uncategorizedMerchants.size == 1) "" else "s") + " need categories",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Button(onClick = { onCategorizeMerchant(merchant) }) { Text("Review") }
-                    }
-                }
-            }
+        item(key = "activity-result-summary") {
+            ActivityResultSummary(filtered.size, resultTotal) { showSaveViewDialog = true }
         }
 
         if (filtered.isEmpty()) {
@@ -570,13 +336,19 @@ fun TransactionsScreen(
                 }
             }
         } else {
-            items(filtered, key = { it.id }) { transaction ->
-                PaisaCard {
-                    TransactionRow(
+            grouped.forEach { (epochDay, rows) ->
+                item(key = "day:$epochDay", contentType = "activity-date") {
+                    Box(Modifier.padding(top = 8.dp, bottom = 2.dp)) {
+                        ActivityDateBand(epochDay, activityClock.epochDay)
+                    }
+                }
+                items(rows, key = TransactionRecord::id, contentType = { "activity-transaction" }) { transaction ->
+                    SmartActivityRow(
                         transaction = transaction,
+                        customCategory = transaction.customCategoryId?.let(customById::get),
                         onClick = { onTransactionClick(transaction) },
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
                     )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
                 }
             }
         }
@@ -739,121 +511,45 @@ private fun ActivityFiltersSheet(
     val canApply = !minimumInvalid && !maximumInvalid && !amountOrderInvalid &&
         !customDatesMissing && !startDateInvalid && !endDateInvalid && !dateOrderInvalid
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Box(modifier = Modifier.fillMaxWidth()) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier.dashboardWidth(720.dp).heightIn(max = 720.dp).navigationBarsPadding(),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Activity filters",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "Criteria combine together; selected accounts match any chosen account.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.semantics { contentDescription = "Close Activity filters" },
+                ) {
+                    Icon(Icons.Rounded.Close, contentDescription = null)
+                }
+            }
             LazyColumn(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .widthIn(max = 720.dp)
-                    .heightIn(max = 720.dp),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                item(key = "filter-sheet-header") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Activity filters",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                text = "Criteria combine together; selected accounts match any chosen account.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier.semantics { contentDescription = "Close Activity filters" },
-                        ) {
-                            Icon(Icons.Rounded.Close, contentDescription = null)
-                        }
-                    }
-                }
-
-                item(key = "filter-date") {
-                    ActivityFilterSection(title = "Date") {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(ActivityDateRange.entries) { option ->
-                                FilterChip(
-                                    selected = draft.dateRange == option,
-                                    onClick = {
-                                        draft = draft.copy(
-                                            dateRange = option,
-                                            customStartEpochDay = if (option == ActivityDateRange.CUSTOM) {
-                                                draft.customStartEpochDay
-                                            } else {
-                                                null
-                                            },
-                                            customEndEpochDay = if (option == ActivityDateRange.CUSTOM) {
-                                                draft.customEndEpochDay
-                                            } else {
-                                                null
-                                            },
-                                        )
-                                    },
-                                    label = { Text(option.label) },
-                                    modifier = Modifier.heightIn(min = 48.dp),
-                                )
-                            }
-                        }
-                        if (draft.dateRange == ActivityDateRange.CUSTOM) {
-                            Spacer(Modifier.height(8.dp))
-                            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                                if (maxWidth < 520.dp) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        ActivityDateField("From", startDate, startDateInvalid) { startDate = it }
-                                        ActivityDateField("To", endDate, endDateInvalid) { endDate = it }
-                                    }
-                                } else {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        Box(Modifier.weight(1f)) {
-                                            ActivityDateField("From", startDate, startDateInvalid) { startDate = it }
-                                        }
-                                        Box(Modifier.weight(1f)) {
-                                            ActivityDateField("To", endDate, endDateInvalid) { endDate = it }
-                                        }
-                                    }
-                                }
-                            }
-                            if (customDatesMissing || dateOrderInvalid) {
-                                Text(
-                                    text = if (customDatesMissing) {
-                                        "Enter at least one date."
-                                    } else {
-                                        "The From date must not be after the To date."
-                                    },
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                    }
-                }
-
-                item(key = "filter-type") {
-                    ActivityFilterSection(title = "Transaction type") {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(TransactionFilter.entries) { option ->
-                                FilterChip(
-                                    selected = draft.typeFilter == option,
-                                    onClick = { draft = draft.copy(typeFilter = option) },
-                                    label = { Text(option.label) },
-                                    modifier = Modifier.heightIn(min = 48.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-
                 if (accountOptions.isNotEmpty() || draft.selectedAccountKeys.isNotEmpty()) {
                     item(key = "filter-accounts") {
-                        ActivityFilterSection(title = "Bank & card") {
+                        ActivityFilterSection(
+                            title = if (accountOptions.any { it.type !in listOf(AccountType.BANK_ACCOUNT, AccountType.CREDIT_CARD) }) "Accounts"
+                            else "Bank & card",
+                        ) {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 item(key = "filter-account-any") {
                                     FilterChip(
@@ -928,6 +624,81 @@ private fun ActivityFiltersSheet(
                                         },
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+
+                item(key = "filter-date") {
+                    ActivityFilterSection(title = "Date") {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(ActivityDateRange.entries) { option ->
+                                FilterChip(
+                                    selected = draft.dateRange == option,
+                                    onClick = {
+                                        draft = draft.copy(
+                                            dateRange = option,
+                                            customStartEpochDay = if (option == ActivityDateRange.CUSTOM) {
+                                                draft.customStartEpochDay
+                                            } else {
+                                                null
+                                            },
+                                            customEndEpochDay = if (option == ActivityDateRange.CUSTOM) {
+                                                draft.customEndEpochDay
+                                            } else {
+                                                null
+                                            },
+                                        )
+                                    },
+                                    label = { Text(option.label) },
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                )
+                            }
+                        }
+                        if (draft.dateRange == ActivityDateRange.CUSTOM) {
+                            Spacer(Modifier.height(8.dp))
+                            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                                if (maxWidth < 520.dp) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        ActivityDateField("From", startDate, startDateInvalid) { startDate = it }
+                                        ActivityDateField("To", endDate, endDateInvalid) { endDate = it }
+                                    }
+                                } else {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Box(Modifier.weight(1f)) {
+                                            ActivityDateField("From", startDate, startDateInvalid) { startDate = it }
+                                        }
+                                        Box(Modifier.weight(1f)) {
+                                            ActivityDateField("To", endDate, endDateInvalid) { endDate = it }
+                                        }
+                                    }
+                                }
+                            }
+                            if (customDatesMissing || dateOrderInvalid) {
+                                Text(
+                                    text = if (customDatesMissing) {
+                                        "Enter at least one date."
+                                    } else {
+                                        "The From date must not be after the To date."
+                                    },
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item(key = "filter-type") {
+                    ActivityFilterSection(title = "Transaction type") {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(TransactionFilter.entries) { option ->
+                                FilterChip(
+                                    selected = draft.typeFilter == option,
+                                    onClick = { draft = draft.copy(typeFilter = option) },
+                                    label = { Text(option.label) },
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                )
                             }
                         }
                     }
@@ -1176,49 +947,47 @@ private fun ActivityFiltersSheet(
                     }
                 }
 
-                item(key = "filter-actions") {
-                    HorizontalDivider()
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        TextButton(
-                            onClick = {
-                                draft = ActivityFilterState()
-                                minimumAmount = ""
-                                maximumAmount = ""
-                                startDate = ""
-                                endDate = ""
-                            },
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) { Text("Reset") }
-                        Button(
-                            onClick = {
-                                onApply(
-                                    draft.copy(
-                                        selectedAccountKeys = draftAccountSelection.selectionKeys,
-                                        customStartEpochDay = if (draft.dateRange == ActivityDateRange.CUSTOM) {
-                                            parsedStartDate
-                                        } else {
-                                            null
-                                        },
-                                        customEndEpochDay = if (draft.dateRange == ActivityDateRange.CUSTOM) {
-                                            parsedEndDate
-                                        } else {
-                                            null
-                                        },
-                                        minimumAmountMinor = parsedMinimum,
-                                        maximumAmountMinor = parsedMaximum,
-                                    ),
-                                )
-                            },
-                            enabled = canApply,
-                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                        ) { Text("Apply filters") }
-                    }
-                }
+            }
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = {
+                        draft = ActivityFilterState()
+                        minimumAmount = ""
+                        maximumAmount = ""
+                        startDate = ""
+                        endDate = ""
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("Reset") }
+                Button(
+                    onClick = {
+                        onApply(
+                            draft.copy(
+                                selectedAccountKeys = draftAccountSelection.selectionKeys,
+                                customStartEpochDay = if (draft.dateRange == ActivityDateRange.CUSTOM) {
+                                    parsedStartDate
+                                } else {
+                                    null
+                                },
+                                customEndEpochDay = if (draft.dateRange == ActivityDateRange.CUSTOM) {
+                                    parsedEndDate
+                                } else {
+                                    null
+                                },
+                                minimumAmountMinor = parsedMinimum,
+                                maximumAmountMinor = parsedMaximum,
+                            ),
+                        )
+                    },
+                    enabled = canApply,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                ) { Text("Apply filters") }
             }
         }
     }
@@ -1394,7 +1163,6 @@ internal fun activityAccountFilterOptions(
     }
 
     val profileOptions = accounts
-        .filter { it.type == AccountType.BANK_ACCOUNT || it.type == AccountType.CREDIT_CARD }
         .groupBy { account ->
             activityAccountOptionKey(
                 type = account.type,
@@ -1487,7 +1255,13 @@ internal fun activityAccountFilterOptions(
         }
 
     return (profileOptions + virtualOptions).sortedWith(
-        compareBy<ActivityAccountFilterOption> { if (it.type == AccountType.BANK_ACCOUNT) 0 else 1 }
+        compareBy<ActivityAccountFilterOption> {
+            when (it.type) {
+                AccountType.BANK_ACCOUNT -> 0
+                AccountType.CREDIT_CARD -> 1
+                else -> 2
+            }
+        }
             .thenBy(String.CASE_INSENSITIVE_ORDER, ActivityAccountFilterOption::label)
             .thenBy(ActivityAccountFilterOption::key),
     )
@@ -1656,7 +1430,8 @@ private fun activityAccountFilterOption(
         ?.takeUnless { name.contains(it, ignoreCase = true) }
         ?.let { " · $it" }
         .orEmpty()
-    val lastFourSuffix = lastFour?.let { " •••• $it" }.orEmpty()
+    val lastFourSuffix = lastFour?.takeUnless { name.trimEnd().endsWith(it) }
+        ?.let { " •••• $it" }.orEmpty()
     return ActivityAccountFilterOption(
         key = key,
         type = type,
@@ -1664,7 +1439,7 @@ private fun activityAccountFilterOption(
         accessibilityLabel = buildList {
             add(name)
             institution?.takeUnless { name.contains(it, ignoreCase = true) }?.let(::add)
-            lastFour?.let { add("ending in $it") }
+            lastFour?.takeUnless { name.trimEnd().endsWith(it) }?.let { add("ending in $it") }
         }.joinToString(", "),
         institutionName = institution,
         institutionNames = institutions,
@@ -1682,7 +1457,9 @@ private fun activityAccountOptionKey(
     lastFour: String?,
     fallbackAccountId: Long,
 ): String {
-    val physicalKey = activityPhysicalAccountOptionKey(type, institution, lastFour)
+    val physicalKey = if (type == AccountType.BANK_ACCOUNT || type == AccountType.CREDIT_CARD) {
+        activityPhysicalAccountOptionKey(type, institution, lastFour)
+    } else null
     if (physicalKey != null) return physicalKey
     val institutionKey = institution?.let(::normalizedAccountValue)?.takeIf(String::isNotBlank)
     return "${type.name}|institution:${institutionKey ?: "unknown"}|account:$fallbackAccountId"

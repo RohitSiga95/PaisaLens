@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -22,7 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoGraph
 import androidx.compose.material.icons.rounded.Calculate
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Event
@@ -60,14 +60,12 @@ import com.paisalens.app.data.model.AccountBalanceSnapshot
 import com.paisalens.app.data.model.AccountProfile
 import com.paisalens.app.data.model.AccountType
 import com.paisalens.app.data.model.BillReminder
+import com.paisalens.app.data.model.BillsTimelineSnapshot
 import com.paisalens.app.data.model.AdvancedBudgetPlan
 import com.paisalens.app.data.model.CreditCardBill
 import com.paisalens.app.data.model.CreditCardPaymentSuggestion
 import com.paisalens.app.data.model.CategoryBudget
 import com.paisalens.app.data.model.CustomCategory
-import com.paisalens.app.data.model.DueItem
-import com.paisalens.app.data.model.DueItemSource
-import com.paisalens.app.data.model.DueStatus
 import com.paisalens.app.data.model.ExpenseCategory
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
@@ -104,6 +102,7 @@ import com.paisalens.app.ui.components.MoneyChartPoint
 import com.paisalens.app.ui.components.MoneyLineChart
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
+import com.paisalens.app.ui.components.dashboardWidth
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.screens.AdvancedBudgetingScreen
 import java.math.BigDecimal
@@ -117,10 +116,10 @@ import kotlin.math.abs
 enum class PlanSection(val label: String) {
     BUDGETS("Budgets"),
     BILLS("Bills & dues"),
-    REMINDERS("Reminders"),
-    CARD_BILLS("Card bills"),
     GOALS("Goals"),
     AUTOPAY("AutoPay"),
+    REMINDERS("Reminders"),
+    CARD_BILLS("Card bills"),
     WHAT_IF("What-if"),
 }
 
@@ -140,6 +139,7 @@ fun PlanningScreen(
     advancedBudgets: List<AdvancedBudgetPlan>,
     customCategories: List<CustomCategory>,
     bills: List<BillReminder>,
+    billsTimeline: BillsTimelineSnapshot,
     recurringPayments: List<RecurringPayment>,
     loans: List<LoanAccount>,
     accounts: List<AccountProfile>,
@@ -200,9 +200,9 @@ fun PlanningScreen(
     LaunchedEffect(initialSection) { sectionName = initialSection.name }
     var editingBill by remember { mutableStateOf<BillReminder?>(null) }
     var addingBill by remember { mutableStateOf(false) }
-    var requestedBillReminderId by rememberSaveable { mutableStateOf<Long?>(null) }
-    fun openBillReminder(id: Long) {
-        requestedBillReminderId = id
+    var requestedReminderTargetKey by rememberSaveable { mutableStateOf<String?>(null) }
+    fun openBillReminder(targetKey: String) {
+        requestedReminderTargetKey = targetKey
         sectionName = PlanSection.REMINDERS.name
     }
     val effectiveExpenseTransactions = remember(transactions, transactionLinks, expenseSplits) {
@@ -216,8 +216,8 @@ fun PlanningScreen(
                 it.id !in appliedOffsets
         }
     }
-    Column(Modifier.fillMaxSize()) {
-        HubHeader("Plan", "Budgets, due dates, and consequence-free scenarios")
+    Column(Modifier.dashboardWidth(920.dp).fillMaxSize()) {
+        HubHeader("Plan", "Budgets, due dates, and planned payments")
         HubSectionPicker(PlanSection.entries, section, { it.label }) { sectionName = it.name }
         Box(Modifier.fillMaxSize()) {
             when (section) {
@@ -230,26 +230,21 @@ fun PlanningScreen(
                     onDeletePlan = onDeleteAdvancedBudget,
                     onSetLegacyBudget = onSetBudget,
                 )
-                PlanSection.BILLS -> BillsContent(
+                PlanSection.BILLS -> BillsTimelineContent(
+                    timeline = billsTimeline,
                     bills = bills,
                     utilitySmsBills = utilitySmsBills,
                     paymentReminderRules = paymentReminderRules,
-                    recurringPayments = recurringPayments,
-                    paymentCommitments = paymentCommitments,
-                    loans = loans,
-                    accounts = accounts,
                     onAdd = { addingBill = true },
                     onEdit = { editingBill = it },
                     onMarkPaid = onMarkBillPaid,
                     onDelete = onDeleteBill,
-                    onTrackUtilitySmsBill = { bill, done ->
-                        onTrackUtilitySmsBill(bill) { id ->
-                            done()
-                            if (id != null) openBillReminder(id)
-                        }
-                    },
+                    onTrackUtilitySmsBill = onTrackUtilitySmsBill,
                     onDismissUtilitySmsBill = onDismissUtilitySmsBill,
                     onSetReminder = ::openBillReminder,
+                    onMarkCardPaid = onMarkCreditCardBillPaid,
+                    onOpenCardBills = { sectionName = PlanSection.CARD_BILLS.name },
+                    onOpenCommitments = { sectionName = PlanSection.AUTOPAY.name },
                 )
                 PlanSection.REMINDERS -> PaymentReminderCenterContent(
                     rules = paymentReminderRules,
@@ -273,8 +268,8 @@ fun PlanningScreen(
                     onClearSnooze = onClearPaymentReminderSnooze,
                     onSkipNext = onSkipNextPaymentReminder,
                     onSettingsChange = onPaymentReminderSettingsChange,
-                    requestedBillId = requestedBillReminderId,
-                    onReminderRequestHandled = { requestedBillReminderId = null },
+                    requestedTargetKey = requestedReminderTargetKey,
+                    onReminderRequestHandled = { requestedReminderTargetKey = null },
                     modifier = Modifier.fillMaxSize(),
                 )
                 PlanSection.CARD_BILLS -> CreditCardBillsDashboardContent(
@@ -336,292 +331,6 @@ fun PlanningScreen(
     }
 }
 
-@Composable
-private fun BillsContent(
-    bills: List<BillReminder>,
-    utilitySmsBills: List<UtilitySmsBill>,
-    paymentReminderRules: List<PaymentReminderRule>,
-    recurringPayments: List<RecurringPayment>,
-    paymentCommitments: List<PaymentCommitment>,
-    loans: List<LoanAccount>,
-    accounts: List<AccountProfile>,
-    onAdd: () -> Unit,
-    onEdit: (BillReminder) -> Unit,
-    onMarkPaid: (Long) -> Unit,
-    onDelete: (Long) -> Unit,
-    onTrackUtilitySmsBill: (UtilitySmsBill, () -> Unit) -> Unit,
-    onDismissUtilitySmsBill: (Long) -> Unit,
-    onSetReminder: (Long) -> Unit,
-) {
-    var deletingBill by remember { mutableStateOf<BillReminder?>(null) }
-    var dismissingNotice by remember { mutableStateOf<UtilitySmsBill?>(null) }
-    var trackingNoticeId by remember { mutableStateOf<Long?>(null) }
-    var showPastNotices by rememberSaveable { mutableStateOf(false) }
-    val today = remember { LocalDate.now() }
-    val zoneId = remember { ZoneId.systemDefault() }
-    val dueItems = remember(bills, recurringPayments, paymentCommitments, loans, accounts, today, zoneId) {
-        val accountNames = accounts.associate { it.id to it.name }
-        val accountIdsByName = accounts.associate { normalizedMerchantKey(it.name) to it.id }
-        val commitmentKeys = paymentCommitments.mapTo(mutableSetOf(), ::paymentCommitmentIdentityKey)
-        val dedupedRecurring = recurringPayments.filterNot {
-            recurringPaymentIdentityKey(it, accountIdsByName) in commitmentKeys
-        }
-        (buildDueItems(bills, dedupedRecurring, loans, today, zoneId, horizonDays = 3_650) +
-            buildPaymentCommitmentDueItems(
-                commitments = paymentCommitments,
-                today = today,
-                horizonDays = 3_650,
-                accountNamesById = accountNames,
-            ))
-            .sortedWith(compareBy<DueItem> { it.dueDate }.thenBy { it.title })
-            .map { item ->
-                if (item.source == DueItemSource.MANUAL_BILL && item.accountId != null) {
-                    item.copy(accountName = accountNames[item.accountId])
-                } else {
-                    item
-                }
-            }
-    }
-    val manualById = bills.associateBy { it.id }
-    val trackedBillIds = utilitySmsBills.mapNotNullTo(hashSetOf(), UtilitySmsBill::trackedBillId)
-    val (newNotices, pastNotices) = remember(utilitySmsBills, today) {
-        utilitySmsBills.filter { it.trackedBillId == null && !it.dismissed }
-            .sortedBy(UtilitySmsBill::dueDateEpochDay)
-            .partition { it.dueDateEpochDay >= today.toEpochDay() }
-    }
-    val reminderKeys = paymentReminderRules.mapTo(hashSetOf(), PaymentReminderRule::targetKey)
-    val urgentTotal = dueItems.filter { it.status in setOf(DueStatus.OVERDUE, DueStatus.DUE_TODAY, DueStatus.DUE_SOON) }
-        .sumOf { it.amountMinor }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PlannerMetric("Next 7 days", urgentTotal, Modifier.weight(1f))
-                PlannerMetric("Upcoming items", dueItems.size.toLong(), Modifier.weight(1f), money = false)
-            }
-        }
-        item {
-            Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                Icon(Icons.Rounded.Add, contentDescription = null)
-                Spacer(Modifier.size(8.dp))
-                Text("Add bill")
-            }
-        }
-        if (newNotices.isNotEmpty()) {
-            item {
-                Text("Detected utility bills", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "Review the amount and due date before adding a bill.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            items(newNotices, key = { "utility:${it.id}" }) { bill ->
-                UtilitySmsBillCard(
-                    bill = bill,
-                    canAdd = trackingNoticeId == null,
-                    onAdd = {
-                        trackingNoticeId = bill.id
-                        onTrackUtilitySmsBill(bill) { trackingNoticeId = null }
-                    },
-                    onDismiss = { dismissingNotice = bill },
-                )
-            }
-        }
-        if (dueItems.isEmpty()) {
-            item {
-                EmptyPlannerCard(
-                    "No active bills",
-                    "Add a bill or sync SMS to look for electricity, broadband, and mobile postpaid bills.",
-                )
-            }
-        } else {
-            DueStatus.entries.forEach { status ->
-                val matching = dueItems.filter { it.status == status }
-                if (matching.isNotEmpty()) {
-                    item { Text(status.label(), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 6.dp)) }
-                    items(matching, key = { it.stableId }) { item ->
-                        val manual = item.stableId.split(':').getOrNull(1)?.toLongOrNull()
-                            ?.takeIf { item.source == DueItemSource.MANUAL_BILL }?.let(manualById::get)
-                        val utility = manual != null && manual.id in trackedBillIds
-                        DueItemCard(
-                            item = item,
-                            manual = manual,
-                            onEdit = onEdit,
-                            onMarkPaid = onMarkPaid,
-                            onDelete = { id -> deletingBill = manualById[id] },
-                            utility = utility,
-                            reminderConfigured = utility && manualBillReminderTargetKey(checkNotNull(manual).id) in reminderKeys,
-                            onSetReminder = onSetReminder,
-                        )
-                    }
-                }
-            }
-        }
-        if (pastNotices.isNotEmpty()) {
-            item {
-                TextButton(
-                    onClick = { showPastNotices = !showPastNotices },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) {
-                    Text(if (showPastNotices) "Hide past SMS notices" else "Past SMS notices (${pastNotices.size})")
-                }
-            }
-            if (showPastNotices) {
-                items(pastNotices.asReversed(), key = { "utility:${it.id}" }) { bill ->
-                    UtilitySmsBillCard(
-                        bill = bill,
-                        canAdd = trackingNoticeId == null,
-                        onAdd = {
-                            trackingNoticeId = bill.id
-                            onTrackUtilitySmsBill(bill) { trackingNoticeId = null }
-                        },
-                        onDismiss = { dismissingNotice = bill },
-                    )
-                }
-            }
-        }
-        item {
-            Text(
-                "Added bills can be edited here. Subscription and loan dues come from your on-device data.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-    deletingBill?.let { bill ->
-        AlertDialog(
-            onDismissRequest = { deletingBill = null },
-            title = { Text("Delete ${bill.title}?") },
-            text = { Text("This bill reminder will be permanently removed.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDelete(bill.id)
-                        deletingBill = null
-                    },
-                ) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { deletingBill = null }) { Text("Cancel") } },
-        )
-    }
-    dismissingNotice?.let { bill ->
-        AlertDialog(
-            onDismissRequest = { dismissingNotice = null },
-            title = { Text("Dismiss this bill?") },
-            text = { Text("Repeat notices for this bill won’t add it back. This won’t delete the SMS.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDismissUtilitySmsBill(bill.id)
-                    dismissingNotice = null
-                }) { Text("Dismiss") }
-            },
-            dismissButton = { TextButton(onClick = { dismissingNotice = null }) { Text("Cancel") } },
-        )
-    }
-}
-
-@Composable
-private fun UtilitySmsBillCard(
-    bill: UtilitySmsBill,
-    canAdd: Boolean,
-    onAdd: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val due = LocalDate.ofEpochDay(bill.dueDateEpochDay).format(DateTimeFormatter.ofPattern("d MMM uuuu"))
-    PaisaCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(bill.title, style = MaterialTheme.typography.titleMedium)
-            MoneyText(bill.amountMinor, style = MaterialTheme.typography.titleLarge)
-            Text("Due $due", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (bill.noticeKeys.size > 1) {
-                Text("${bill.noticeKeys.size} SMS notices combined", style = MaterialTheme.typography.bodySmall)
-            }
-            Button(onClick = onAdd, enabled = canAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                Text("Add & set reminder")
-            }
-            TextButton(onClick = onDismiss, enabled = canAdd, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Dismiss")
-            }
-        }
-    }
-}
-
-@Composable
-private fun DueItemCard(
-    item: DueItem,
-    manual: BillReminder?,
-    onEdit: (BillReminder) -> Unit,
-    onMarkPaid: (Long) -> Unit,
-    onDelete: (Long) -> Unit,
-    utility: Boolean = false,
-    reminderConfigured: Boolean = false,
-    onSetReminder: (Long) -> Unit = {},
-) {
-    val statusColor = when (item.status) {
-        DueStatus.OVERDUE -> MaterialTheme.colorScheme.error
-        DueStatus.DUE_TODAY, DueStatus.DUE_SOON -> Color(0xFFE08A13)
-        else -> MaterialTheme.colorScheme.primary
-    }
-    PaisaCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = statusColor.copy(alpha = 0.13f), contentColor = statusColor, shape = MaterialTheme.shapes.medium) {
-                    Icon(
-                        when (item.source) {
-                            DueItemSource.MANUAL_BILL -> Icons.Rounded.Event
-                            DueItemSource.RECURRING_PAYMENT -> Icons.Rounded.Payments
-                            DueItemSource.PAYMENT_COMMITMENT -> Icons.Rounded.Payments
-                            DueItemSource.LOAN_EMI -> Icons.Rounded.Savings
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.padding(10.dp),
-                    )
-                }
-                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    Text(item.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        "${item.dueDate.format(DateTimeFormatter.ofPattern("d MMM uuuu"))} · ${if (utility) "SMS bill" else item.source.label()}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                MoneyText(item.amountMinor, style = MaterialTheme.typography.titleMedium)
-            }
-            item.accountName?.takeIf(String::isNotBlank)?.let {
-                Text("Pay from $it", style = MaterialTheme.typography.bodySmall)
-            }
-            item.notes?.takeIf(String::isNotBlank)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            manual?.let { bill ->
-                if (utility) {
-                    TextButton(onClick = { onSetReminder(bill.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text(if (reminderConfigured) "Edit reminder" else "Set reminder")
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { onMarkPaid(bill.id) },
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    ) {
-                        Icon(Icons.Rounded.CheckCircle, contentDescription = null)
-                        Spacer(Modifier.size(6.dp))
-                        Text("Mark paid")
-                    }
-                    IconButton(onClick = { onEdit(bill) }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Rounded.Edit, contentDescription = "Edit ${bill.title}")
-                    }
-                    IconButton(onClick = { onDelete(bill.id) }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete ${bill.title}")
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun BillEditorDialog(
@@ -855,6 +564,10 @@ fun InsightsScreen(
     transactions: List<TransactionRecord>,
     transactionLinks: List<TransactionLink>,
     expenseSplits: List<ExpenseSplit> = emptyList(),
+    effectiveExpenseTransactions: List<TransactionRecord>,
+    customCategories: List<CustomCategory>,
+    today: LocalDate,
+    zoneId: ZoneId,
     accounts: List<AccountProfile>,
     balanceHistory: List<AccountBalanceSnapshot>,
     bills: List<BillReminder>,
@@ -870,8 +583,12 @@ fun InsightsScreen(
     var sectionName by rememberSaveable { mutableStateOf(initialSection.name) }
     val section = InsightSection.entries.firstOrNull { it.name == sectionName } ?: InsightSection.OVERVIEW
     LaunchedEffect(initialSection) { sectionName = initialSection.name }
-    Column(Modifier.fillMaxSize()) {
-        HubHeader("Insights", "Trends and forward-looking estimates, calculated on-device")
+    Column(Modifier.dashboardWidth(1080.dp).fillMaxSize()) {
+        HubHeader(
+            "Insights",
+            if (section == InsightSection.OVERVIEW) "Spending Lens"
+            else "Trends and forward-looking estimates, calculated on-device",
+        )
         HubSectionPicker(InsightSection.entries, section, { it.label }) { sectionName = it.name }
         Box(Modifier.fillMaxSize()) {
             when (section) {
@@ -879,6 +596,10 @@ fun InsightsScreen(
                     transactions = transactions,
                     transactionLinks = transactionLinks,
                     expenseSplits = expenseSplits,
+                    effectiveExpenseTransactions = effectiveExpenseTransactions,
+                    customCategories = customCategories,
+                    today = today,
+                    zoneId = zoneId,
                     insights = insights,
                     onTransactionClick = onTransactionClick,
                     showHeader = false,
@@ -1219,7 +940,15 @@ private fun <T> HubSectionPicker(
     label: (T) -> String,
     onSelect: (T) -> Unit,
 ) {
+    val rowState = rememberLazyListState()
+    val selectedIndex = values.indexOf(selected)
+    LaunchedEffect(selectedIndex) {
+        if (selectedIndex >= 0 && rowState.layoutInfo.visibleItemsInfo.none { it.index == selectedIndex }) {
+            rowState.scrollToItem(selectedIndex)
+        }
+    }
     LazyRow(
+        state = rowState,
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1255,21 +984,6 @@ private fun EmptyPlannerCard(title: String, body: String) {
             Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
-}
-
-private fun DueStatus.label(): String = when (this) {
-    DueStatus.OVERDUE -> "Overdue"
-    DueStatus.DUE_TODAY -> "Due today"
-    DueStatus.DUE_SOON -> "Next 7 days"
-    DueStatus.UPCOMING -> "Next 30 days"
-    DueStatus.LATER -> "Later"
-}
-
-private fun DueItemSource.label(): String = when (this) {
-    DueItemSource.MANUAL_BILL -> "Bill reminder"
-    DueItemSource.RECURRING_PAYMENT -> "Detected recurring"
-    DueItemSource.PAYMENT_COMMITMENT -> "Subscription or AutoPay"
-    DueItemSource.LOAN_EMI -> "Loan EMI"
 }
 
 private fun String.toMinorOrNull(): Long? = toBigDecimalOrNull()

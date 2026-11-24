@@ -36,6 +36,20 @@ class CategoryBreakdownModelsTest {
         assertEquals(7L, totals.single().key.customCategoryId)
     }
 
+    @Test
+    fun `new custom categories are visible and current labels win after sync`() {
+        val custom = listOf(CustomCategory(id = 7, name = "Meals"), CustomCategory(id = 8, name = "Pet care"))
+        val totals = buildSpendingCategoryTotals(
+            listOf(
+                expense(1, 600, ExpenseCategory.OTHER, customId = 7, customName = "Old name"),
+                expense(2, 400, ExpenseCategory.FOOD, customId = 7, customName = "Older name"),
+            ),
+            custom,
+        )
+        assertEquals(listOf("Meals", "Pet care"), totals.map { it.key.label })
+        assertEquals(listOf(1_000L, 0L), totals.map { it.amountMinor })
+    }
+
     private fun expense(
         id: Long,
         amountMinor: Long,

@@ -16,6 +16,8 @@ data class AccountBalanceSnapshot(
     val creditLimitMinor: Long?,
     val recordedAt: Long,
     val sender: String? = null,
+    /** Retained for history charts when [accountId] is projected to a merged account. */
+    val physicalAccountId: Long? = null,
 )
 
 /** Machine-readable source stored for balances the user copies from a UPI app. */

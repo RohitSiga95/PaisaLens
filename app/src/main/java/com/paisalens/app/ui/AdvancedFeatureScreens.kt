@@ -59,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,26 +72,35 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.paisalens.app.data.model.AccountProfile
+import com.paisalens.app.data.model.CustomCategory
 import com.paisalens.app.data.model.ExchangeRate
 import com.paisalens.app.data.model.ExpenseSplit
 import com.paisalens.app.data.model.LoanAccount
 import com.paisalens.app.data.model.MerchantAliasRule
 import com.paisalens.app.data.model.SpendingInsight
+import com.paisalens.app.data.model.SpendingCategoryKey
 import com.paisalens.app.data.model.StatementImportPreview
 import com.paisalens.app.data.model.TransactionLink
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.buildCalendarSpend
 import com.paisalens.app.data.model.buildMerchantCleanupGroups
 import com.paisalens.app.data.model.buildSpendingAnalytics
+import com.paisalens.app.data.model.buildSpendingCategoryTotals
 import com.paisalens.app.data.model.calculateEmiMinor
 import com.paisalens.app.ui.components.MoneyText
 import com.paisalens.app.ui.components.PaisaCard
 import com.paisalens.app.ui.components.TransactionRow
+import com.paisalens.app.ui.components.dashboardWidth
 import com.paisalens.app.ui.components.formatMoney
 import com.paisalens.app.ui.privacy.PrivacyModeRuntime
 import com.paisalens.app.ui.privacy.maskMoneyText
+import com.paisalens.app.ui.screens.CategorySpendingSheet
+import com.paisalens.app.ui.screens.SpendingLens
+import com.paisalens.app.ui.screens.spendingMonths
+import com.paisalens.app.ui.screens.transactionsForMonth
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToLong
@@ -100,18 +110,47 @@ fun AnalyticsScreen(
     transactions: List<TransactionRecord>,
     transactionLinks: List<TransactionLink>,
     expenseSplits: List<ExpenseSplit> = emptyList(),
+    effectiveExpenseTransactions: List<TransactionRecord>,
+    customCategories: List<CustomCategory>,
+    today: LocalDate,
+    zoneId: ZoneId,
     insights: List<SpendingInsight>,
     onTransactionClick: (TransactionRecord) -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     showHeader: Boolean = true,
 ) {
-    val analytics = remember(transactions, transactionLinks, expenseSplits) {
-        buildSpendingAnalytics(transactions, transactionLinks = transactionLinks, expenseSplits = expenseSplits)
+    val analytics = remember(transactions, transactionLinks, expenseSplits, today, zoneId) {
+        buildSpendingAnalytics(
+            transactions,
+            today = today,
+            zoneId = zoneId,
+            transactionLinks = transactionLinks,
+            expenseSplits = expenseSplits,
+        )
     }
     val rawTransactionsById = remember(transactions) { transactions.associateBy(TransactionRecord::id) }
+    val currentMonth = YearMonth.from(today)
+    val availableMonths = remember(effectiveExpenseTransactions, currentMonth, zoneId) {
+        spendingMonths(effectiveExpenseTransactions, currentMonth, zoneId)
+    }
+    var monthKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val month = remember(monthKey, availableMonths) {
+        monthKey?.let(YearMonth::parse)?.coerceIn(availableMonths.last(), currentMonth) ?: currentMonth
+    }
+    val monthlyExpenses = remember(effectiveExpenseTransactions, month, zoneId) {
+        transactionsForMonth(effectiveExpenseTransactions, month, zoneId)
+    }
+    val categoryTotals = remember(monthlyExpenses, customCategories) {
+        buildSpendingCategoryTotals(monthlyExpenses, customCategories)
+    }
+    val customCategoriesById = remember(customCategories) { customCategories.associateBy(CustomCategory::id) }
+    var detailsCategory by remember { mutableStateOf<SpendingCategoryKey?>(null) }
+    val openTransaction: (TransactionRecord) -> Unit = { expense ->
+        onTransactionClick(rawTransactionsById[expense.id] ?: expense)
+    }
     LazyColumn(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.dashboardWidth(1080.dp).fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -129,6 +168,22 @@ fun AnalyticsScreen(
                     }
                 }
             }
+        }
+        item(key = "spending-lens") {
+            SpendingLens(
+                categoryTotals = categoryTotals,
+                customCategoriesById = customCategoriesById,
+                expenses = monthlyExpenses,
+                month = month,
+                availableMonths = availableMonths,
+                today = today,
+                onMonthChange = { target ->
+                    detailsCategory = null
+                    monthKey = target.takeUnless { it == currentMonth }?.toString()
+                },
+                onTransactionClick = openTransaction,
+                onOpenCategory = { detailsCategory = it },
+            )
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -153,9 +208,6 @@ fun AnalyticsScreen(
                 }
             }
         }
-        if (analytics.categoryBreakdown.isNotEmpty()) {
-            item { RankedSpendCard("Category breakdown", analytics.categoryBreakdown.map { it.label to it.amountMinor }) }
-        }
         if (analytics.topMerchants.isNotEmpty()) {
             item { RankedSpendCard("Top merchants", analytics.topMerchants.map { it.label to it.amountMinor }) }
         }
@@ -172,6 +224,23 @@ fun AnalyticsScreen(
             item { Text("On-device insights", style = MaterialTheme.typography.titleLarge) }
             items(insights) { insight -> InsightRow(insight) }
         }
+    }
+    detailsCategory?.let { category ->
+        val expenses = remember(monthlyExpenses, category) {
+            monthlyExpenses.filter(category::matches).sortedByDescending { it.occurredAt }
+        }
+        CategorySpendingSheet(
+            category = category,
+            customCategory = category.customCategoryId?.let(customCategoriesById::get),
+            month = month,
+            today = today,
+            expenses = expenses,
+            onDismiss = { detailsCategory = null },
+            onTransactionClick = {
+                detailsCategory = null
+                openTransaction(it)
+            },
+        )
     }
 }
 

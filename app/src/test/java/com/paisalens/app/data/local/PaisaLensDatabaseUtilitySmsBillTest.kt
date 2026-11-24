@@ -94,6 +94,24 @@ class PaisaLensDatabaseUtilitySmsBillTest {
     }
 
     @Test
+    fun onlyAnActualChangeToATrackedDueFencesReminderDelivery() {
+        val first = notice()
+        var fences = 0
+        database.ingestUtilitySmsBills(listOf(first)) { fences++ }
+        database.ingestUtilitySmsBills(listOf(first)) { fences++ }
+        assertEquals(0, fences)
+        val billId = requireNotNull(database.trackUtilitySmsBill(database.getUtilitySmsBills().single()))
+
+        val repeat = notice(prefix = "Reminder: ", offset = 1_000)
+        database.ingestUtilitySmsBills(listOf(repeat)) { fences++ }
+        assertEquals(0, fences)
+        val correction = notice(day = "21 Nov", amount = 875, offset = 2_000)
+        val result = database.ingestUtilitySmsBills(listOf(correction)) { fences++ }
+        assertEquals(1, fences)
+        assertEquals(setOf(billId), result.changedTrackedIds)
+    }
+
+    @Test
     fun persistsLinkedBillsAndDismissalsThroughEncryptedBackupAndInboxRescan() {
         val first = notice()
         val second = notice(account = "99553322")

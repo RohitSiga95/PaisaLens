@@ -116,6 +116,8 @@ data class AccountProfile(
     val mergedIntoAccountId: Long? = null,
     /** Number of retained physical identities represented by this user-facing profile. */
     val mergedMemberCount: Int = 1,
+    /** Read-only grouping for daily history. Not serialized as part of the account record. */
+    val balanceSourceGroups: List<AccountBalanceSourceGroup> = emptyList(),
 )
 
 data class AccountAvailabilityUpdate(

@@ -857,15 +857,7 @@ fun buildDataHealthSummary(
         "uncategorized", "Uncategorized spending", "$uncategorized expenses are still categorized as Other.",
         uncategorized, DataHealthSeverity.WARNING,
     )
-    val staleCutoff = now - staleBalanceDays.coerceAtLeast(1) * 86_400_000L
-    val staleAccounts = accounts.count {
-        (it.balanceMinor != null || it.availableCreditMinor != null) &&
-            (it.availabilityFetchedAt == null || it.availabilityFetchedAt < staleCutoff)
-    }
-    if (staleAccounts > 0) findings += DataHealthFinding(
-        "stale-balances", "Stale account balances", "$staleAccounts account balances are older than $staleBalanceDays days.",
-        staleAccounts, DataHealthSeverity.WARNING,
-    )
+    staleBalanceFinding(accounts, now, staleBalanceDays)?.let(findings::add)
     val reconciliationIssues = reconciliations.count { it.status == ReconciliationStatus.REVIEW_REQUIRED }
     if (reconciliationIssues > 0) findings += DataHealthFinding(
         "reconciliation", "Reconciliation differences", "$reconciliationIssues monthly reconciliations have differences.",
@@ -888,6 +880,40 @@ fun buildDataHealthSummary(
         invalidSplitGroups,
         DataHealthSeverity.ACTION_REQUIRED,
     )
+    return summarizeDataHealth(findings)
+}
+
+internal fun refreshDataHealthBalances(
+    previous: DataHealthSummary,
+    accounts: List<AccountProfile>,
+    now: Long = System.currentTimeMillis(),
+    staleBalanceDays: Int = 7,
+): DataHealthSummary {
+    val findings = previous.findings.filterNot { it.key == STALE_BALANCES_FINDING }.toMutableList()
+    staleBalanceFinding(accounts, now, staleBalanceDays)?.let { stale ->
+        val insertion = findings.takeWhile { it.key == "review" || it.key == "uncategorized" }.size
+        findings.add(insertion, stale)
+    }
+    return summarizeDataHealth(findings)
+}
+
+private fun staleBalanceFinding(accounts: List<AccountProfile>, now: Long, staleBalanceDays: Int): DataHealthFinding? {
+    val staleCutoff = now - staleBalanceDays.coerceAtLeast(1) * 86_400_000L
+    val staleAccounts = accounts.count {
+        (it.balanceMinor != null || it.availableCreditMinor != null) &&
+            (it.availabilityFetchedAt == null || it.availabilityFetchedAt < staleCutoff)
+    }
+    if (staleAccounts == 0) return null
+    return DataHealthFinding(
+        STALE_BALANCES_FINDING, "Stale account balances",
+        "$staleAccounts account balances are older than $staleBalanceDays days.",
+        staleAccounts, DataHealthSeverity.WARNING,
+    )
+}
+
+private const val STALE_BALANCES_FINDING = "stale-balances"
+
+private fun summarizeDataHealth(findings: List<DataHealthFinding>): DataHealthSummary {
     val penalty = findings.sumOf { finding ->
         when (finding.severity) {
             DataHealthSeverity.INFO -> 4

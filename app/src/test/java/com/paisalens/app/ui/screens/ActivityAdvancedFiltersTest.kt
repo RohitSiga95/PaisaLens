@@ -6,6 +6,7 @@ import com.paisalens.app.data.model.ReviewStatus
 import com.paisalens.app.data.model.TransactionRecord
 import com.paisalens.app.data.model.TransactionSource
 import com.paisalens.app.data.model.TransactionType
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -16,6 +17,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ActivityAdvancedFiltersTest {
+    @Test
+    fun dayBandsUseLocalDatesAndLatestDayFirst() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val earlier = transaction(occurredAt = Instant.parse("2026-11-22T18:20:00Z").toEpochMilli())
+        val later = transaction(occurredAt = Instant.parse("2026-11-22T18:40:00Z").toEpochMilli(), duplicateCount = 2)
+        val groups = activityTransactionsByDay(listOf(earlier, later), zone)
+
+        assertEquals(listOf(LocalDate.of(2026, 11, 23).toEpochDay(), LocalDate.of(2026, 11, 22).toEpochDay()), groups.keys.toList())
+        assertEquals(listOf(later), groups.values.first())
+        assertEquals(2, groups.values.first().single().duplicateCount)
+    }
+
     @Test
     fun advancedDimensionsCombineWithAndSemantics() {
         val occurredAt = LocalDate.of(2026, 8, 18).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
