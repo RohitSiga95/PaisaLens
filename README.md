@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1"><img alt="Release v1.8.9 UI refresh" src="https://img.shields.io/badge/release-v1.8.9%20UI%20refresh-5965E8?style=for-the-badge"></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9-ui-refresh.1/PaisaLens-v1.8.9-debug.apk"><img alt="Download the v1.8.9 UI refresh debug APK" src="https://img.shields.io/badge/download-v1.8.9%20UI%20refresh%20APK-5965E8?style=for-the-badge"></a>
   <img alt="Source v1.8.9" src="https://img.shields.io/badge/source-v1.8.9-1E88E5?style=for-the-badge">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-21D19F?style=for-the-badge&logo=android&logoColor=white">
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack_Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white">
@@ -16,7 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9-ui-refresh.1/PaisaLens-v1.8.9-debug.apk"><strong>⬇ Download PaisaLens v1.8.9 UI refresh APK</strong></a>
+  <a href="https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9-ui-refresh.1/PaisaLens-v1.8.9-debug.apk"><strong>Download the v1.8.9 UI refresh debug APK</strong></a>
+  &nbsp;·&nbsp;
+  <a href="#daily-balance-graphs">See balance graphs</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1">View release notes</a>
   &nbsp;·&nbsp;
@@ -30,11 +32,36 @@
 
 | | Update | Highlights |
 |---|---|---|
-| 📉 | **Daily balance graphs** | Open an account from Home or **Settings → Accounts & cards**. Tap or drag through 7, 30, or 90 days of bank balances or available card credit. Merged accounts can show each source or the combined amount. New SMS update open charts. |
+| 📉 | **[Daily balance graphs](#daily-balance-graphs)** | Track bank balances and available card credit over 7, 30, or 90 days for individual accounts, cards, and merged groups. |
 | 🏠 | **Responsive Home and Spending Lens** | Reorder, hide, or show Home sections, choose a density, and tap categories to see their transactions. Home adapts to wider screens with multiple columns. |
 | 🔎 | **Smart Activity** | Group transactions by day, remove individual account filters, save views, and see merged SMS counts without adding extra ledger rows. |
 | 🗓️ | **Unified bill timeline** | See utility bills, card statements, and other payments together. Expand a bill to set a reminder or mark it paid, and check the Paid tab for history. |
 | ⚡ | **Faster SMS sync** | Normal sync checks new messages. **Settings → SMS analysis → Full rescan** still checks the whole inbox. |
+
+### Daily balance graphs
+
+Tap a bank or card tile on **Home**, or go to **Settings → Accounts & cards** and tap an entry's **Balance history**. Pick **7, 30, or 90 days**, then tap or drag the chart to inspect a day's value.
+
+Bank accounts show **available balance**. Credit cards show **available credit**, not the statement amount. In a merged group, use **Combined balance** to see the total or select an individual account or card. The combined graph starts once every member has a saved reading.
+
+An open graph refreshes when a new SMS with a supported balance or available-credit reading is synced. On days without a new reading, a dashed line carries the last known value forward.
+
+<table>
+  <tr>
+    <th scope="col">Bank accounts</th>
+    <th scope="col">Credit cards</th>
+  </tr>
+  <tr>
+    <td align="center"><strong>Individual bank account</strong><br><img src="docs/screenshots/v1.8.9-balance-bank.png" alt="Individual bank account with a 30-day available-balance chart and saved readings" width="270"></td>
+    <td align="center"><strong>Individual credit card</strong><br><img src="docs/screenshots/v1.8.9-balance-card.png" alt="Individual credit card with a 30-day available-credit chart and saved readings" width="270"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Merged bank accounts</strong><br><img src="docs/screenshots/v1.8.9-balance-merged-bank.png" alt="Two merged bank accounts with the combined balance chart and source selector" width="270"></td>
+    <td align="center"><strong>Merged credit cards</strong><br><img src="docs/screenshots/v1.8.9-balance-merged-cards.png" alt="Two merged credit cards with the combined available-credit chart and source selector" width="270"></td>
+  </tr>
+</table>
+
+<sub>Captured in the Android emulator with sample SMS and balances.</sub>
 
 ### Also in v1.8.9
 
@@ -144,7 +171,7 @@
 | 🏦 | **EMI & loan tracker** | Calculates reducing-balance EMI, tracks paid installments, progress, and next due dates. |
 | ✈️ | **Travel mode** | Stores original foreign amounts and converts them with an explicitly refreshed HTTPS reference rate. |
 | ✨ | **On-device insights** | Detects possible duplicates, unusual charges, price increases, spending pace, and concentration without uploading data. |
-| 📉 | **Balance history** | Shows interactive 7-, 30-, and 90-day graphs and saved readings. Days without a fresh SMS carry the last known value forward and are labeled as such. |
+| 📉 | **[Balance history](#daily-balance-graphs)** | Shows daily graphs for individual and merged bank accounts and cards, and updates them as new balance readings arrive. |
 | 💳 | **Credit utilisation tracker** | Combines the real available credit with a detected or manually entered total limit, then highlights healthy, moderate, high, and critical usage. |
 | 🗓️ | **Bills & due-date centre** | Brings manual reminders, locally detected recurring payments, card bills, subscriptions and loan EMIs into one overdue and upcoming timeline. |
 | ⏰ | **Custom bill-payment reminders** | Adds one-time or recurring reminders to saved utility bills and detected credit-card statements, with multiple advance alerts, local time and timezone, snooze choices, overdue repeats, skip-next, priority, private amount controls, categories, colors, notes, search, grouped views, quiet hours and an optional daily summary. |
@@ -207,12 +234,12 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-The UI refresh keeps the app version at 1.8.9. The [original v1.8.9 release](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9) is still available.
+This APK is from the [v1.8.9 UI refresh prerelease](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1). The app version stays at 1.8.9, and the [original v1.8.9 release](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9) is still available.
 
 **APK SHA-256**
 
 ```text
-641236ac3e66e5ea49e9fd0d4f6e386465bd0f692b14091db21af510e8e387c7
+64273bdcc7a34ae6ee01e20d129815f585b71dd9918e3d5218dad44faf46f7de
 ```
 
 ## Build it yourself
