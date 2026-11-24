@@ -234,7 +234,7 @@ Read the complete [plain-language privacy notice](PRIVACY.md).
 3. If Android prompts you, allow your browser or file manager to install unknown apps.
 4. Choose **Install**, then open PaisaLens and review the SMS disclosure before granting access.
 
-This APK is from the [v1.8.9 UI refresh prerelease](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1). The app version stays at 1.8.9, and the [original v1.8.9 release](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9) is still available.
+This APK is from the [v1.8.9 UI refresh release](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9-ui-refresh.1). The app version stays at 1.8.9. The [original v1.8.9 release](https://github.com/RohitSiga95/PaisaLens/releases/tag/v1.8.9) and its [APK download](https://github.com/RohitSiga95/PaisaLens/releases/download/v1.8.9/PaisaLens-v1.8.9-debug.apk) are still available.
 
 **APK SHA-256**
 
